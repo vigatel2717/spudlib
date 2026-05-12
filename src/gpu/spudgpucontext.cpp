@@ -36,7 +36,7 @@ namespace spud::gpu {
             return;
         }
         if (g_gpu_api == SPUDGPU_API_METAL) {
-            std::cout << "SPUDLIB SPUDGPU : does not support Metal API yet!" << std::endl;
+            std::cout << "SPUDLIB-SPUDGPU : does not support Metal API yet!" << std::endl;
             return;
         }
     }
