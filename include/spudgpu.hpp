@@ -4,17 +4,26 @@
 
 #ifndef SPUDLIB_SPUDGPU_HPP
 #define SPUDLIB_SPUDGPU_HPP
+
+#include "gpu/spudgpucontext.hpp"
+#include "gpu/spudgpuresource.hpp"
+#include "gpu/spudgpushader.hpp"
+#include "gpu/spudgpuformats.hpp"
+#include "gpu/spudgpucmd.hpp"
+
 /*
- * Define SPUDGPU_COMPILE_METAL_API or SPUDGPU_COMPILE_VULKAN_API
+ * Define SPUDGPU_COMPILE_METAL_API=1 or SPUDGPU_COMPILE_VULKAN_API=1
  * These are the flags needed to be able to use SpudGPU libraries.
+ * If a flag is 0 or undefined then it won't be seen as true in SpudGPU.
 */
 
-#ifdef SPUDGPU_COMPILE_METAL_API
+#if SPUDGPU_COMPILE_METAL_API
 #endif
-#ifdef SPUDGPU_COMPILE_VULKAN_API
-#include "gpu/backends/vk/spudgpuvkcontext.hpp"
-#include "gpu/backends/vk/spudgpuvkresource.hpp"
-#include "gpu/backends/vk/spudgpuvkshader.hpp"
+#if SPUDGPU_COMPILE_VULKAN_API
+#include "gpu/backends/vulkan/spudgpuvulkandef.hpp"
+#include "gpu/backends/vulkan/spudgpuvulkancontext.hpp"
+#include "gpu/backends/vulkan/spudgpuvulkanresource.hpp"
+#include "gpu/backends/vulkan/spudgpuvulkanshader.hpp"
 #endif
 
 #include "gpu/spudgpucontext.hpp"

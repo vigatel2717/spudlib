@@ -1,5 +1,6 @@
 #include "gpu/backends/vulkan/spudgpuvulkandef.hpp"
 #include "gpu/backends/vulkan/spudgpuvulkancontext.hpp"
+#include "gpu/backends/vulkan/spudgpuvulkanresource.hpp"
 
 namespace spud::gpu::backends::vulkan {
     VkInstance g_pVulkanInstance = VK_NULL_HANDLE;
@@ -85,6 +86,12 @@ namespace spud::gpu::backends::vulkan {
         {
             vkGetPhysicalDeviceProperties(m_physicalDevice, &m_properties);
             vkGetPhysicalDeviceFeatures(m_physicalDevice, &m_features);
+        }
+
+        // Create the SpudGPU resource pool object
+        {
+            std::shared_ptr<gpu_resource_pool_vulkan> spudGpuVulkanPool = std::make_shared<gpu_resource_pool_vulkan>();
+            m_resource_pool = std::static_pointer_cast<gpu_resource_pool_vulkan>(spudGpuVulkanPool);
         }
     }
 
