@@ -51,8 +51,8 @@ namespace spud::gpu::backends::vulkan {
 
 			surfaceFormat = choose_surface_format(get_available_formats());
 			VkPresentModeKHR presentMode = choose_present_mode(get_available_present_modes());
-			this->m_extent = choose_extent(capabilities, width, height);
-			this->m_format = surfaceFormat.format;
+			this->extent = choose_extent(capabilities, width, height);
+			this->format = surfaceFormat.format;
 		}
 
 		// Determine image count
