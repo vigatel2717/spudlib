@@ -27,22 +27,24 @@ namespace spud::gpu::backends::vulkan {
 		uint32_t acquire_next_image() override;
 		void present() override;
 
-		uint32_t get_width() const override;
-		uint32_t get_height() const override;
+		[[nodiscard]] uint32_t get_width() const override;
+		[[nodiscard]] uint32_t get_height() const override;
 
-		uint64_t get_native_swapchain_object() const override { return reinterpret_cast<uint64_t>(m_swapchain); }
+		[[nodiscard]] uint64_t get_native_swapchain_object() const override { return reinterpret_cast<uint64_t>(m_swapchain); }
 
 	private:
 		void create_swapchain(
 			const uint32_t &width,
-			const uint32_t &height);
+			const uint32_t &height,
+			VkSwapchainKHR oldHandle = nullptr);
 		void create_image_views();
 
-		std::vector<VkSurfaceFormatKHR> get_available_formats();
-		std::vector<VkPresentModeKHR> get_available_present_modes();
-		VkSurfaceFormatKHR choose_surface_format(const std::vector<VkSurfaceFormatKHR>& availableFormats);
-		VkPresentModeKHR choose_present_mode(const std::vector<VkPresentModeKHR>& availablePresentModes);
-		VkExtent2D choose_extent(const VkSurfaceCapabilitiesKHR& capabilities, uint32_t width, uint32_t height);
+		void cleanup_internal();
+		std::vector<VkSurfaceFormatKHR> get_available_formats() const;
+		std::vector<VkPresentModeKHR> get_available_present_modes() const;
+		static VkSurfaceFormatKHR choose_surface_format(const std::vector<VkSurfaceFormatKHR>& availableFormats);
+		static VkPresentModeKHR choose_present_mode(const std::vector<VkPresentModeKHR>& availablePresentModes);
+		static VkExtent2D choose_extent(const VkSurfaceCapabilitiesKHR& capabilities, uint32_t width, uint32_t height);
 
 		VkDevice m_device;
 		VkPhysicalDevice m_physicalDevice;

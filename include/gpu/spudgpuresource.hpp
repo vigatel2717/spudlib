@@ -7,6 +7,8 @@
 
 #include <cstdint>
 #include <memory>
+
+#include "spudgpucontext.hpp"
 #include "spudgpuformats.hpp"
 
 namespace spud::gpu {
@@ -18,13 +20,13 @@ namespace spud::gpu {
         SPUDGPU_BUFFER_USAGE_STORAGE = 4
     };
 
+    class gpu_buffer_view;
+
     struct gpu_buffer_desc {
         SPUDGPU_BUFFER_USAGE usage;
         uint64_t gpuAddressLocation;
         uint64_t size;
     };
-
-    class gpu_buffer_view;
 
     class gpu_buffer {
     protected:
@@ -39,6 +41,17 @@ namespace spud::gpu {
         virtual ~gpu_buffer() = default;
 
         [[nodiscard]] virtual gpu_buffer_desc get_desc() const = 0;
+
+        [[nodiscard]] virtual std::shared_ptr<gpu_device> get_gpu_device() const = 0;
+
+        [[nodiscard]] virtual uint64_t get_native_api_object() const = 0;
+    };
+
+    struct gpu_buffer_view_desc {
+        std::shared_ptr<gpu_buffer> parentBuffer;
+        uint64_t offsetFromParentBuffer;
+        uint64_t stride;
+        uint64_t size;
     };
 
     // An abstraction of a buffer view in Vulkan, Metal, and D3D12
@@ -48,13 +61,7 @@ namespace spud::gpu {
 
         virtual ~gpu_buffer_view() = default;
 
-        [[nodiscard]] virtual std::shared_ptr<gpu_buffer> get_buffer() const = 0;
-
-        [[nodiscard]] virtual uint64_t get_offset() const = 0;
-
-        [[nodiscard]] virtual uint64_t get_stride() const = 0;
-
-        [[nodiscard]] virtual uint64_t get_size() const = 0;
+        [[nodiscard]] virtual gpu_buffer_view_desc get_desc() const = 0;
 
         // D3D12_VERTEX_BUFFER_VIEW in D3D12
         [[nodiscard]] virtual uint64_t get_native_api_object() const = 0;
@@ -80,6 +87,31 @@ namespace spud::gpu {
         virtual ~gpu_image() = default;
 
         [[nodiscard]] virtual gpu_image_desc get_desc() const = 0;
+
+        [[nodiscard]] virtual std::shared_ptr<gpu_device> get_gpu_device() const = 0;
+
+        [[nodiscard]] virtual uint64_t get_native_api_object() const = 0;
+    };
+
+    struct gpu_image_view_desc {
+        std::shared_ptr<gpu_image> parentImage;
+        // TODO: Swizzle indentities? Learn about that
+        struct gpu_image_view_desc_subresource_range {
+            uint64_t aspectMask;
+            uint64_t baseMipLevel;
+            uint64_t mipLevelCount;
+            uint64_t baseArrayLayer;
+            uint64_t arrayLayerCount;
+        } subresource_range;
+    };
+
+    class gpu_image_view {
+    public:
+        gpu_image_view() = default;
+
+        virtual ~gpu_image_view() = default;
+
+        [[nodiscard]] virtual gpu_image_view_desc get_desc() const = 0;
     };
 
     class gpu_resource_pool {

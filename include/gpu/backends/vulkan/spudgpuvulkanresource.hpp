@@ -9,6 +9,8 @@
 #include "gpu/backends/vulkan/spudgpuvulkandef.hpp"
 
 namespace spud::gpu::backends::vulkan {
+    class gpu_device_vulkan;
+
     class gpu_buffer_vulkan : public gpu_buffer {
     protected:
         std::shared_ptr<gpu_buffer_view> create_view(
@@ -17,47 +19,95 @@ namespace spud::gpu::backends::vulkan {
             const uint64_t &size) const override;
 
     public:
-        gpu_buffer_vulkan();
+        gpu_buffer_vulkan(
+            const std::shared_ptr<gpu_device_vulkan> &device,
+            const gpu_buffer_desc &desc,
+            VkMemoryPropertyFlags properties);
 
         ~gpu_buffer_vulkan() override;
 
         [[nodiscard]] inline gpu_buffer_desc get_desc() const override { return m_desc; }
 
+        [[nodiscard]] std::shared_ptr<gpu_device> get_gpu_device() const override {
+            return std::reinterpret_pointer_cast<gpu_device>(m_device);
+        }
+
+        [[nodiscard]] uint64_t get_native_api_object() const override { return reinterpret_cast<uint64_t>(m_buffer); }
+
     private:
+        static uint32_t findMemoryType(
+            VkPhysicalDevice physicalDevice,
+            uint32_t typeFilter,
+            VkMemoryPropertyFlags properties);
+
+        VkBuffer m_buffer;
+        VkDeviceMemory m_memory;
+        VkMemoryPropertyFlags m_properties;
+
         gpu_buffer_desc m_desc;
+        std::shared_ptr<gpu_device_vulkan> m_device;
     };
 
     class gpu_buffer_view_vulkan : public gpu_buffer_view {
     public:
-        gpu_buffer_view_vulkan();
+        gpu_buffer_view_vulkan(
+            const std::shared_ptr<gpu_buffer_vulkan> &parentBuffer,
+            const gpu_buffer_view_desc &desc);
 
         ~gpu_buffer_view_vulkan() override;
 
-        [[nodiscard]] std::shared_ptr<gpu_buffer> get_buffer() const override;
-
-        [[nodiscard]] uint64_t get_offset() const override { return m_Offset; }
-        [[nodiscard]] uint64_t get_stride() const override { return m_Stride; }
-        [[nodiscard]] uint64_t get_size() const override { return m_Size; }
+        [[nodiscard]] gpu_buffer_view_desc get_desc() const override { return m_desc; }
 
         [[nodiscard]] uint64_t get_native_api_object() const override { return 0; }
 
     private:
-        std::shared_ptr<gpu_buffer_vulkan> m_pBufferVulkan;
-        uint64_t m_Offset, m_Stride, m_Size;
-
+        std::shared_ptr<gpu_buffer_vulkan> m_pParentBuffer;
+        gpu_buffer_view_desc m_desc;
     };
 
 
     class gpu_image_vulkan : public gpu_image {
     public:
-        gpu_image_vulkan();
+        gpu_image_vulkan(
+            const std::shared_ptr<gpu_device_vulkan> &device,
+            const gpu_image_desc &desc);
 
         ~gpu_image_vulkan() override;
 
         [[nodiscard]] inline gpu_image_desc get_desc() const override { return m_desc; }
 
+        [[nodiscard]] std::shared_ptr<gpu_device> get_gpu_device() const override {
+            return std::reinterpret_pointer_cast<gpu_device>(m_device);
+        }
+
+        [[nodiscard]] uint64_t get_native_api_object() const override { return reinterpret_cast<uint64_t>(m_image); }
+
     private:
+        static uint32_t find_memory_type(
+            uint32_t typeFilter,
+            VkMemoryPropertyFlags properties,
+            VkPhysicalDevice physicalDevice);
+
         gpu_image_desc m_desc;
+        VkImage m_image;
+        VkFormat m_vk_format;
+        VkDeviceMemory m_memory;
+        std::shared_ptr<gpu_device_vulkan> m_device;
+    };
+
+    class gpu_image_view_vulkan : public gpu_image_view {
+        public:
+        gpu_image_view_vulkan();
+        ~gpu_image_view_vulkan() override;
+
+        [[nodiscard]] gpu_image_view_desc get_desc() const override { return m_desc; }
+
+        [[nodiscard]] uint64_t get_native_api_object() const override { return 0; }
+
+    private:
+        gpu_image_view_desc m_desc;
+        VkImageView m_view;
+        std::shared_ptr<gpu_image_vulkan> m_device;
     };
 
     class gpu_resource_pool_vulkan : public gpu_resource_pool {

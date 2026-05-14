@@ -41,6 +41,9 @@ namespace spud::gpu::backends::vulkan {
 
 		void destroy() override;
 
+		VkDevice get_vkdevice_native() const { return m_device; }
+		VkPhysicalDevice get_vkphysicaldevice_native() const { return m_physicalDevice; }
+
 	private:
 		std::shared_ptr<gpu_resource_pool> m_resource_pool;
 		std::vector<std::shared_ptr<command_queue> > m_command_queues;
