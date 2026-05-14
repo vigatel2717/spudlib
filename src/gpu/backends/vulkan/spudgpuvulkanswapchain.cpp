@@ -3,6 +3,7 @@
 //
 
 #include "gpu/backends/vulkan/spudgpuvulkanswapchain.hpp"
+#include <algorithm>
 
 namespace spud::gpu::backends::vulkan {
 	swap_chain_vulkan::swap_chain_vulkan(
@@ -41,6 +42,67 @@ namespace spud::gpu::backends::vulkan {
 		return 0;
 	}
 
+	std::vector<VkSurfaceFormatKHR> swap_chain_vulkan::get_available_formats() {
+		uint32_t formatCount;
+		vkGetPhysicalDeviceSurfaceFormatsKHR(m_physicalDevice, m_surface, &formatCount, nullptr);
+
+		std::vector<VkSurfaceFormatKHR> formats(formatCount);
+		vkGetPhysicalDeviceSurfaceFormatsKHR(m_physicalDevice, m_surface, &formatCount, formats.data());
+		return formats;
+	}
+	std::vector<VkPresentModeKHR> swap_chain_vulkan::get_available_present_modes() {
+		uint32_t presentModeCount;
+		vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &presentModeCount, nullptr);
+
+		std::vector<VkPresentModeKHR> presentModes(presentModeCount);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &presentModeCount, presentModes.data());
+		return presentModes;
+	}
+	VkSurfaceFormatKHR swap_chain_vulkan::choose_surface_format(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
+		for (const auto& availableFormat : availableFormats) {
+			// We prefer SRGB for better color accuracy
+			if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
+				availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+				return availableFormat;
+				}
+		}
+
+		// If our preferred isn't found, just return the first one available
+		return availableFormats[0];
+	}
+	VkPresentModeKHR swap_chain_vulkan::choose_present_mode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
+		for (const auto& availablePresentMode : availablePresentModes) {
+			// "Mailbox" is the gold standard (Triple Buffering)
+			// It avoids tearing while maintaining low latency.
+			if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
+				return availablePresentMode;
+			}
+		}
+
+		// FIFO is guaranteed to be available by the Vulkan spec (Standard V-Sync)
+		return VK_PRESENT_MODE_FIFO_KHR;
+	}
+	VkExtent2D swap_chain_vulkan::choose_extent(const VkSurfaceCapabilitiesKHR& capabilities, uint32_t width, uint32_t height) {
+		// If currentExtent is NOT set to the max value of uint32_t,
+		// it means the surface size is determined by the window manager.
+		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+			return capabilities.currentExtent;
+		} else {
+			// Otherwise, we manually clamp our window dimensions to the
+			// min/max supported by the GPU surface.
+			VkExtent2D actualExtent = { width, height };
+
+			actualExtent.width = std::clamp(actualExtent.width,
+				capabilities.minImageExtent.width,
+				capabilities.maxImageExtent.width);
+
+			actualExtent.height = std::clamp(actualExtent.height,
+				capabilities.minImageExtent.height,
+				capabilities.maxImageExtent.height);
+
+			return actualExtent;
+		}
+	}
 
 	void swap_chain_vulkan::create_swapchain(const uint32_t &width, const uint32_t &height) {
 		// Query capabilities

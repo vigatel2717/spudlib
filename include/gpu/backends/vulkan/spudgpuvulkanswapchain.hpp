@@ -38,6 +38,8 @@ namespace spud::gpu::backends::vulkan {
 			const uint32_t &height);
 		void create_image_views();
 
+		std::vector<VkSurfaceFormatKHR> get_available_formats();
+		std::vector<VkPresentModeKHR> get_available_present_modes();
 		VkSurfaceFormatKHR choose_surface_format(const std::vector<VkSurfaceFormatKHR>& availableFormats);
 		VkPresentModeKHR choose_present_mode(const std::vector<VkPresentModeKHR>& availablePresentModes);
 		VkExtent2D choose_extent(const VkSurfaceCapabilitiesKHR& capabilities, uint32_t width, uint32_t height);
