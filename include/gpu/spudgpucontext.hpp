@@ -5,16 +5,17 @@
 #ifndef SPUDLIB_SPUDGPUCONTEXT_HPP
 #define SPUDLIB_SPUDGPUCONTEXT_HPP
 
-#include "spudgpuresource.hpp"
-
 #include <vector>
 #include <memory>
 #include <string>
 #include <unordered_map>
 
+
+/*
 namespace spud::gpu {
     class command_buffer;
     class command_allocator;
+    class gpu_resource_pool;
 
     enum SPUDGPU_COMMAND_QUEUE_TYPE {
         SPUDGPU_COMMAND_QUEUE_TYPE_NONE = 0,
@@ -79,8 +80,11 @@ namespace spud::gpu {
 
         virtual ~gpu_device() = default;
 
-        // @return The resource pool object used to create resources in the graphics card.
-        [[nodiscard]] virtual std::shared_ptr<gpu_resource_pool> get_resource_pool() const = 0;
+        // @return The default resource pool object used to create resources in the graphics card.
+        [[nodiscard]] virtual std::shared_ptr<gpu_resource_pool> get_default_resource_pool() const = 0;
+
+        // @return A new resource pool linked to this device.
+        [[nodiscard]] virtual std::shared_ptr<gpu_resource_pool> create_resource_pool() const = 0;
 
         [[nodiscard]] virtual std::shared_ptr<command_allocator> create_command_allocator() const = 0;
 
@@ -94,6 +98,6 @@ namespace spud::gpu {
 
     // Get a list of all the GPU devices on this computer.
     const std::vector<std::shared_ptr<gpu_device> > get_gpu_devices();
-}
+}*/
 
 #endif //SPUDLIB_SPUDGPUCONTEXT_HPP

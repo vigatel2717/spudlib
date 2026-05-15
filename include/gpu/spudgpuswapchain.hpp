@@ -6,6 +6,7 @@
 #define SPUDLIB_SPUDGPUSWAPCHAIN_HPP
 #include <cstdint>
 
+/*
 namespace spud::gpu {
 	class swap_chain {
 	public:
@@ -28,6 +29,6 @@ namespace spud::gpu {
 		// Gets the native API object.
 		[[nodiscard]] virtual uint64_t get_native_swapchain_object() const = 0;
 	};
-}
+} */
 
 #endif //SPUDLIB_SPUDGPUSWAPCHAIN_HPP

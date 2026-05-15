@@ -8,6 +8,7 @@
 #include <vector>
 #include <memory>
 
+/*
 namespace spud::gpu {
     // Shader type of a gpu_shader.
     enum SPUDGPU_SHADER_TYPE {
@@ -64,5 +65,6 @@ namespace spud::gpu {
 
     void init(int _cpp_par_);
 }
+*/
 
 #endif //SPUDLIB_SPUDGPUSHADER_HPP

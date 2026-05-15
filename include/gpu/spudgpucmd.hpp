@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 
+/*
 namespace spud::gpu {
     class gpu_buffer_view;
 
@@ -88,7 +89,7 @@ namespace spud::gpu {
 
         // Draw instanced
         // Draw call
-        virtual void draw_isntanced(
+        virtual void draw_instanced(
             const uint32_t &vertexCountPerInstance,
             const uint32_t &instanceCount,
             const uint32_t &startVertexLocation,
@@ -174,6 +175,6 @@ namespace spud::gpu {
 
         virtual void reset() = 0;
     };
-}
+}*/
 
 #endif //SPUDLIB_SPUDGPUCMD_HPP

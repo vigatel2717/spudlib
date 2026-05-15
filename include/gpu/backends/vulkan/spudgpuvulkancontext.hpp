@@ -5,8 +5,51 @@
 #ifndef SPUDLIB_SPUDGPUVULKANCONTEXT_HPP
 #define SPUDLIB_SPUDGPUVULKANCONTEXT_HPP
 
+#include "spudgpu.hpp"
 #include "gpu/spudgpucontext.hpp"
 
+namespace spud::gpu::backends::vulkan {
+	struct gpu_device_vulkan {
+		VkInstance instance = VK_NULL_HANDLE;
+		VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+		VkDevice logical_device = VK_NULL_HANDLE;
+	};
+
+	struct gpu_command_queue {
+		VkQueue queue = VK_NULL_HANDLE;
+	};
+
+	struct gpu_swap_chain_vulkan {
+		VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+	};
+
+	struct gpu_buffer_vulkan {
+		gpu_buffer_desc desc;
+		gpu_device_vulkan *pDevice = nullptr;
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+	};
+
+	struct gpu_buffer_view_vulkan {
+		gpu_buffer_view_desc desc;
+		VkBufferView buffer_view = VK_NULL_HANDLE;
+	};
+
+	struct gpu_image_vulkan {
+		gpu_image_desc desc;
+		gpu_device_vulkan *pDevice = nullptr;
+		VkImage image = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		VkFormat format = VK_FORMAT_UNDEFINED;
+	};
+
+	struct gpu_image_view_vulkan {
+		gpu_image_view_desc desc;
+		VkImageView view = VK_NULL_HANDLE;
+	};
+}
+
+/*
 namespace spud::gpu::backends::vulkan {
 	class command_queue_vulkan : public command_queue {
 	public:
@@ -33,7 +76,8 @@ namespace spud::gpu::backends::vulkan {
 
 		void initialize_from_physical_device_impl(VkPhysicalDevice physicalDevice);
 
-		[[nodiscard]] std::shared_ptr<gpu_resource_pool> get_resource_pool() const override { return m_resource_pool; }
+		[[nodiscard]] std::shared_ptr<gpu_resource_pool> get_default_resource_pool() const override { return m_resource_pool; }
+		[[nodiscard]] std::shared_ptr<gpu_resource_pool> create_resource_pool() const override { return nullptr; }
 
 		[[nodiscard]] std::shared_ptr<command_allocator> create_command_allocator() const override;
 
@@ -63,5 +107,6 @@ namespace spud::gpu::backends::vulkan {
 
 	void terminate_devices_vulkan();
 }
+*/
 
 #endif //SPUDLIB_SPUDGPUVULKANCONTEXT_HPP

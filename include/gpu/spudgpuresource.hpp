@@ -11,6 +11,8 @@
 #include "spudgpucontext.hpp"
 #include "spudgpuformats.hpp"
 
+
+/*
 namespace spud::gpu {
     enum SPUDGPU_BUFFER_USAGE {
         SPUDGPU_BUFFER_USAGE_NONE = 0,
@@ -131,6 +133,6 @@ namespace spud::gpu {
 
         virtual void free(const std::shared_ptr<gpu_image> &image) = 0;
     };
-}
+}*/
 
 #endif //SPUDLIB_SPUDGPURESOURCE_HPP

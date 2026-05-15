@@ -8,6 +8,7 @@
 #include "gpu/spudgpuswapchain.hpp"
 #include "spudgpuvulkandef.hpp"
 
+/*
 namespace spud::gpu::backends::vulkan {
 	class swap_chain_vulkan : public swap_chain {
 	public:
@@ -57,5 +58,6 @@ namespace spud::gpu::backends::vulkan {
 		std::vector<VkImageView> m_swapchain_image_views;
 	};
 }
+*/
 
 #endif //SPUDLIB_SPUDGPUVULKANSWAPCHAIN_HPP

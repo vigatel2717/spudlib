@@ -8,6 +8,7 @@
 #include "gpu/spudgpuresource.hpp"
 #include "gpu/backends/vulkan/spudgpuvulkandef.hpp"
 
+/*
 namespace spud::gpu::backends::vulkan {
     class gpu_device_vulkan;
 
@@ -102,7 +103,7 @@ namespace spud::gpu::backends::vulkan {
 
         [[nodiscard]] gpu_image_view_desc get_desc() const override { return m_desc; }
 
-        [[nodiscard]] uint64_t get_native_api_object() const override { return 0; }
+        [[nodiscard]] uint64_t get_native_api_object() const { return 0; }
 
     private:
         gpu_image_view_desc m_desc;
@@ -112,7 +113,7 @@ namespace spud::gpu::backends::vulkan {
 
     class gpu_resource_pool_vulkan : public gpu_resource_pool {
     public:
-        gpu_resource_pool_vulkan();
+        gpu_resource_pool_vulkan(const std::shared_ptr<gpu_device_vulkan> &device);
 
         ~gpu_resource_pool_vulkan() override;
 
@@ -125,7 +126,19 @@ namespace spud::gpu::backends::vulkan {
         void free(const std::shared_ptr<gpu_buffer> &buffer) override;
 
         void free(const std::shared_ptr<gpu_image> &image) override;
+
+    private:
+        static uint32_t find_memory_type(
+            VkPhysicalDevice phys_device,
+            uint32_t type_filter,
+            VkMemoryPropertyFlags properties);
+
+        std::shared_ptr<gpu_device_vulkan> m_device;
+        VkDeviceMemory m_page_memory;
+        uint64_t m_page_size, m_current_offset;
+        uint32_t m_memory_type_index;
     };
 }
+*/
 
 #endif //SPUDLIB_SPUDGPUVULKANRESOURCE_HPP

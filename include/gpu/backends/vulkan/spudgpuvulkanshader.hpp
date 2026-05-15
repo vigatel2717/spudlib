@@ -7,6 +7,7 @@
 
 #include "gpu/spudgpushader.hpp"
 
+/*
 namespace spud::gpu::backends::vulkan {
     class gpu_shader_vulkan : public gpu_shader {
     public:
@@ -33,6 +34,6 @@ namespace spud::gpu::backends::vulkan {
     private:
         std::vector<std::shared_ptr<gpu_shader> > m_shaders;
     };
-}
+}*/
 
 #endif //SPUDLIB_SPUDGPUVULKANSHADER_HPP

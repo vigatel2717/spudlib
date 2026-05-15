@@ -3,11 +3,12 @@ project(spudlib)
 
 set(CMAKE_CXX_STANDARD 26)
 
+if (CMAKE_BUILD_TYPE MATCHES Debug)
+    add_definitions(-D_DEBUG)
+endif()
+
 add_library(spudlib STATIC
-        include/library.h
-        src/library.cpp
-        include/spudgpu.hpp
-        include/spudfiles.hpp
+        include/spudfiles.h
         include/gpu/spudgpucmd.hpp
         include/gpu/spudgpucontext.hpp
         include/gpu/spudgpuresource.hpp
@@ -26,6 +27,7 @@ add_library(spudlib STATIC
         include/gpu/spudgpuswapchain.hpp
         include/gpu/backends/vulkan/spudgpuvulkanswapchain.hpp
         src/gpu/backends/vulkan/spudgpuvulkanswapchain.cpp
+        include/spudgpu.h
 )
 
 target_include_directories(spudlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
