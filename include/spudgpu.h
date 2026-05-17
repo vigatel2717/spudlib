@@ -313,6 +313,7 @@ SPUDGPU_FORMAT spudgpu_format_from_string(const char *fmt_str) {
     return SPUDGPU_FORMAT_UNKNOWN;
 }
 
+typedef struct spudgpu_instance_t *spudgpu_instance;
 typedef struct spudgpu_device_t *spudgpu_device;
 typedef struct spudgpu_resource_pool_t *spudgpu_resource_pool;
 typedef struct spudgpu_buffer_t *spudgpu_buffer;
@@ -360,11 +361,11 @@ enum {
  * @param[in] application_version Packed 32-bit integer representing the application version.
  * @param[in] engine_name         Null-terminated string containing the custom game/rendering engine name.
  * @param[in] engine_version      Packed 32-bit integer representing the engine version.
- * * @return true if initialization succeeded and the hardware driver was successfully hooked.
- * @return false if the requested API is unsupported, or driver initialization failed.
+ * * @return a new instance of SpudGPU if successful.
+ * @return NULL if the requested API is unsupported, or driver initialization failed.
  * * @note Must be called before invoking any other SpudGPU API function.
  */
-bool spudgpu_init(
+spudgpu_instance spudgpu_init(
     SPUDGPU_NATIVE_API native_api,
     const char *application_name,
     uint32_t application_version,
@@ -372,13 +373,14 @@ bool spudgpu_init(
     uint32_t engine_version);
 
 /**
- * @brief Shuts down the SpudGPU subsystem.
+ * @brief Shuts down the SpudGPU instance.
  * * Disposes of all internal runtime states, destroys active backend contexts,
  * and releases hooks into the graphics hardware.
+ * * @param[in] instance The SpudGPU instance of which to be terminated.
  * * @warning Calling this while resources (like buffers, textures, or pipelines)
  * are still active will result in undefined behavior or memory leaks.
  */
-void spudgpu_terminate();
+void spudgpu_terminate(spudgpu_instance instance);
 
 /**
  * @brief A container structure holding a list of discovered physical GPUs.
@@ -391,19 +393,21 @@ typedef struct SPUDGPU_DEVICE_LIST {
 } SPUDGPU_DEVICE_LIST;
 
 /**
- * @brief SpudGPU stores an enumeration of the physical graphics devices available on the host machine.
+ * @brief Retreive an enumeration of the physical graphics devices available on the host machine.
+ * * @param[in] instance The SpudGPU instance of which to enumerate devices through.
  * * @return SPUDGPU_DEVICE_LIST A structure containing the array pointer and size
  * of all discovered hardware devices. Returns a count of 0 if no
  * compatible hardware is found.
  */
-SPUDGPU_DEVICE_LIST spudgpu_get_devices();
+SPUDGPU_DEVICE_LIST spudgpu_enumerate_devices(spudgpu_instance instance);
 
 /**
- * @brief Retrieves the active graphics API backend.
- * * @return SPUDGPU_API The enum value representing the currently active backend.
- * Returns `SPUDGPU_API_NONE` if the system has not been initialized.
+ * @brief Retrieves the active graphics API backend for the SpudGPU instance.
+ * * @param[in] instance The SpudGPU instance of which to get GPU API.
+ * * @return SPUDGPU_API The enum value representing the active backend.
+ * Returns `SPUDGPU_API_NONE` if instance is NULL.
  */
-SPUDGPU_NATIVE_API spudgpu_get_native_gpu_api();
+SPUDGPU_NATIVE_API spudgpu_get_native_gpu_api(spudgpu_instance instance);
 
 
 /*
@@ -826,7 +830,7 @@ typedef struct SPUDGPU_VIEWPORT {
 void spudgpu_set_viewports(
     spudgpu_command_list cmd,
     uint32_t first_viewport,
-    uint32_t viewport_vount,
+    uint32_t viewport_count,
     const SPUDGPU_VIEWPORT *viewports);
 
 /**

@@ -8,6 +8,7 @@
 #include "spudgpu.hpp"
 #include "gpu/spudgpucontext.hpp"
 
+/*
 namespace spud::gpu::backends::vulkan {
 	struct gpu_device_vulkan {
 		VkInstance instance = VK_NULL_HANDLE;
@@ -48,6 +49,7 @@ namespace spud::gpu::backends::vulkan {
 		VkImageView view = VK_NULL_HANDLE;
 	};
 }
+*/
 
 /*
 namespace spud::gpu::backends::vulkan {

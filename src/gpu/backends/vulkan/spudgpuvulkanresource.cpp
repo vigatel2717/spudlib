@@ -3,11 +3,10 @@
 
 #if SPUDGPU_COMPILE_VULKAN_API
 
-#include "spudgpu.hpp"
-#include "gpu/backends/vulkan/spudgpuvulkancontext.hpp"
-#include "gpu/backends/vulkan/spudgpuvulkandef.hpp"
+#include <vulkan/vulkan.h>
+#include <spudgpu.h>
 
-namespace spud::gpu {
+namespace spud::gpu::backends::vulkan {
     uint32_t ___find_memory_type_internal(
         VkPhysicalDevice physicalDevice,
         uint32_t typeFilter,
@@ -53,6 +52,105 @@ namespace spud::gpu {
             output |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
     }
 
+    struct spudgpu_device_vulkan;
+
+    struct spudgpu_buffer_vulkan {
+        spudgpu_buffer_desc _desc;
+        spudgpu_device_vulkan *_device;
+        VkBuffer _buffer;
+        VkDeviceMemory _memory;
+    };
+
+    struct spudgpu_buffer_view_vulkan {
+        spudgpu_buffer_view_desc _desc;
+        spudgpu_buffer_vulkan *_parent_buffer;
+        VkBufferView _buffer_view;
+    };
+}
+
+extern "C" {
+spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer_desc *desc) {
+    if (!desc || !device) return nullptr;
+
+    auto result = new spud::gpu::backends::vulkan::spudgpu_buffer_vulkan();
+
+    // Validate desc
+    {
+        /*if (desc.gpu_address_location == 0)
+            throw std::runtime_error(
+                "gpu_buffer_vulkan::gpu_buffer_vulkan: invalid GPU address location: " + std::to_string(
+                    desc.gpu_address_location));*/
+
+        if (desc->size == 0)
+            throw std::runtime_error(
+                "SpudGPU create_buffer: invalid size: " + std::to_string(desc.size));
+
+        if (desc->usage == 0)
+            throw std::runtime_error(
+                "SpudGPU create_buffer: invalid usage: GPU_BUFFER_USAGE_NONE");
+    }
+
+    auto spudgpuVkDevice=reinterpret_cast<spud::gpu::backends::vulkan::spudgpu_device_vulkan*>(device);
+
+    // Get native Vulkan device handles
+    auto vk_device = spudgpuVkDevice->logical_device;
+    auto vk_physical_device = spudgpuVkDevice->physical_device;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = desc.size;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    // Covert SPUDGPU_BUFFER_USAGE to native Vulkan usage
+    spud::gpu::backends::vulkan::___buffer_usage_flags_internal(desc.usage, bufferInfo.usage);
+
+    // Create buffer
+    if (vkCreateBuffer(vk_device, &bufferInfo, nullptr, &result->buffer) != VK_SUCCESS) {
+        throw std::runtime_error("SpudGPU Vulkan: failed to create buffer!");
+    }
+
+    // Allocate memory
+    {
+        // TODO: Vulkan Memory Property Flags
+        VkMemoryPropertyFlags properties = 0;
+       spud::gpu::backends::vulkan:: ___memory_property_flags_internal(desc.memory_flags, properties);
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(vk_device, result->buffer, &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = spud::gpu::backends::vulkan::___find_memory_type_internal(vk_physical_device, memRequirements.memoryTypeBits,
+                                                                 properties);
+
+        if (vkAllocateMemory(vk_device, &allocInfo, nullptr, &result->memory) != VK_SUCCESS) {
+            throw std::runtime_error("SpudGPU Vulkan: failed to allocate buffer memory!");
+        }
+
+        vkBindBufferMemory(vk_device, result->buffer, result->memory, 0);
+    }
+
+    // Retrieve the GPU Address point for gpu_buffer_desc
+    {
+        VkBufferDeviceAddressInfoKHR info{};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        info.buffer = result->buffer;
+        result->desc.gpu_address_location = vkGetBufferDeviceAddressKHR(vk_device, &info);
+    }
+
+    return reinterpret_cast<spudgpu_buffer>(result);
+}
+}
+
+/*
+#include "spudgpu.hpp"
+#include "gpu/backends/vulkan/spudgpuvulkancontext.hpp"
+#include "gpu/backends/vulkan/spudgpuvulkandef.hpp"
+
+namespace spud::gpu {
+
+
     gpu_buffer create_buffer(gpu_device device, const gpu_buffer_desc &desc) {
         backends::vulkan::gpu_buffer_vulkan *result = new backends::vulkan::gpu_buffer_vulkan();
         result->desc = desc;
@@ -65,35 +163,90 @@ namespace spud::gpu {
             /*if (desc.gpu_address_location == 0)
                 throw std::runtime_error(
                     "gpu_buffer_vulkan::gpu_buffer_vulkan: invalid GPU address location: " + std::to_string(
-                        desc.gpu_address_location));*/
+                        desc.gpu_address_location));
 
-            if (desc.size == 0)
-                throw std::runtime_error(
-                    "SpudGPU create_buffer: invalid size: " + std::to_string(desc.size));
+if
+(desc
+.
+size
+==
+0
+)
+throw
+std::runtime_error (
 
-            if (desc.usage == 0)
-                throw std::runtime_error(
-                    "SpudGPU create_buffer: invalid usage: GPU_BUFFER_USAGE_NONE");
-        }
+"SpudGPU create_buffer: invalid size: "
++
+std::to_string (desc
+.
+size
+)
+);
 
-        // Get native Vulkan device handles
-        auto vk_device = result->pDevice->logical_device;
-        auto vk_physical_device = result->pDevice->physical_device;
+if
+(desc
+.
+usage
+==
+0
+)
+throw
+std::runtime_error (
 
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = desc.size;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+"SpudGPU create_buffer: invalid usage: GPU_BUFFER_USAGE_NONE"
+);
+}
 
-        // Covert SPUDGPU_BUFFER_USAGE to native Vulkan usage
-        ___buffer_usage_flags_internal(desc.usage, bufferInfo.usage);
+// Get native Vulkan device handles
+auto vk_device = result->pDevice->logical_device;
+auto vk_physical_device = result->pDevice->physical_device;
 
-        // Create buffer
-        if (vkCreateBuffer(vk_device, &bufferInfo, nullptr, &result->buffer) != VK_SUCCESS) {
+VkBufferCreateInfo bufferInfo{};
+bufferInfo
+.
+sType= VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+bufferInfo
+.
+size= desc
+.
+size;
+bufferInfo
+.
+sharingMode= VK_SHARING_MODE_EXCLUSIVE;
+
+// Covert SPUDGPU_BUFFER_USAGE to native Vulkan usage
+___buffer_usage_flags_internal (desc
+.
+usage
+,
+bufferInfo
+.
+usage
+);
+
+// Create buffer
+if
+(vkCreateBuffer
+(vk_device
+,
+&
+bufferInfo
+,
+nullptr
+,
+&
+result
+->
+buffer
+)
+!=
+VK_SUCCESS
+)
+ {
             throw std::runtime_error("SpudGPU Vulkan: failed to create buffer!");
         }
 
-        // Allocate memory
+// Allocate memory
         {
             // TODO: Vulkan Memory Property Flags
             VkMemoryPropertyFlags properties = 0;
@@ -115,7 +268,7 @@ namespace spud::gpu {
             vkBindBufferMemory(vk_device, result->buffer, result->memory, 0);
         }
 
-        // Retrieve the GPU Address point for gpu_buffer_desc
+// Retrieve the GPU Address point for gpu_buffer_desc
         {
             VkBufferDeviceAddressInfoKHR info{};
             info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -123,109 +276,114 @@ namespace spud::gpu {
             result->desc.gpu_address_location = vkGetBufferDeviceAddressKHR(vk_device, &info);
         }
 
-        return reinterpret_cast<gpu_buffer>(result);
+return
+reinterpret_cast
+<
+gpu_buffer
+>
+(result);
+}
+
+gpu_buffer_desc get_buffer_desc(gpu_buffer buffer) {
+    return reinterpret_cast<backends::vulkan::gpu_buffer_vulkan *>(buffer)->desc;
+}
+
+void destroy_buffer(gpu_buffer buffer) {
+    backends::vulkan::gpu_buffer_vulkan *vkBuffer = reinterpret_cast<backends::vulkan::gpu_buffer_vulkan *>(buffer);
+    vkDestroyBuffer(vkBuffer->pDevice->logical_device, vkBuffer->buffer, nullptr);
+    vkFreeMemory(vkBuffer->pDevice->logical_device, vkBuffer->memory, nullptr);
+    delete vkBuffer;
+}
+
+gpu_buffer_view create_buffer_view(gpu_buffer buffer, const gpu_buffer_view_desc &desc) {
+    backends::vulkan::gpu_buffer_view_vulkan *result = new backends::vulkan::gpu_buffer_view_vulkan();
+
+    return reinterpret_cast<gpu_buffer_view>(result);
+}
+
+void destroy_buffer_view(gpu_buffer_view buffer_view) {
+    backends::vulkan::gpu_buffer_view_vulkan *vkBufferView = reinterpret_cast<
+        backends::vulkan::gpu_buffer_view_vulkan *>(buffer_view);
+    delete vkBufferView;
+}
+
+gpu_buffer_view_desc get_buffer_view_desc(gpu_buffer_view buffer_view) {
+    return reinterpret_cast<backends::vulkan::gpu_buffer_view_vulkan *>(buffer_view)->desc;
+}
+
+
+gpu_image create_image(gpu_device device, const gpu_image_desc &desc) {
+    backends::vulkan::gpu_image_vulkan *result = new backends::vulkan::gpu_image_vulkan();
+    result->desc = desc;
+    result->pDevice = reinterpret_cast<backends::vulkan::gpu_device_vulkan *>(device);
+    result->image = VK_NULL_HANDLE;
+    result->memory = VK_NULL_HANDLE;
+    result->format = backends::vulkan::convert_spud_to_vulkan_format(desc.format);
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.mipLevels = 1; // Or add to your desc
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = result->format;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    // Determine the Image Type and Width Height Depth
+    imageInfo.extent.width = static_cast<uint32_t>(desc.width);
+    imageInfo.extent.height = static_cast<uint32_t>(desc.height);
+    // TODO: GPU Image Usage Flags
+    /*
+    switch (desc.usage) {
+        case SPUDGPU_IMAGE_USAGE_TEXTURE3D:
+            imageInfo.imageType = VK_IMAGE_TYPE_3D;
+            imageInfo.extent.depth = static_cast<uint32_t>(desc.depth);
+            break;
+        case SPUDGPU_IMAGE_USAGE_TEXTURE2D:
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.extent.depth = 1;
+            break;
+        default:
+            throw std::runtime_error("Unsupported image usage: SPUDGPU_IMAGE_USAGE_NONE");
     }
 
-    gpu_buffer_desc get_buffer_desc(gpu_buffer buffer) {
-        return reinterpret_cast<backends::vulkan::gpu_buffer_vulkan *>(buffer)->desc;
+    // Tranfer for uploading data, Sampled for shaders
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+
+    if (vkCreateImage(result->pDevice->logical_device, &imageInfo, nullptr, &result->image) != VK_SUCCESS) {
+        throw std::runtime_error("SpudGPU Vulkan: Failed to create vulkan image!");
     }
 
-    void destroy_buffer(gpu_buffer buffer) {
-        backends::vulkan::gpu_buffer_vulkan *vkBuffer = reinterpret_cast<backends::vulkan::gpu_buffer_vulkan *>(buffer);
-        vkDestroyBuffer(vkBuffer->pDevice->logical_device, vkBuffer->buffer, nullptr);
-        vkFreeMemory(vkBuffer->pDevice->logical_device, vkBuffer->memory, nullptr);
-        delete vkBuffer;
-    }
+    // Create the Vulkan Memory
+    {
+        VkMemoryRequirements memRequirements;
+        vkGetImageMemoryRequirements(result->pDevice->logical_device, result->image, &memRequirements);
 
-    gpu_buffer_view create_buffer_view(gpu_buffer buffer, const gpu_buffer_view_desc &desc) {
-        backends::vulkan::gpu_buffer_view_vulkan *result = new backends::vulkan::gpu_buffer_view_vulkan();
-
-        return reinterpret_cast<gpu_buffer_view>(result);
-    }
-
-    void destroy_buffer_view(gpu_buffer_view buffer_view) {
-        backends::vulkan::gpu_buffer_view_vulkan *vkBufferView = reinterpret_cast<
-            backends::vulkan::gpu_buffer_view_vulkan *>(buffer_view);
-        delete vkBufferView;
-    }
-
-    gpu_buffer_view_desc get_buffer_view_desc(gpu_buffer_view buffer_view) {
-        return reinterpret_cast<backends::vulkan::gpu_buffer_view_vulkan *>(buffer_view)->desc;
-    }
-
-
-    gpu_image create_image(gpu_device device, const gpu_image_desc &desc) {
-        backends::vulkan::gpu_image_vulkan *result = new backends::vulkan::gpu_image_vulkan();
-        result->desc = desc;
-        result->pDevice = reinterpret_cast<backends::vulkan::gpu_device_vulkan *>(device);
-        result->image = VK_NULL_HANDLE;
-        result->memory = VK_NULL_HANDLE;
-        result->format = backends::vulkan::convert_spud_to_vulkan_format(desc.format);
-
-        VkImageCreateInfo imageInfo{};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.mipLevels = 1; // Or add to your desc
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = result->format;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        // Determine the Image Type and Width Height Depth
-        imageInfo.extent.width = static_cast<uint32_t>(desc.width);
-        imageInfo.extent.height = static_cast<uint32_t>(desc.height);
-        // TODO: GPU Image Usage Flags
-        /*
-        switch (desc.usage) {
-            case SPUDGPU_IMAGE_USAGE_TEXTURE3D:
-                imageInfo.imageType = VK_IMAGE_TYPE_3D;
-                imageInfo.extent.depth = static_cast<uint32_t>(desc.depth);
-                break;
-            case SPUDGPU_IMAGE_USAGE_TEXTURE2D:
-                imageInfo.imageType = VK_IMAGE_TYPE_2D;
-                imageInfo.extent.depth = 1;
-                break;
-            default:
-                throw std::runtime_error("Unsupported image usage: SPUDGPU_IMAGE_USAGE_NONE");
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = ___find_memory_type_internal(
+            result->pDevice->physical_device,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            memRequirements.memoryTypeBits);
+        if (vkAllocateMemory(result->pDevice->logical_device, &allocInfo, nullptr, &result->memory) != VK_SUCCESS) {
+            throw std::runtime_error("SpudGPU Vulkan: Failed to allocate image memory!");
         }
 
-        // Tranfer for uploading data, Sampled for shaders
-        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        */
-
-        if (vkCreateImage(result->pDevice->logical_device, &imageInfo, nullptr, &result->image) != VK_SUCCESS) {
-            throw std::runtime_error("SpudGPU Vulkan: Failed to create vulkan image!");
-        }
-
-        // Create the Vulkan Memory
-        {
-            VkMemoryRequirements memRequirements;
-            vkGetImageMemoryRequirements(result->pDevice->logical_device, result->image, &memRequirements);
-
-            VkMemoryAllocateInfo allocInfo{};
-            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            allocInfo.allocationSize = memRequirements.size;
-            allocInfo.memoryTypeIndex = ___find_memory_type_internal(
-                result->pDevice->physical_device,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                memRequirements.memoryTypeBits);
-            if (vkAllocateMemory(result->pDevice->logical_device, &allocInfo, nullptr, &result->memory) != VK_SUCCESS) {
-                throw std::runtime_error("SpudGPU Vulkan: Failed to allocate image memory!");
-            }
-
-            vkBindImageMemory(result->pDevice->logical_device, result->image, result->memory, 0);
-        }
-
-        // Retrieve the GPU Address point for gpu_buffer_desc
-        {
-            
-            VkBufferDeviceAddressInfoKHR info{};
-            info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-            info.buffer = result->buffer;
-            m_desc.gpuAddressLocation = vkGetBufferDeviceAddressKHR(vk_device, &info);
-        }
+        vkBindImageMemory(result->pDevice->logical_device, result->image, result->memory, 0);
     }
+
+    // Retrieve the GPU Address point for gpu_buffer_desc
+    {
+        VkBufferDeviceAddressInfoKHR info{};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        info.buffer = result->buffer;
+        m_desc.gpuAddressLocation = vkGetBufferDeviceAddressKHR(vk_device, &info);
+    }
+}
+
 }
 
 #endif
@@ -486,3 +644,5 @@ namespace spud::gpu::backends::vulkan {
     }
 }
 */
+
+#endif // SPUDGPU_COMPILE_VULKAN_API
