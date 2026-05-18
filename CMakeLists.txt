@@ -1,43 +1,33 @@
 cmake_minimum_required(VERSION 3.30)
 project(spudlib)
 
-set(CMAKE_CXX_STANDARD 26)
-
 if (CMAKE_BUILD_TYPE MATCHES Debug)
     add_definitions(-D_DEBUG)
-endif()
+endif ()
 
-add_library(spudlib STATIC
-        include/spudfiles.h
-        include/gpu/spudgpucmd.hpp
-        include/gpu/spudgpucontext.hpp
-        include/gpu/spudgpuresource.hpp
-        include/gpu/spudgpushader.hpp
-        include/gpu/spudgpuformats.hpp
-        src/gpu/spudgpuformats.cpp
-        src/gpu/spudgpucontext.cpp
-        src/spudlibcompile.cpp
-        include/gpu/backends/vulkan/spudgpuvulkancontext.hpp
-        src/gpu/backends/vulkan/spudgpuvulkancontext.cpp
-        include/gpu/backends/vulkan/spudgpuvulkanresource.hpp
-        include/gpu/backends/vulkan/spudgpuvulkanshader.hpp
-        src/gpu/backends/vulkan/spudgpuvulkanresource.cpp
-        src/gpu/backends/vulkan/spudgpuvulkanshader.cpp
-        include/gpu/backends/vulkan/spudgpuvulkandef.hpp
-        include/gpu/spudgpuswapchain.hpp
-        include/gpu/backends/vulkan/spudgpuvulkanswapchain.hpp
-        src/gpu/backends/vulkan/spudgpuvulkanswapchain.cpp
-        include/spudgpu.h
-)
-
-target_include_directories(spudlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
+# Target SpudGPU to be Vulkan if on Windows or Linux
 # Set the SpudLib compile macro flags based on platform
 if (WIN32 OR LINUX)
+    set(CMAKE_C_STANDARD 23)
+    add_library(spudlib STATIC
+            include/spudfiles.h
+            include/spudgpu.h
+            src/gpu/backends/vulkan/spudgpuvulkan.h
+            src/gpu/backends/vulkan/spudgpuvulkancontext.c
+            src/gpu/backends/vulkan/spudgpuvulkanbuffer.c
+            src/gpu/backends/vulkan/spudgpuvulkanshader.c
+            src/gpu/backends/vulkan/spudgpuvulkanswapchain.c
+            src/gpu/backends/vulkan/spudgpuvulkanimage.c
+    )
     target_compile_definitions(spudlib PUBLIC SPUDGPU_COMPILE_VULKAN_API=1)
+    # Target SpudGPU to be Metal if on Apple Silicon
 elseif (APPLE)
+    set(CMAKE_CXX_STANDARD 26)
     target_compile_definitions(spudlib PUBLIC SPUDGPU_COMPILE_METAL_API=1)
 endif ()
+
+
+target_include_directories(spudlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 
 # Vulkan stuff

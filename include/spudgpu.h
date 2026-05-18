@@ -145,19 +145,19 @@ enum {
     SPUDGPU_FORMAT_FORCE_UINT = -1 //0xffffffff
 };
 
+// Use the return value / 8 for byte size.
+// @return Pixel bit size according to the format.
+uint32_t spudgpu_format_bit_count(SPUDGPU_FORMAT fmt);
+
+/*
 struct spudgpu_format_map {
     const char *name;
     SPUDGPU_FORMAT format;
 };
 
-static constexpr struct spudgpu_format_map format_map[] = {
-    {"R32G32B32A32_FLOAT", SPUDGPU_FORMAT_R32G32B32A32_FLOAT},
-};
-
-// Use the return value / 8 for byte size.
-// @return Pixel bit size according to the format.
-uint32_t spudgpu_format_bit_count(const SPUDGPU_FORMAT &fmt);
-
+static const struct spudgpu_format_map format_map[] = {
+    {(const char *)"R32G32B32A32_FLOAT", SPUDGPU_FORMAT_R32G32B32A32_FLOAT},
+};*/
 // @return SPUDGPU_FORMAT according to string.
 // TODO: Optimize this function. Perhaps make a FormatMap and have this 'static const struct FormatMap FORMAT_TABLE[] = {'
 SPUDGPU_FORMAT spudgpu_format_from_string(const char *fmt_str) {
@@ -595,20 +595,29 @@ typedef struct spudgpu_buffer_view_desc {
 spudgpu_buffer_view spudgpu_create_buffer_view(spudgpu_buffer buffer, const spudgpu_buffer_view_desc *desc);
 
 /**
- * @brief Destroys a GPU buffer view.
- * * Frees the virtual view mapping context. Does **not** impact the lifecycle or data
- * retention of the underlying parent GPU buffer.
- * * @param[in] device The GPU device containing the parent GPU buffer.
- * @param[in] buffer The target GPU buffer view to destroy.
- */
-void spudgpu_destroy_buffer_view(spudgpu_device device, spudgpu_buffer_view buffer);
-
-/**
  * @brief Retrieves the immutable configuration descriptor of an active buffer view.
  * * @param[in] view The GPU buffer view to get the descriptor of.
  * @return spudgpu_buffer_view_desc A copy of the view descriptor structure.
  */
-spudgpu_buffer_view_desc get_buffer_view_desc(spudgpu_buffer_view view);
+spudgpu_buffer_view_desc spudgpu_get_buffer_view_desc(spudgpu_buffer_view view);
+
+/**
+ * @brief Destroys a GPU buffer view.
+ * * Frees the virtual view mapping context. Does **not** impact the lifecycle or data
+ * retention of the underlying parent GPU buffer.
+ * @param[in] buffer The target GPU buffer view to destroy.
+ */
+void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer);
+
+typedef uint32_t SPUDGPU_IMAGE_TYPE;
+
+enum {
+    SPUDGPU_IMAGE_TYPE_NONE = 0,
+    SPUDGPU_IMAGE_TYPE_1D = 1 << 0,
+    SPUDGPU_IMAGE_TYPE_2D = 1 << 1,
+    SPUDGPU_IMAGE_TYPE_3D = 1 << 2
+    //SPUDGPU_IMAGE_TYPE_CUBE = 1 << 3
+};
 
 /**
  * @brief Bitmask determining the type and capabilities of a GPU image object.
@@ -626,11 +635,13 @@ enum {
     /// No usage target specified. Uninitialized configuration state.
     SPUDGPU_IMAGE_USAGE_NONE = 0,
 
-    // Standard Texture2D used for Texture2D / Render Target.
-    SPUDGPU_IMAGE_USAGE_TEXTURE2D = 1 << 0,
+    SPUDGPU_IMAGE_USAGE_SAMPLED = 1 << 0,
 
-    // Standard Texture3D used for Texture3D / Voxel Grid.
-    SPUDGPU_IMAGE_USAGE_TEXTURE3D = 1 << 1
+    SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT = 1 << 1,
+    SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT = 1 << 2,
+    SPUDGPU_IMAGE_USAGE_STORAGE = 1 << 3,
+    SPUDGPU_IMAGE_USAGE_TRANSFER_SRC = 1 << 4,
+    SPUDGPU_IMAGE_USAGE_TRANSFER_DST = 1 << 5
 };
 
 ///@}
@@ -642,6 +653,8 @@ typedef struct spudgpu_image_desc {
     /// Bitmask configuration specifying texture layout type (2D, 3D, etc.).
     /// @see SPUDGPU_IMAGE_USAGE
     uint32_t usage;
+
+    uint32_t type;
 
     /// Bitmask configuration specifying VRAM residency rules.
     /// Typically set to `SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL` for performance.
@@ -682,7 +695,7 @@ typedef struct spudgpu_image_desc {
     uint32_t mip_levels;
 #if _DEBUG
     /// @brief A string identifier used for diagnostic tracking.
-    const char *debug_name = nullptr;
+    const char *debug_name;
 #endif
 } spudgpu_image_desc;
 
@@ -707,13 +720,26 @@ spudgpu_image_desc spudgpu_get_image_desc(spudgpu_image image);
 /**
  * @brief Safely deallocates a physical GPU image.
  * * Frees underlying driver resources and releases system/device memory allocations.
- * * @param[in] device The GPU device that originally allocated the resource.
+ * @param[in] device The GPU device that originally allocated this resource.
  * @param[in] image  The target GPU image to destroy.
  * * @warning Any active command streams, image views, descriptors, or render passes currently
  * binding or writing to this texture must finish execution on the GPU timeline before invocation.
  */
 void spudgpu_destroy_image(spudgpu_device device, spudgpu_image image);
 
+
+typedef uint32_t SPUDGPU_IMAGE_VIEW_TYPE;
+
+enum {
+    SPUDGPU_IMAGE_VIEW_TYPE_NONE = 0,
+    SPUDGPU_IMAGE_VIEW_TYPE_1D = 1 << 0,
+    SPUDGPU_IMAGE_VIEW_TYPE_2D = 1 << 1,
+    SPUDGPU_IMAGE_VIEW_TYPE_3D = 1 << 2,
+    SPUDGPU_IMAGE_VIEW_TYPE_CUBE = 1 << 3,
+    SPUDGPU_IMAGE_VIEW_TYPE_1D_ARRAY = 1 << 4,
+    SPUDGPU_IMAGE_VIEW_TYPE_2D_ARRAY = 1 << 5,
+    SPUDGPU_IMAGE_VIEW_TYPE_CUBE_ARRAY = 1 << 6
+};
 
 /**
  * @brief Defines a specific subsection (slice) of a multi-layered or mipmapped texture.
@@ -749,10 +775,14 @@ typedef struct spudgpu_image_view_desc {
     /// Handle to the physical GPU image containing the pixel data.
     spudgpu_image parent_image;
 
+    /// The image view type
+    /// @see SPUDGPU_IMAGE_VIEW_TYPE
+    uint32_t type;
+
     // TODO: Swizzle indentities? Learn about that
 
     /// The isolated subresource layer and mip boundary definitions for this view.
-    struct spudgpu_image_view_desc_subresource_range subresource_range;
+    spudgpu_image_view_desc_subresource_range subresource_range;
 } spudgpu_image_view_desc;
 
 /**
@@ -768,16 +798,16 @@ spudgpu_image_view spudgpu_create_image_view(spudgpu_image image, const spudgpu_
  * * This does not affect the pixel/texel data of the parent GPU image object,
  * as it only destroys this view into that GPU image object.
  * * @param[in] device The GPU device containing the GPU image.
- * @param[in] image  The GPU image view to destroy.
+ * @param[in] image_view  The GPU image view to destroy.
  */
-void spudgpu_destroy_image_view(spudgpu_device device, spudgpu_image_view image);
+void spudgpu_destroy_image_view(spudgpu_device device, spudgpu_image_view image_view);
 
 /**
  * @brief Retrieves the configuration descriptor of the GPU image view.
- * * @param[in] view The GPU image view handle to query.
+ * * @param[in] image_view The GPU image view handle to query.
  * @return spudgpu_image_view_desc A copy of the GPU image view configuration descriptor structure.
  */
-spudgpu_image_view_desc spudgpu_get_image_view_desc(spudgpu_image_view view);
+spudgpu_image_view_desc spudgpu_get_image_view_desc(spudgpu_image_view image_view);
 
 /**
  * @brief Begins recording graphics or compute infrastructure commands.
@@ -802,22 +832,22 @@ void spudgpu_end_command_list(spudgpu_command_list cmd);
  */
 typedef struct SPUDGPU_VIEWPORT {
     /// X-coordinate of the upper-left corner of the viewport region in pixels.
-    float x = 0.0f;
+    float x;
 
     /// Y-coordinate of the upper-left corner of the viewport region in pixels.
-    float y = 0.0f;
+    float y;
 
     /// Total width of the targeted viewport frame in pixels.
-    float width = 0.0f;
+    float width;
 
     /// Total height of the targeted viewport frame in pixels.
-    float height = 0.0f;
+    float height;
 
     /// Minimum depth boundary slice. Usually maps to `0.0f` (near clipping plane).
-    float minDepth = 0.0f;
+    float minDepth;
 
     /// Maximum depth boundary slice. Usually maps to `1.0f` (far clipping plane).
-    float maxDepth = 0.0f;
+    float maxDepth;
 } SPUDGPU_VIEWPORT;
 
 /**
@@ -840,16 +870,16 @@ void spudgpu_set_viewports(
  */
 typedef struct SPUDGPU_SCISSOR_RECT {
     /// Leftmost X coordinate of the scissor bounding box in pixels.
-    float x = 0.0f;
+    float x;
 
     /// Topmost Y coordinate of the scissor bounding box in pixels.
-    float y = 0.0f;
+    float y;
 
     /// Total horizontal layout width of the box in pixels.
-    float width = 0.0f;
+    float width;
 
     /// Total vertical layout height of the box in pixels.
-    float height = 0.0f;
+    float height;
 } SPUDGPU_SCISSOR_RECT;
 
 /**
@@ -1040,6 +1070,8 @@ spudgpu_swap_chain spudgpu_create_swap_chain(
  * Destroys a swap chain and frees its resources.
  */
 void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain);
+
+spudgpu_swap_chain_desc spudgpu_get_swap_chain_desc(spudgpu_swap_chain swap_chain);
 
 /**
  * Acquires the index of the next available backbuffer image.
