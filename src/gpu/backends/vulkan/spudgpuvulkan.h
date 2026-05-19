@@ -4,10 +4,17 @@
 
 #ifndef SPUDLIB_SPUDGPUVULKAN_H
 #define SPUDLIB_SPUDGPUVULKAN_H
+
+#include "spudgpu.h"
 #include <vulkan/vulkan_core.h>
 
 typedef struct spudgpu_instance_vulkan {
     VkInstance _instance_vk;
+    // Effectively this -- spudgpu_device_vulkan *_device_pointer_array[device_count];
+    // We need to keep track of newly allocated spudgpu_device's to prevent memory leaks.
+    // Eventually we will get rid of SPUDGPU_DEVICE_LIST.
+    uint64_t *_devices_pointer_array;
+    uint32_t _devices_count;
 } spudgpu_instance_vulkan;
 
 typedef struct spudgpu_device_vulkan {
@@ -17,6 +24,10 @@ typedef struct spudgpu_device_vulkan {
     VkPhysicalDeviceProperties _properties_vk;
     VkPhysicalDeviceFeatures _features_vk;
 } spudgpu_device_vulkan;
+
+typedef struct spudgpu_command_queue_vulkan {
+    VkQueue _queue_vk;
+} spudgpu_command_queue_vulkan;
 
 typedef struct spudgpu_buffer_vulkan {
     spudgpu_buffer_desc _desc;

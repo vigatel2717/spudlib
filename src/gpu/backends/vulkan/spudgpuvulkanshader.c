@@ -1,17 +1,7 @@
-#include "gpu/backends/vulkan/spudgpuvulkanshader.hpp"
 
-/*
-namespace spud::gpu::backends::vulkan {
-    gpu_shader_vulkan::gpu_shader_vulkan() : m_desc{} {
-    }
+#if SPUDGPU_COMPILE_VULKAN_API
 
-    gpu_shader_vulkan::~gpu_shader_vulkan() {
-    }
+#include "spudgpuvulkan.h"
+#include "spudgpu.h"
 
-    gpu_shader_pipeline_vulkan::gpu_shader_pipeline_vulkan()
-        : m_shaders{} {
-    }
-
-    gpu_shader_pipeline_vulkan::~gpu_shader_pipeline_vulkan() {
-    }
-}*/
+#endif // SPUDGPU_COMPILE_VULKAN_API

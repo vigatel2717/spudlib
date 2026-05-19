@@ -80,9 +80,6 @@ void spudgpuvulkan___image_view_type_internal(
 
 #if __cplusplus
 extern "C" {
-
-
-
 #endif
 
 spudgpu_image spudgpu_create_image(spudgpu_device device, const spudgpu_image_desc *desc) {
@@ -232,3 +229,5 @@ spudgpu_image_view_desc spudgpu_get_image_view_desc(spudgpu_image_view image_vie
 #if __cplusplus
 }
 #endif
+
+#endif // SPUDGPU_COMPILE_VULKAN_API

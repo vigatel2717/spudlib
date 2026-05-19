@@ -2,17 +2,15 @@
 // Created by Nathan on 5/13/2026.
 //
 
+#if SPUDGPU_COMPILE_VULKAN_API
+
 #include <stdlib.h>
-#include <c++/15/cmath>
 
 #include "spudgpuvulkan.h"
 #include "spudgpu.h"
 
 #if __cplusplus
 extern "C" {
-
-
-
 #endif
 
 void spudgpuvulkan___get_available_formats_internal(
@@ -82,14 +80,22 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 	// Query capabilities
 	VkSurfaceCapabilitiesKHR capabilities;
 	VkSurfaceFormatKHR surfaceFormat;
+	VkPresentModeKHR presentMode;
 	{
 		result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, pSwapChain->_surface_vk, &capabilities);
 		if (result != VK_SUCCESS) return result;
 
-		surfaceFormat =
-				spudgpuvulkan___choose_surface_format_internal(spudgpuvulkan___get_available_formats_internal());
-		VkPresentModeKHR presentMode = spudgpuvulkan___choose_present_mode_internal(
-			spudgpuvulkan___get_available_present_modes_internal());
+		VkSurfaceFormatKHR *pSurfaceFormats = nullptr;
+		uint32_t surfaceFormatCount = 0;
+		spudgpuvulkan___get_available_formats_internal(pSwapChain, &pSurfaceFormats, &surfaceFormatCount);
+		surfaceFormat = spudgpuvulkan___choose_surface_format_internal(pSurfaceFormats, surfaceFormatCount);
+		free(pSurfaceFormats);
+
+		VkPresentModeKHR *pPresentModes = nullptr;
+		uint32_t presentModeCount = 0;
+		spudgpuvulkan___get_available_present_modes_internal(pSwapChain, &pPresentModes, &presentModeCount);
+		presentMode = spudgpuvulkan___choose_present_mode_internal(pPresentModes, presentModeCount);
+		free(pPresentModes);
 		pSwapChain->_extent_vk = spudgpuvulkan___choose_extent_internal(capabilities, width, height);
 		pSwapChain->_format_vk = surfaceFormat.format;
 	}
@@ -110,6 +116,7 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 	createInfo.imageExtent = pSwapChain->_extent_vk;
 	createInfo.imageArrayLayers = 1;
 	createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	createInfo.presentMode = presentMode;
 
 	// Pass the old swap chain handle when this function is called inside of recreate()
 	// This is for Vulkan optimization
@@ -129,10 +136,11 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 	if (result != VK_SUCCESS) return result;
 
 	pSwapChain->_swapchain_images_vk = malloc(pSwapChain->_swapchain_images_count * sizeof(VkImage));
-	result = vkGetSwapchainImagesKHR(logicalDevice, pSwapChain->_swapchain_vk, &imageCount,
-	                                 pSwapChain->_swapchain_images_vk);
+	result = vkGetSwapchainImagesKHR(
+		logicalDevice, pSwapChain->_swapchain_vk, &imageCount,
+		pSwapChain->_swapchain_images_vk);
 	if (result != VK_SUCCESS) return result;
-	pSwapChain->_swapchain_images_count=imageCount;
+	pSwapChain->_swapchain_images_count = imageCount;
 
 	return result;
 }
@@ -209,7 +217,8 @@ spudgpu_swap_chain spudgpu_create_swap_chain(
 	if (!(device && desc)) return nullptr;
 
 	spudgpu_swap_chain_vulkan result = {0};
-	result._desc = desc;
+	memcpy(&result._desc, desc, sizeof(spudgpu_swap_chain_desc));
+	//result._desc = desc; Can't do this because of 'const'
 	VkResult r = spudgpuvulkan___create_swapchain_internal(&result, desc->width, desc->height, nullptr);
 	if (r != VK_SUCCESS) return nullptr;
 
@@ -225,7 +234,8 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 	if (!swap_chain) return;
 	spudgpu_swap_chain_vulkan *vk_SwapChain = (spudgpu_swap_chain_vulkan *) swap_chain;
 	for (uint32_t i = 0; i < vk_SwapChain->_swapchain_image_views_count; i++)
-		vkDestroyImageView(vk_SwapChain->_device._logical_device_vk, vk_SwapChain->_swapchain_image_views_vk[i], nullptr);
+		vkDestroyImageView(vk_SwapChain->_device._logical_device_vk, vk_SwapChain->_swapchain_image_views_vk[i],
+		                   nullptr);
 	if (vk_SwapChain->_swapchain_vk != VK_NULL_HANDLE)
 		vkDestroySwapchainKHR(vk_SwapChain->_device._logical_device_vk, vk_SwapChain->_swapchain_vk, nullptr);
 	//for (auto imageView: m_swapchain_image_views) {
@@ -293,9 +303,8 @@ void swap_chain_vulkan::recreate(const uint32_t &width, const uint32_t &height) 
 	this->create_image_views();
 }*/
 
-
-}
-
 #if __cplusplus
 }
 #endif
+
+#endif // SPUDGPU_COMPILE_VULKAN_API

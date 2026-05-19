@@ -1,6 +1,3 @@
-#include "gpu/backends/vulkan/spudgpuvulkanbuffer.hpp"
-#include "gpu/backends/vulkan/spudgpuvulkancontext.hpp"
-
 #if SPUDGPU_COMPILE_VULKAN_API
 
 #include <vulkan/vulkan.h>
@@ -53,6 +50,7 @@ void spudgpuvulkan___memory_property_flags_internal(
 
 #if __cplusplus
 extern "C" {
+
 #endif
 
 spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer_desc *desc) {
@@ -78,7 +76,7 @@ spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer
 
     // Create the result struct
     spudgpu_buffer_vulkan result = {0};
-    result._device = *((spudgpu_device_vulkan *) device);
+    memcpy(&result._device, (spudgpu_device_vulkan *) device, sizeof(spudgpu_device_vulkan));
     result._desc = *desc;
 
     // Get native Vulkan device handles
@@ -129,7 +127,7 @@ spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer
         VkBufferDeviceAddressInfoKHR info = {0};
         info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
         info.buffer = result._buffer_vk;
-        result._desc.gpu_address_location = vkGetBufferDeviceAddressKHR(vk_device, &info);
+        result._desc.gpu_address_location = vkGetBufferDeviceAddress(vk_device, &info);
     }
 
     // If all successful, return a memcpy'ed heap pointer
@@ -181,7 +179,8 @@ spudgpu_buffer_view_desc spudgpu_get_buffer_view_desc(spudgpu_buffer_view buffer
 void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer_view) {
     if (!buffer_view) return;
     spudgpu_buffer_view_vulkan *vkBufferView = (spudgpu_buffer_view_vulkan *) buffer_view;
-    vkDestroyBufferView(vkBufferView->_parent_buffer._device._logical_device_vk, vkBufferView->_buffer_view_vk, nullptr);
+    vkDestroyBufferView(vkBufferView->_parent_buffer._device._logical_device_vk, vkBufferView->_buffer_view_vk,
+                        nullptr);
     free(vkBufferView);
 }
 

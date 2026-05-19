@@ -1,35 +1,24 @@
-#include <vulkan/vulkan_core.h>
-#include <stdlib.h>
 
+
+#include <stdio.h>
+
+#include "spudgpuvulkan.h"
 #include "spudgpu.h"
+#include "stdlib.h"
 
 #if __cplusplus
 extern "C" {
 
+
+
 #endif
 
-typedef struct spudgpu_instance_vulkan {
-    VkInstance _instance;
-} spudgpu_instance_vulkan;
 
-typedef struct spudgpu_device_vulkan {
-    VkInstance _instance;
-    VkPhysicalDevice _physical_device;
-    VkDevice _logical_device;
-    VkPhysicalDeviceProperties _properties;
-    VkPhysicalDeviceFeatures _features;
-} spudgpu_device_vulkan;
+VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
+    spudgpu_device_vulkan *device) {
+    VkDevice result = VK_NULL_HANDLE;
 
-typedef struct spudgpu_command_queue_vulkan {
-    VkQueue _queue_vk;
-} spudgpu_command_queue_vulkan;
-
-VkResult spudgpuvulkan___initialize_device_from_vk_physical_device(
-    spudgpu_device_vulkan *device,
-    spudgpu_instance_vulkan *instance,
-    VkPhysicalDevice physicalDevice) {
-    device->_instance = instance->_instance;
-    device->_physical_device = physicalDevice;
+    VkPhysicalDevice physicalDevice = device->_physical_device_vk;
 
     uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
@@ -54,7 +43,7 @@ VkResult spudgpuvulkan___initialize_device_from_vk_physical_device(
         float graphicsQueuePriority = 1.0f;
 
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queueCreateInfo.pNext=nullptr;
+        queueCreateInfo.pNext = nullptr;
         queueCreateInfo.queueFamilyIndex = graphicsQueueFamilyIndex;
         queueCreateInfo.queueCount = queueCount;
         queueCreateInfo.pQueuePriorities = &graphicsQueuePriority;
@@ -69,19 +58,20 @@ VkResult spudgpuvulkan___initialize_device_from_vk_physical_device(
     };
     const uint32_t deviceExtensionCount = sizeof(deviceExtensions) / sizeof(deviceExtensions[0]);
 
-    VkDeviceCreateInfo createInfo={0};
+    VkDeviceCreateInfo createInfo = {0};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext=nullptr;
+    createInfo.pNext = nullptr;
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.queueCreateInfoCount = queueCount;
     createInfo.pEnabledFeatures = &deviceFeatures;
     createInfo.enabledExtensionCount = deviceExtensionCount;
     createInfo.ppEnabledExtensionNames = deviceExtensions;
 
-    VkResult result = vkCreateDevice(physicalDevice, &createInfo, nullptr, &device->_logical_device);
-    if (result != VK_SUCCESS) {
+    VkResult r = vkCreateDevice(physicalDevice, &createInfo, nullptr, &result);
+    if (r != VK_SUCCESS) {
         //throw std::runtime_error("failed to create logical device!");
-        return result;
+        printf("failed to create logical device\n");
+        return nullptr;
     }
 
     /*
@@ -95,12 +85,6 @@ VkResult spudgpuvulkan___initialize_device_from_vk_physical_device(
         m_command_queues[0] = spudCommandQueue;
     }*/
 
-    // Grab the properties and feature descriptors.
-    {
-        vkGetPhysicalDeviceProperties(device->_physical_device, &device->_properties);
-        vkGetPhysicalDeviceFeatures(device->_physical_device, &device->_features);
-    }
-
     /*
     // Create the SpudGPU resource pool object
     {
@@ -109,7 +93,7 @@ VkResult spudgpuvulkan___initialize_device_from_vk_physical_device(
         m_resource_pool = std::static_pointer_cast<gpu_resource_pool_vulkan>(spudGpuVulkanPool);
     }*/
 
-    return VK_SUCCESS;
+    return result;
 };
 
 
@@ -140,7 +124,7 @@ spudgpu_instance spudgpu_init(
     createInfo.enabledLayerCount = 0;
     createInfo.ppEnabledLayerNames = nullptr;
 
-    if (vkCreateInstance(&createInfo, nullptr, &result._instance) != VK_SUCCESS) {
+    if (vkCreateInstance(&createInfo, nullptr, &result._instance_vk) != VK_SUCCESS) {
         //throw std::runtime_error("failed to create vulkan instance!");
         return nullptr;
     }
@@ -154,41 +138,58 @@ spudgpu_instance spudgpu_init(
 void spudgpu_terminate(spudgpu_instance instance) {
     if (!instance) return;
     spudgpu_instance_vulkan *vk_instance = (spudgpu_instance_vulkan *) instance;
-    vkDestroyInstance(vk_instance->_instance, nullptr);
+    vkDestroyInstance(vk_instance->_instance_vk, nullptr);
     free(vk_instance);
 }
 
-SPUDGPU_DEVICE_LIST spudgpu_enumerate_devices(spudgpu_instance instance) {
-    if (!instance) return (SPUDGPU_DEVICE_LIST){0};
+bool spudgpu_enumerate_devices(
+    spudgpu_instance instance,
+    spudgpu_device **ppOutputDevices,
+    uint32_t *pOutputDevicesCount) {
+    if (!instance) return false;
 
-    // Used to be std::vector
-    spudgpu_device_vulkan *spudVulkanDevices = nullptr;
 
     spudgpu_instance_vulkan *vkInstance = (spudgpu_instance_vulkan *) instance;
 
     uint32_t deviceCount = 0;
-    {
-        vkEnumeratePhysicalDevices(vkInstance->_instance, &deviceCount, nullptr);
-        if (deviceCount == 0) {
-            //throw std::runtime_error("failed to find GPUs with Vulkan support!");
-            return (SPUDGPU_DEVICE_LIST){0};
-        }
-        VkPhysicalDevice physicalDevices[deviceCount];
-        vkEnumeratePhysicalDevices(vkInstance->_instance, &deviceCount, physicalDevices);
-        spudVulkanDevices = (spudgpu_device_vulkan *) malloc(sizeof(spudgpu_device_vulkan) * deviceCount);
-        //spudVulkanDevices.resize(deviceCount);
+    vkEnumeratePhysicalDevices(vkInstance->_instance_vk, &deviceCount, nullptr);
+    if (deviceCount == 0) {
+        //throw std::runtime_error("failed to find GPUs with Vulkan support!");
+        return false;
+    }
+    VkPhysicalDevice physicalDevices[deviceCount];
+    vkEnumeratePhysicalDevices(vkInstance->_instance_vk, &deviceCount, physicalDevices);
+    //
+    //spudVulkanDevices = (spudgpu_device_vulkan *) malloc(sizeof(spudgpu_device_vulkan) * deviceCount);
+    //spudVulkanDevices.resize(deviceCount);
 
-        for (size_t i = 0; i < deviceCount; i++) {
-            spudgpuvulkan___initialize_device_from_vk_physical_device(&spudVulkanDevices[i], vkInstance,
-                                                                      physicalDevices[i]);
-        }
+    // Finally initialize the Vulkan logical devices and gather them.
+    *ppOutputDevices = malloc(sizeof(spudgpu_device) * deviceCount);
+    *pOutputDevicesCount = deviceCount;
+
+    // Instance needs to keep track for memory management.
+    // Eventually we will get rid of SPUDGPU_DEVICE_LIST.
+    vkInstance->_devices_pointer_array = malloc(sizeof(uint64_t) * deviceCount);
+    vkInstance->_devices_count = deviceCount;
+
+    for (size_t i = 0; i < deviceCount; i++) {
+        spudgpu_device_vulkan *pDeviceVulkan = malloc(sizeof(spudgpu_device_vulkan));
+        pDeviceVulkan->_instance = *vkInstance;
+        pDeviceVulkan->_physical_device_vk = physicalDevices[i];
+        pDeviceVulkan->_logical_device_vk = spudgpuvulkan___initialize_vk_logical_device_internal(pDeviceVulkan);
+
+        // Grab the properties and feature descriptors.
+        vkGetPhysicalDeviceProperties(pDeviceVulkan->_physical_device_vk, &pDeviceVulkan->_properties_vk);
+        vkGetPhysicalDeviceFeatures(pDeviceVulkan->_physical_device_vk, &pDeviceVulkan->_features_vk);
+
+        (*ppOutputDevices)[i] = (spudgpu_device) pDeviceVulkan;
+
+        // Instance needs to keep track for memory management.
+        // Eventually we will get rid of SPUDGPU_DEVICE_LIST.
+        vkInstance->_devices_pointer_array[i] = (uint64_t) (*ppOutputDevices)[i];
     }
 
-    SPUDGPU_DEVICE_LIST result = {0};
-    result.devices = (spudgpu_device *) spudVulkanDevices;
-    // reinterpret_cast<spudgpu_device *>(spudVulkanDevices.data());
-    result.device_count = deviceCount;
-    return result;
+    return true;
 }
 
 SPUDGPU_NATIVE_API spudgpu_get_native_gpu_api(spudgpu_instance instance) {

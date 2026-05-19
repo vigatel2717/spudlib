@@ -160,7 +160,7 @@ static const struct spudgpu_format_map format_map[] = {
 };*/
 // @return SPUDGPU_FORMAT according to string.
 // TODO: Optimize this function. Perhaps make a FormatMap and have this 'static const struct FormatMap FORMAT_TABLE[] = {'
-SPUDGPU_FORMAT spudgpu_format_from_string(const char *fmt_str) {
+inline SPUDGPU_FORMAT spudgpu_format_from_string(const char *fmt_str) {
     if (fmt_str == NULL) return SPUDGPU_FORMAT_UNKNOWN;
 
     if (strcmp(fmt_str, "R32G32B32A32_TYPELESS") == 0) return SPUDGPU_FORMAT_R32G32B32A32_TYPELESS;
@@ -382,24 +382,18 @@ spudgpu_instance spudgpu_init(
  */
 void spudgpu_terminate(spudgpu_instance instance);
 
-/**
- * @brief A container structure holding a list of discovered physical GPUs.
- */
-typedef struct SPUDGPU_DEVICE_LIST {
-    /// Pointer to a contiguous array of physical device handles.
-    spudgpu_device *devices;
-    /// Total number of valid devices populated in the `devices` array.
-    uint64_t device_count;
-} SPUDGPU_DEVICE_LIST;
 
 /**
  * @brief Retreive an enumeration of the physical graphics devices available on the host machine.
  * * @param[in] instance The SpudGPU instance of which to enumerate devices through.
- * * @return SPUDGPU_DEVICE_LIST A structure containing the array pointer and size
- * of all discovered hardware devices. Returns a count of 0 if no
- * compatible hardware is found.
+ * * @param ppOutputDevices[out]
+ * * @param pOutputDevicesCount[out]
+ * * @return true if all is successful, false if instance is null, or if the native GPU API had an error.
  */
-SPUDGPU_DEVICE_LIST spudgpu_enumerate_devices(spudgpu_instance instance);
+bool spudgpu_enumerate_devices(
+    spudgpu_instance instance,
+    spudgpu_device **ppOutputDevices,
+    uint32_t *pOutputDevicesCount);
 
 /**
  * @brief Retrieves the active graphics API backend for the SpudGPU instance.
