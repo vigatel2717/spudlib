@@ -4,6 +4,7 @@
 
 #include "spudgpuvulkan.h"
 #include "stdlib.h"
+#include "stdbool.h"
 
 #if __cplusplus
 extern "C" {

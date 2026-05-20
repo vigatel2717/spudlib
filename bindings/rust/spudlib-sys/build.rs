@@ -28,7 +28,7 @@ fn main() {
         .file(vulkan_backends_src.join("spudgpuvulkanbuffer.c"))
         .file(vulkan_backends_src.join("spudgpuvulkanimage.c"))
         .file(vulkan_backends_src.join("spudgpuvulkanshader.c"))
-        .flag_if_supported("-std=c11");
+        .flag_if_supported("-std=c23");
 
     if cfg!(feature = "vulkan") {
         build.define("SPUDGPU_COMPILE_VULKAN_API", "1");

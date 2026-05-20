@@ -5,6 +5,7 @@
 #ifndef SPUDLIB_SPUDGPU_H
 #define SPUDLIB_SPUDGPU_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
