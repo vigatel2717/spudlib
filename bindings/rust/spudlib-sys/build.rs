@@ -20,12 +20,14 @@ fn main() {
     let mut build = cc::Build::new();
 
     build
-        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkancontext.c"))
-        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkanswapchain.c"))
-        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkanbuffer.c"))
-        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkanimage.c"))
-        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkanshader.c"))
         .include(&root)
+        .include(root.join("include"))
+        .include(root.join("src/gpu/backends/vulkan"))
+        .file(root.join("spudgpuvulkancontext.c"))
+        .file(root.join("spudgpuvulkanswapchain.c"))
+        .file(root.join("spudgpuvulkanbuffer.c"))
+        .file(root.join("spudgpuvulkanimage.c"))
+        .file(root.join("spudgpuvulkanshader.c"))
         .flag_if_supported("-std=c11");
 
     if cfg!(feature = "vulkan") {
