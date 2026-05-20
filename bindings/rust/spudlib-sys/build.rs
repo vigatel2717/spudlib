@@ -30,7 +30,7 @@ fn main() {
         build.define("SPUDGPU_COMPILE_METAL_API", "1");
     }
 
-    build.compile("spudlib-sys");
+    build.compile("spudlib");
 
     // ----------------------------------------------------------------
     // 2. Link platform Vulkan library
