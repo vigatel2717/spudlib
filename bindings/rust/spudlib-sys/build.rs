@@ -12,7 +12,7 @@ fn main() {
 
     let vulkan_backends_src = root.join("src/gpu/backends/vulkan");
 
-    println!("cargo:warning=Looking for C sources in: {}", vulkan_src.display());
+    println!("cargo:warning=Looking for C sources in: {}", vulkan_backends_src.display());
 
     // ----------------------------------------------------------------
     // 1. Compile the SpudLib C sources into a static library
