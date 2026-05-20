@@ -20,11 +20,11 @@ fn main() {
     let mut build = cc::Build::new();
 
     build
-        .file(root.join("spudgpuvulkancontext.c"))
-        .file(root.join("spudgpuvulkanswapchain.c"))
-        .file(root.join("spudgpuvulkanbuffer.c"))
-        .file(root.join("spudgpuvulkanimage.c"))
-        .file(root.join("spudgpuvulkanshader.c"))
+        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkancontext.c"))
+        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkanswapchain.c"))
+        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkanbuffer.c"))
+        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkanimage.c"))
+        .file(root.join("src/gpu/backends/vulkan/spudgpuvulkanshader.c"))
         .include(&root)
         .flag_if_supported("-std=c11");
 
@@ -50,11 +50,11 @@ fn main() {
     // 3. Tell Cargo to re-run this script if C sources change
     // ----------------------------------------------------------------
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed={}", root.join("spudgpu.h").display());
-    println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkan.h").display());
-    println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkancontext.c").display());
-    println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkanswapchain.c").display());
-    println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkanbuffer.c").display());
-    println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkanimage.c").display());
-    println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkanshader.c").display());
+    println!("cargo:rerun-if-changed={}", root.join("include/spudgpu.h").display());
+    println!("cargo:rerun-if-changed={}", root.join("src/gpu/backends/vulkan/spudgpuvulkan.h").display());
+    println!("cargo:rerun-if-changed={}", root.join("src/gpu/backends/vulkan/spudgpuvulkancontext.c").display());
+    println!("cargo:rerun-if-changed={}", root.join("src/gpu/backends/vulkan/spudgpuvulkanswapchain.c").display());
+    println!("cargo:rerun-if-changed={}", root.join("src/gpu/backends/vulkan/spudgpuvulkanbuffer.c").display());
+    println!("cargo:rerun-if-changed={}", root.join("src/gpu/backends/vulkan/spudgpuvulkanimage.c").display());
+    println!("cargo:rerun-if-changed={}", root.join("src/gpu/backends/vulkan/spudgpuvulkanshader.c").display());
 }
