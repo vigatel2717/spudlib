@@ -10,6 +10,10 @@ fn main() {
         .canonicalize()
         .expect("Could not resolve repo root");
 
+    let vulkan_backends_src = root.join("src/gpu/backends/vulkan");
+
+    println!("cargo:warning=Looking for C sources in: {}", vulkan_src.display());
+
     // ----------------------------------------------------------------
     // 1. Compile the SpudLib C sources into a static library
     // ----------------------------------------------------------------
@@ -17,8 +21,10 @@ fn main() {
 
     build
         .file(root.join("spudgpuvulkancontext.c"))
+        .file(root.join("spudgpuvulkanswapchain.c"))
         .file(root.join("spudgpuvulkanbuffer.c"))
         .file(root.join("spudgpuvulkanimage.c"))
+        .file(root.join("spudgpuvulkanshader.c"))
         .include(&root)
         .flag_if_supported("-std=c11");
 
@@ -47,6 +53,8 @@ fn main() {
     println!("cargo:rerun-if-changed={}", root.join("spudgpu.h").display());
     println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkan.h").display());
     println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkancontext.c").display());
+    println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkanswapchain.c").display());
     println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkanbuffer.c").display());
     println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkanimage.c").display());
+    println!("cargo:rerun-if-changed={}", root.join("spudgpuvulkanshader.c").display());
 }
