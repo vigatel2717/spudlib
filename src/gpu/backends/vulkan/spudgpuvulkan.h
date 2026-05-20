@@ -69,6 +69,6 @@ typedef struct spudgpu_swap_chain_vulkan {
     uint32_t _swapchain_image_views_count;
 } spudgpu_swap_chain_vulkan;
 
-VkFormat convert_spud_to_vulkan_format(VkFormat format);
+VkFormat convert_spud_to_vulkan_format(SPUDGPU_FORMAT format);
 
 #endif //SPUDLIB_SPUDGPUVULKAN_H

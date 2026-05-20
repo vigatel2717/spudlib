@@ -13,6 +13,10 @@ extern "C" {
 
 #endif
 
+VkFormat convert_spud_to_vulkan_format(SPUDGPU_FORMAT format) {
+    return VK_FORMAT_UNDEFINED;
+}
+
 
 VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     spudgpu_device_vulkan *device) {
