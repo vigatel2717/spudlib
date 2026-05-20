@@ -19,7 +19,7 @@
 //! }).expect("Failed to create buffer");
 //! ```
 
-use spudgpu_sys as sys;
+use spudlib_sys as sys;
 use std::ffi::CString;
 
 // ----------------------------------------------------------------
