@@ -22,12 +22,12 @@ fn main() {
     build
         .include(&root)
         .include(root.join("include"))
-        .include(root.join("src/gpu/backends/vulkan"))
-        .file(root.join("spudgpuvulkancontext.c"))
-        .file(root.join("spudgpuvulkanswapchain.c"))
-        .file(root.join("spudgpuvulkanbuffer.c"))
-        .file(root.join("spudgpuvulkanimage.c"))
-        .file(root.join("spudgpuvulkanshader.c"))
+        .include(&vulkan_backends_src)
+        .file(vulkan_backends_src.join("spudgpuvulkancontext.c"))
+        .file(vulkan_backends_src.join("spudgpuvulkanswapchain.c"))
+        .file(vulkan_backends_src.join("spudgpuvulkanbuffer.c"))
+        .file(vulkan_backends_src.join("spudgpuvulkanimage.c"))
+        .file(vulkan_backends_src.join("spudgpuvulkanshader.c"))
         .flag_if_supported("-std=c11");
 
     if cfg!(feature = "vulkan") {
