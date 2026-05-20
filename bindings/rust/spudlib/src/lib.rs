@@ -246,7 +246,7 @@ impl Instance {
         // The C implementation returns a contiguous malloc'd array,
         // so we index into it directly.
         let devices = (0..device_count as usize)
-            .map(|i| Device(unsafe { raw_devices.add(i) }))
+            .map(|i| Device(unsafe { *raw_devices.add(i) }))
             .collect();
 
         Ok(devices)
