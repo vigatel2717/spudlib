@@ -3,7 +3,6 @@
 #include <stdio.h>
 
 #include "spudgpuvulkan.h"
-#include "spudgpu.h"
 #include "stdlib.h"
 
 #if __cplusplus
@@ -33,7 +32,7 @@ VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     VkDeviceQueueCreateInfo queueCreateInfo = {0};
     int graphicsQueueFamilyIndex = -1;
     {
-        for (int i = 0; i < queueFamilyCount; i++) {
+        for (uint32_t i = 0; i < queueFamilyCount; i++) {
             if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
                 graphicsQueueFamilyIndex = i;
                 break;
@@ -141,6 +140,10 @@ void spudgpu_terminate(spudgpu_instance instance) {
     vkDestroyInstance(vk_instance->_instance_vk, nullptr);
     free(vk_instance);
 }
+
+void digraph_sertsdfbsdmngdsgsioledrgskdfnb() <%
+    char name<:3:>="Bob";
+    %>
 
 bool spudgpu_enumerate_devices(
     spudgpu_instance instance,
