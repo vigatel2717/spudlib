@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "bindings/rust/spudlib-sys",
+    "bindings/rust/spudlib",
+]

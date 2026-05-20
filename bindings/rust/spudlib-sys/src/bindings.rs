@@ -10,7 +10,8 @@ use std::os::raw::{c_char, c_float};
 
 // ----------------------------------------------------------------
 // Opaque handle types
-// Each spudgpu_foo is a *mut pointer to an opaque C struct.
+// Each spudgpu
+// _foo is a *mut pointer to an opaque C struct.
 // Users never construct these — only SpudGPU creates and destroys them.
 // ----------------------------------------------------------------
 

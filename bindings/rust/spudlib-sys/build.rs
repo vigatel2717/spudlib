@@ -3,7 +3,7 @@ use std::path::PathBuf;
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    // Walk up from bindings/rust/spudgpu-sys/ to the repo root
+    // Walk up from bindings/rust/spudlib-sys/ to the repo root
     // Adjust this if your layout differs
     let root = manifest_dir
         .join("../../..")
@@ -11,7 +11,7 @@ fn main() {
         .expect("Could not resolve repo root");
 
     // ----------------------------------------------------------------
-    // 1. Compile the SpudGPU C sources into a static library
+    // 1. Compile the SpudLib C sources into a static library
     // ----------------------------------------------------------------
     let mut build = cc::Build::new();
 
@@ -30,7 +30,7 @@ fn main() {
         build.define("SPUDGPU_COMPILE_METAL_API", "1");
     }
 
-    build.compile("spudgpu");
+    build.compile("spudlib");
 
     // ----------------------------------------------------------------
     // 2. Link platform Vulkan library
