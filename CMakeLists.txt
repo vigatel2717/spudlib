@@ -7,7 +7,7 @@ endif ()
 
 # Target SpudGPU to be Vulkan if on Windows or Linux
 # Set the SpudLib compile macro flags based on platform
-if (WIN32 OR LINUX)
+if (WIN32 OR (UNIX AND NOT APPLE))
     set(CMAKE_C_STANDARD 23)
     add_library(spudlib STATIC
             include/spudfiles.h
@@ -18,8 +18,32 @@ if (WIN32 OR LINUX)
             src/gpu/backends/vulkan/spudgpuvulkanshader.c
             src/gpu/backends/vulkan/spudgpuvulkanswapchain.c
             src/gpu/backends/vulkan/spudgpuvulkanimage.c
+            src/gpu/backends/vulkan/spudgpuvulkandescriptors.c
+            src/gpu/backends/vulkan/spudgpuvulkancommand.c
+            src/gpu/backends/vulkan/spudgpuvulkanrenderpass.c
+            include/spudgpu_sdl3.h
     )
     target_compile_definitions(spudlib PUBLIC SPUDGPU_COMPILE_VULKAN_API=1)
+
+
+    if (UNIX AND NOT APPLE)
+        find_package(PkgConfig REQUIRED)
+        #find_package(Wayland QUIET)
+        pkg_check_modules(WAYLAND wayland-client)
+        if (WAYLAND_FOUND)
+            #target_compile_definitions(spudlib PUBLIC SPUDGPU_PLATFORM_WAYLAND)
+            #target_link_libraries(spudlib PRIVATE wayland-client)
+            target_compile_definitions(spudlib PUBLIC SPUDGPU_PLATFORM_WAYLAND VK_USE_PLATFORM_WAYLAND_KHR)
+            target_link_libraries(spudlib PRIVATE ${WAYLAND_LIBRARIES})
+            target_include_directories(spudlib PRIVATE ${WAYLAND_INCLUDE_DIRS})
+        else ()
+            target_compile_definitions(spudlib PUBLIC SPUDGPU_PLATFORM_XLIB VK_USE_PLATFORM_XLIB_KHR)
+            target_link_libraries(spudlib PRIVATE X11) # X11 is usually available without find_package on Linux
+        endif ()
+    elseif (WIN32)
+        target_compile_definitions(spudlib PUBLIC SPUDGPU_PLATFORM_WIN32)
+    endif ()
+
     # Target SpudGPU to be Metal if on Apple Silicon
 elseif (APPLE)
     set(CMAKE_CXX_STANDARD 26)

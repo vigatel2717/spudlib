@@ -11,6 +11,9 @@
 
 #ifdef __cplusplus
 extern "C" {
+
+
+
 #endif // __cplusplus
 
 #if SPUDGPU_COMPILE_METAL_API
@@ -316,15 +319,17 @@ inline SPUDGPU_FORMAT spudgpu_format_from_string(const char *fmt_str) {
 
 typedef struct spudgpu_instance_t *spudgpu_instance;
 typedef struct spudgpu_device_t *spudgpu_device;
-typedef struct spudgpu_resource_pool_t *spudgpu_resource_pool;
 typedef struct spudgpu_buffer_t *spudgpu_buffer;
 typedef struct spudgpu_buffer_view_t *spudgpu_buffer_view;
 typedef struct spudgpu_image_t *spudgpu_image;
 typedef struct spudgpu_image_view_t *spudgpu_image_view;
 typedef struct spudgpu_shader_pipeline_t *spudgpu_shader_pipeline;
 typedef struct spudgpu_command_list_t *spudgpu_command_list;
+typedef struct spudgpu_command_allocator_t *spudgpu_command_allocator;
 typedef struct spudgpu_command_queue_t *spudgpu_command_queue;
 typedef struct spudgpu_swap_chain_t *spudgpu_swap_chain;
+typedef struct spudgpu_shader_module_t *spudgpu_shader_module;
+typedef struct spudgpu_compute_pipeline_t *spudgpu_compute_pipeline;
 
 /**
  * @brief Handle representing the active graphics API backend.
@@ -403,6 +408,24 @@ bool spudgpu_enumerate_devices(
  * Returns `SPUDGPU_API_NONE` if instance is NULL.
  */
 SPUDGPU_NATIVE_API spudgpu_get_native_gpu_api(spudgpu_instance instance);
+
+
+spudgpu_command_queue spudgpu_get_graphics_queue(spudgpu_device device);
+
+void spudgpu_submit_command_lists(
+    spudgpu_command_queue queue,
+    spudgpu_command_list *cmd_lists,
+    uint32_t cmd_list_count);
+
+spudgpu_command_allocator spudgpu_create_command_allocator(spudgpu_device device);
+
+void spudgpu_reset_command_allocator(spudgpu_command_allocator allocator);
+
+void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator);
+
+spudgpu_command_list spudgpu_create_command_list(spudgpu_command_allocator allocator);
+
+void spudgpu_destroy_command_list(spudgpu_command_list cmd);
 
 
 /*
@@ -603,6 +626,65 @@ spudgpu_buffer_view_desc spudgpu_get_buffer_view_desc(spudgpu_buffer_view view);
  * @param[in] buffer The target GPU buffer view to destroy.
  */
 void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer);
+
+/**
+ * @brief Maps a GPU buffer's memory into CPU-accessible address space.
+ *
+ * Only valid on buffers created with SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE.
+ * Equivalent to D3D12's Map() / vkMapMemory().
+ *
+ * @param buffer  The target buffer to map.
+ * @param offset  Byte offset into the buffer to begin the mapped region.
+ * @param size    Number of bytes to map. Pass 0 to map the entire buffer.
+ * @param ppData  Output pointer — receives the CPU-writable address.
+ * @return true on success, false if buffer is NULL or not HOST_VISIBLE.
+ */
+bool spudgpu_map_buffer(
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint64_t size,
+    void **ppData);
+
+/**
+ * @brief Unmaps a previously mapped buffer, releasing the CPU pointer.
+ *
+ * If the buffer was NOT created with HOST_COHERENT, you must call
+ * spudgpu_flush_buffer() before unmapping to push writes to the GPU.
+ *
+ * @param buffer The buffer to unmap.
+ */
+void spudgpu_unmap_buffer(spudgpu_buffer buffer);
+
+/**
+ * @brief Flushes CPU writes to a non-coherent mapped buffer range.
+ *
+ * Only required when HOST_COHERENT is NOT set.
+ * Equivalent to vkFlushMappedMemoryRanges().
+ *
+ * @param buffer  The buffer whose writes need flushing.
+ * @param offset  Byte offset of the dirty region.
+ * @param size    Byte length of the dirty region. Pass 0 for entire buffer.
+ */
+void spudgpu_flush_buffer(
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint64_t size);
+
+/**
+ * @brief Invalidates CPU caches for a mapped buffer range before reading GPU-written data.
+ *
+ * Only required for HOST_CACHED readback buffers.
+ * Equivalent to vkInvalidateMappedMemoryRanges().
+ *
+ * @param buffer  The buffer to invalidate.
+ * @param offset  Byte offset of the region to invalidate.
+ * @param size    Byte length of the region. Pass 0 for entire buffer.
+ */
+void spudgpu_invalidate_buffer(
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint64_t size);
+
 
 typedef uint32_t SPUDGPU_IMAGE_TYPE;
 
@@ -940,7 +1022,7 @@ void spudgpu_draw_indexed(
     spudgpu_command_list cmd,
     uint32_t indexCount,
     uint32_t start_index_location,
-    uint32_t base_vertex_location);
+    int32_t base_vertex_location);
 
 /**
  * @brief Non-indexed instanced drawing invocation.
@@ -974,8 +1056,28 @@ void spudgpu_draw_indexed_instanced(
     uint32_t index_count_per_instance,
     uint32_t instance_count,
     uint32_t start_index_location,
-    uint32_t base_vertex_location,
+    int32_t base_vertex_location,
     uint32_t start_instance_location);
+
+
+
+typedef struct spudgpu_surface_t *spudgpu_surface;
+
+
+/** window_handle Opaque generic pointer targeting the host operating system's native window object.
+ * * Must capture and forward the platform-appropriate descriptor handle:
+ * - **Windows (Win32):** Pass raw `HWND` pointer.
+ * - **macOS (AppKit):** Pass native `NSWindow*` or target `CAMetalLayer*`.
+ * - **Linux (X11 / Wayland):** Pass raw `Window` identity or `wl_surface*`.
+ *
+ * display_handle Platform display connection handle.
+ * - Linux Wayland: wl_display*
+ * - Linux X11:     Display*
+ * - Windows:       unused (set to NULL)
+ */
+spudgpu_surface spudgpu_create_surface(spudgpu_instance instance, void *window_handle, void *display_handle);
+
+void spudgpu_destroy_surface(spudgpu_surface surface);
 
 
 /**
@@ -1012,6 +1114,7 @@ enum {
      */
     SPUDGPU_PRESENT_MODE_MAILBOX = 2
 };
+
 ///@}
 
 /**
@@ -1019,13 +1122,7 @@ enum {
  * * Handled by the driver to allocate a ring buffer of textures (back buffers) that flip onto the screen.
  */
 typedef struct spudgpu_swap_chain_desc {
-    /** * @brief Opaque generic pointer targeting the host operating system's native window object.
-     * * Must capture and forward the platform-appropriate descriptor handle:
-     * - **Windows (Win32):** Pass raw `HWND` pointer.
-     * - **macOS (AppKit):** Pass native `NSWindow*` or target `CAMetalLayer*`.
-     * - **Linux (X11 / Wayland):** Pass raw `Window` identity or `wl_surface*`.
-     */
-    void *window_handle;
+    spudgpu_surface surface;
 
     /// Requested back-buffer width in pixels. Usually matches the window client area width.
     uint32_t width;
@@ -1082,6 +1179,817 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain);
  * * @param swap_chain The swap chain holding the image to display.
  */
 void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain);
+
+/**
+ * @brief Returns the image view for the given swap chain image index.
+ * Use the index returned by vkAcquireNextImageKHR (or your equivalent).
+ */
+spudgpu_image_view spudgpu_get_swap_chain_image_view(
+    spudgpu_swap_chain swap_chain,
+    uint32_t image_index);
+
+
+typedef uint32_t SPUDGPU_SHADER_STAGE;
+
+enum {
+    SPUDGPU_SHADER_STAGE_NONE = 0,
+    SPUDGPU_SHADER_STAGE_VERTEX = 1 << 0,
+    SPUDGPU_SHADER_STAGE_FRAGMENT = 1 << 1,
+    SPUDGPU_SHADER_STAGE_COMPUTE = 1 << 2,
+    SPUDGPU_SHADER_STAGE_GEOMETRY = 1 << 3,
+    SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL = 1 << 4,
+    SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION = 1 << 5
+};
+
+typedef uint32_t SPUDGPU_PRIMITIVE_TOPOLOGY;
+
+enum {
+    SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 0,
+    SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP = 1,
+    SPUDGPU_PRIMITIVE_TOPOLOGY_LINE_LIST = 2,
+    SPUDGPU_PRIMITIVE_TOPOLOGY_LINE_STRIP = 3,
+    SPUDGPU_PRIMITIVE_TOPOLOGY_POINT_LIST = 4,
+    SPUDGPU_PRIMITIVE_TOPOLOGY_PATCH_LIST = 5 // Tessellation
+};
+
+
+typedef uint32_t SPUDGPU_CULL_MODE;
+
+enum {
+    SPUDGPU_CULL_MODE_NONE = 0,
+    SPUDGPU_CULL_MODE_FRONT = 1,
+    SPUDGPU_CULL_MODE_BACK = 2
+};
+
+
+// Depth Compare Op
+typedef uint32_t SPUDGPU_COMPARE_OP;
+
+enum {
+    SPUDGPU_COMPARE_OP_NEVER = 0,
+    SPUDGPU_COMPARE_OP_LESS = 1,
+    SPUDGPU_COMPARE_OP_EQUAL = 2,
+    SPUDGPU_COMPARE_OP_LESS_OR_EQUAL = 3,
+    SPUDGPU_COMPARE_OP_GREATER = 4,
+    SPUDGPU_COMPARE_OP_NOT_EQUAL = 5,
+    SPUDGPU_COMPARE_OP_GREATER_OR_EQUAL = 6,
+    SPUDGPU_COMPARE_OP_ALWAYS = 7
+};
+
+// Capacity Limits
+#define SPUDGPU_MAX_VERTEX_ATTRIBUTES      16
+#define SPUDGPU_MAX_VERTEX_BINDINGS         8
+#define SPUDGPU_MAX_PUSH_CONSTANT_RANGES    4
+#define SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS  4
+
+typedef struct spudgpu_vertex_attribute_desc {
+    /// Which shader location slot this attribute binds to (layout(location = N)).
+    uint32_t location;
+
+    /// Which vertex buffer binding slot this attribute is sourced from.
+    uint32_t binding;
+
+    /// The data layout and channel bit-depth of this attribute (e.g., SPUDGPU_FORMAT_R32G32B32_FLOAT).
+    SPUDGPU_FORMAT format;
+
+    /// Byte offset of this attribute from the start of a single vertex element.
+    uint32_t offset;
+} spudgpu_vertex_attribute_desc;
+
+typedef struct spudgpu_vertex_binding_desc {
+    /// The binding slot index this entry targets.
+    uint32_t binding;
+
+    /// Byte distance between consecutive elements in the buffer (sizeof your vertex struct).
+    uint32_t stride;
+
+    /// When true, advances per-instance rather than per-vertex (instanced rendering).
+    bool per_instance;
+} spudgpu_vertex_binding_desc;
+
+typedef struct spudgpu_push_constant_range_desc {
+    /// Bitmask of shader stages that can read this push constant range.
+    /// @see SPUDGPU_SHADER_STAGE
+    SPUDGPU_SHADER_STAGE stage_flags;
+
+    /// Byte offset within the push constant block.
+    uint32_t offset;
+
+    /// Byte size of this push constant range.
+    uint32_t size;
+} spudgpu_push_constant_range_desc;
+
+typedef uint32_t SPUDGPU_BLEND_FACTOR;
+
+enum {
+    SPUDGPU_BLEND_FACTOR_ZERO = 0,
+    SPUDGPU_BLEND_FACTOR_ONE = 1,
+    SPUDGPU_BLEND_FACTOR_SRC_ALPHA = 2,
+    SPUDGPU_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA = 3,
+    SPUDGPU_BLEND_FACTOR_DST_ALPHA = 4,
+    SPUDGPU_BLEND_FACTOR_ONE_MINUS_DST_ALPHA = 5,
+    SPUDGPU_BLEND_FACTOR_SRC_COLOR = 6,
+    SPUDGPU_BLEND_FACTOR_ONE_MINUS_SRC_COLOR = 7,
+    SPUDGPU_BLEND_FACTOR_DST_COLOR = 8,
+    SPUDGPU_BLEND_FACTOR_ONE_MINUS_DST_COLOR = 9
+};
+
+typedef uint32_t SPUDGPU_BLEND_OP;
+
+enum {
+    SPUDGPU_BLEND_OP_ADD = 0,
+    SPUDGPU_BLEND_OP_SUBTRACT = 1,
+    SPUDGPU_BLEND_OP_REVERSE_SUBTRACT = 2,
+    SPUDGPU_BLEND_OP_MIN = 3,
+    SPUDGPU_BLEND_OP_MAX = 4
+};
+
+/**
+ * @brief Per-attachment blend configuration.
+ * Ignored entirely when blend_enable is false.
+ */
+typedef struct spudgpu_blend_attachment_desc {
+    bool blend_enable;
+
+    SPUDGPU_BLEND_FACTOR src_color_blend_factor;
+    SPUDGPU_BLEND_FACTOR dst_color_blend_factor;
+    SPUDGPU_BLEND_OP color_blend_op;
+
+    SPUDGPU_BLEND_FACTOR src_alpha_blend_factor;
+    SPUDGPU_BLEND_FACTOR dst_alpha_blend_factor;
+    SPUDGPU_BLEND_OP alpha_blend_op;
+} spudgpu_blend_attachment_desc;
+
+/**
+ * @brief Configuration descriptor for loading a SPIR-V shader binary.
+ */
+typedef struct spudgpu_shader_module_desc {
+    /// Which pipeline stage this module targets.
+    /// @see SPUDGPU_SHADER_STAGE
+    SPUDGPU_SHADER_STAGE stage;
+
+    /// Pointer to the raw SPIR-V bytecode. Must be 4-byte aligned.
+    const void *spirv_code;
+
+    /// Byte size of the SPIR-V blob. Must be a multiple of 4.
+    size_t spirv_size;
+
+#if _DEBUG
+    /// @brief A string identifier used for diagnostic tracking.
+    const char *debug_name;
+#endif
+} spudgpu_shader_module_desc;
+
+spudgpu_shader_module spudgpu_create_shader_module(
+    spudgpu_device device,
+    const spudgpu_shader_module_desc *desc);
+
+void spudgpu_destroy_shader_module(spudgpu_device device, spudgpu_shader_module shader_module);
+
+/**
+ * @brief Complete configuration descriptor for creating a graphics shader pipeline.
+ *
+ * Fill in the stage modules you need, leave optional ones NULL.
+ * All arrays are inline and fixed-capacity; use the corresponding _count
+ * field to indicate how many entries are valid.
+ */
+typedef struct spudgpu_shader_pipeline_desc {
+    // -----------------------------------------------------------------------
+    // Shader stages
+    // -----------------------------------------------------------------------
+
+    /// Compiled vertex shader module. Required.
+    spudgpu_shader_module vertex_module;
+    /// Null-terminated entry point name. Pass NULL to default to "main".
+    const char *vertex_entry_point;
+
+    /// Compiled fragment shader module. Required.
+    spudgpu_shader_module fragment_module;
+    /// Null-terminated entry point name. Pass NULL to default to "main".
+    const char *fragment_entry_point;
+
+    /// Compiled geometry shader module. Optional — leave NULL to skip.
+    spudgpu_shader_module geometry_module;
+    const char *geometry_entry_point;
+
+    /// Compiled tessellation control shader module. Optional — leave NULL to skip.
+    spudgpu_shader_module tess_control_module;
+    const char *tess_control_entry_point;
+
+    /// Compiled tessellation evaluation shader module. Optional — leave NULL to skip.
+    spudgpu_shader_module tess_eval_module;
+    const char *tess_eval_entry_point;
+
+    // -----------------------------------------------------------------------
+    // Vertex input layout
+    // -----------------------------------------------------------------------
+
+    spudgpu_vertex_attribute_desc vertex_attributes[SPUDGPU_MAX_VERTEX_ATTRIBUTES];
+    uint32_t vertex_attribute_count;
+
+    spudgpu_vertex_binding_desc vertex_bindings[SPUDGPU_MAX_VERTEX_BINDINGS];
+    uint32_t vertex_binding_count;
+
+    // -----------------------------------------------------------------------
+    // Input assembly
+    // -----------------------------------------------------------------------
+
+    /// How raw vertices are assembled into primitives before rasterization.
+    /// @see SPUDGPU_PRIMITIVE_TOPOLOGY
+    SPUDGPU_PRIMITIVE_TOPOLOGY primitive_topology;
+
+    // -----------------------------------------------------------------------
+    // Rasterizer
+    // -----------------------------------------------------------------------
+
+    /// Which triangle faces to discard before fragment shading.
+    /// @see SPUDGPU_CULL_MODE
+    SPUDGPU_CULL_MODE cull_mode;
+
+    /// When true, triangles with counter-clockwise winding are treated as front-facing.
+    bool front_face_ccw;
+
+    /// When true, geometry is rasterized as wireframe lines instead of filled triangles.
+    bool wireframe;
+
+    // -----------------------------------------------------------------------
+    // Depth / stencil
+    // -----------------------------------------------------------------------
+
+    /// Enable depth testing against the depth attachment.
+    bool depth_test_enable;
+
+    /// Allow the depth test to write new values into the depth attachment.
+    bool depth_write_enable;
+
+    /// The comparison function used when depth testing a fragment.
+    /// @see SPUDGPU_COMPARE_OP
+    SPUDGPU_COMPARE_OP depth_compare_op;
+
+    // -----------------------------------------------------------------------
+    // Blend state
+    // -----------------------------------------------------------------------
+
+    /// Per-attachment blend configuration.
+    /// @see spudgpu_blend_attachment_desc
+    spudgpu_blend_attachment_desc blend_attachment;
+
+    // -----------------------------------------------------------------------
+    // Attachment formats
+    // -----------------------------------------------------------------------
+
+    /// Pixel format of the color render target this pipeline will write to.
+    /// @see SPUDGPU_FORMAT
+    SPUDGPU_FORMAT color_attachment_format;
+
+    /// Pixel format of the depth attachment. Set to SPUDGPU_FORMAT_UNKNOWN for no depth.
+    /// @see SPUDGPU_FORMAT
+    SPUDGPU_FORMAT depth_format;
+
+    // -----------------------------------------------------------------------
+    // Pipeline layout
+    // -----------------------------------------------------------------------
+
+    /// Opaque descriptor set layout handles. Cast to VkDescriptorSetLayout* internally.
+    void *descriptor_set_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
+    uint32_t descriptor_set_layout_count;
+
+    spudgpu_push_constant_range_desc push_constant_ranges[SPUDGPU_MAX_PUSH_CONSTANT_RANGES];
+    uint32_t push_constant_range_count;
+
+    // -----------------------------------------------------------------------
+    // Tessellation
+    // -----------------------------------------------------------------------
+
+    /// Number of control points per patch. Only used when both tess stages are present.
+    /// Defaults to 3 when set to 0.
+    uint32_t patch_control_points;
+
+#if _DEBUG
+    /// @brief A string identifier used for diagnostic tracking.
+    const char *debug_name;
+#endif
+} spudgpu_shader_pipeline_desc;
+
+
+spudgpu_shader_pipeline spudgpu_create_shader_pipeline(
+    spudgpu_device device,
+    const spudgpu_shader_pipeline_desc *desc);
+
+void spudgpu_destroy_shader_pipeline(spudgpu_device device, spudgpu_shader_pipeline pipeline);
+
+
+/**
+ * @brief Complete configuration descriptor for creating a compute shader pipeline.
+ *
+ * Simpler than the graphics pipeline desc — no vertex input, rasterizer,
+ * blend state, or render pass. Just a single compute stage and its layout.
+ */
+typedef struct spudgpu_compute_pipeline_desc {
+    /// Compiled compute shader module. Required.
+    spudgpu_shader_module compute_module;
+
+    /// Null-terminated entry point name. Pass NULL to default to "main".
+    const char *compute_entry_point;
+
+    // -----------------------------------------------------------------------
+    // Pipeline layout
+    // -----------------------------------------------------------------------
+
+    /// Opaque descriptor set layout handles. Cast to VkDescriptorSetLayout* internally.
+    void *descriptor_set_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
+    uint32_t descriptor_set_layout_count;
+
+    spudgpu_push_constant_range_desc push_constant_ranges[SPUDGPU_MAX_PUSH_CONSTANT_RANGES];
+    uint32_t push_constant_range_count;
+
+#if _DEBUG
+    /// @brief A string identifier used for diagnostic tracking.
+    const char *debug_name;
+#endif
+} spudgpu_compute_pipeline_desc;
+
+/**
+ * @brief Allocates and compiles a compute shader pipeline.
+ *
+ * @param[in] device The GPU device to create this pipeline on.
+ * @param[in] desc   Pointer to the configuration descriptor.
+ *
+ * @return spudgpu_compute_pipeline A valid handle on success, or NULL if
+ * the module is missing, the layout is invalid, or SPIR-V compilation fails.
+ */
+spudgpu_compute_pipeline spudgpu_create_compute_pipeline(
+    spudgpu_device device,
+    const spudgpu_compute_pipeline_desc *desc);
+
+/**
+ * @brief Destroys a compute pipeline and frees all associated driver resources.
+ *
+ * @param[in] device   The GPU device that originally created this pipeline.
+ * @param[in] pipeline The compute pipeline to destroy.
+ *
+ * @warning Any command lists currently recording dispatches against this
+ * pipeline must have finished execution on the GPU timeline before calling this.
+ */
+void spudgpu_destroy_compute_pipeline(
+    spudgpu_device device,
+    spudgpu_compute_pipeline pipeline);
+
+
+// ============================================================================
+//  Descriptor Set Layout
+//  Maps to: VkDescriptorSetLayout (Vulkan) / MTLArgumentEncoder schema (Metal)
+// ============================================================================
+
+typedef struct spudgpu_descriptor_set_layout_t *spudgpu_descriptor_set_layout;
+
+/**
+ * @brief Enumerates the kinds of resources a shader binding slot can hold.
+ *
+ * Maps directly to VkDescriptorType on Vulkan and the corresponding
+ * MTLArgumentEncoder argument kinds on Metal.
+ */
+typedef uint32_t SPUDGPU_DESCRIPTOR_TYPE;
+
+enum {
+    /// Read-only structured constant block (UBO / constant buffer).
+    SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 0,
+
+    /// Read/write large data array (SSBO / structured buffer).
+    SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER = 1,
+
+    /// Combined image + sampler in a single binding (texture2D + sampler).
+    SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 2,
+
+    /// Sampled image without a sampler (use alongside SAMPLER binding).
+    SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE = 3,
+
+    /// Standalone sampler object.
+    SPUDGPU_DESCRIPTOR_TYPE_SAMPLER = 4,
+
+    /// Image the shader can both read and write (compute UAV / storage image).
+    SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE = 5,
+};
+
+/**
+ * @brief Describes a single binding slot within a descriptor set layout.
+ *
+ * Each entry corresponds to one `layout(set=N, binding=M)` declaration in GLSL.
+ */
+typedef struct spudgpu_descriptor_binding_desc {
+    /// Slot index matching `layout(binding = N)` in GLSL. Must be unique within a layout.
+    uint32_t binding;
+
+    /// Resource type expected at this binding slot.
+    /// @see SPUDGPU_DESCRIPTOR_TYPE
+    SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
+
+    /// Number of resources in this binding. Use 1 for a single resource,
+    /// or N for a fixed-size array (e.g. `uniform sampler2D textures[8]`).
+    uint32_t count;
+
+    /// Bitmask of shader stages that can access this binding.
+    /// @see SPUDGPU_SHADER_STAGE
+    SPUDGPU_SHADER_STAGE stage_flags;
+} spudgpu_descriptor_binding_desc;
+
+#define SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET  16
+
+/**
+ * @brief Configuration descriptor for a descriptor set layout.
+ *
+ * Describes the binding slots that make up one set. Pass this to
+ * spudgpu_create_descriptor_set_layout(), then hand the resulting
+ * handle into spudgpu_shader_pipeline_desc::descriptor_set_layouts[].
+ */
+typedef struct spudgpu_descriptor_set_layout_desc {
+    spudgpu_descriptor_binding_desc bindings[SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET];
+    uint32_t binding_count;
+
+#if _DEBUG
+    const char *debug_name;
+#endif
+} spudgpu_descriptor_set_layout_desc;
+
+/**
+ * @brief Creates an immutable descriptor set layout (schema).
+ *
+ * On Vulkan this allocates a VkDescriptorSetLayout. On Metal it creates an
+ * MTLArgumentEncoder schema. The resulting handle is passed into the pipeline
+ * desc to declare the expected binding shape.
+ *
+ * @param[in] device The GPU device to create this layout on.
+ * @param[in] desc   Pointer to the binding slot configuration.
+ * @return A valid handle, or NULL on failure.
+ */
+spudgpu_descriptor_set_layout spudgpu_create_descriptor_set_layout(
+    spudgpu_device device,
+    const spudgpu_descriptor_set_layout_desc *desc);
+
+/**
+ * @brief Destroys a descriptor set layout.
+ *
+ * @warning All descriptor sets allocated from this layout, and all pipelines
+ * referencing it, must be destroyed before calling this.
+ */
+void spudgpu_destroy_descriptor_set_layout(
+    spudgpu_device device,
+    spudgpu_descriptor_set_layout layout);
+
+
+// ============================================================================
+//  Descriptor Pool
+//  Maps to: VkDescriptorPool (Vulkan) / heap of argument buffers (Metal)
+// ============================================================================
+
+typedef struct spudgpu_descriptor_pool_t *spudgpu_descriptor_pool;
+
+/**
+ * @brief Declares how many descriptors of each type a pool should pre-allocate.
+ *
+ * Vulkan requires knowing the total capacity up front. Size your pool to cover
+ * the worst-case count across all frames-in-flight.
+ */
+typedef struct spudgpu_descriptor_pool_size {
+    SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
+    uint32_t count;
+} spudgpu_descriptor_pool_size;
+
+#define SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES  8
+
+/**
+ * @brief Configuration descriptor for a descriptor pool.
+ */
+typedef struct spudgpu_descriptor_pool_desc {
+    /// Maximum number of descriptor sets that can be allocated from this pool.
+    uint32_t max_sets;
+
+    spudgpu_descriptor_pool_size pool_sizes[SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES];
+    uint32_t pool_size_count;
+
+#if _DEBUG
+    const char *debug_name;
+#endif
+} spudgpu_descriptor_pool_desc;
+
+/**
+ * @brief Allocates a descriptor pool — the backing memory for descriptor sets.
+ *
+ * Create one pool per frame-in-flight (or one large shared pool) and reset it
+ * each frame rather than allocating/freeing individual sets every frame.
+ *
+ * @param[in] device The GPU device to create this pool on.
+ * @param[in] desc   Pointer to the capacity configuration.
+ * @return A valid handle, or NULL on failure.
+ */
+spudgpu_descriptor_pool spudgpu_create_descriptor_pool(
+    spudgpu_device device,
+    const spudgpu_descriptor_pool_desc *desc);
+
+/**
+ * @brief Resets the pool, freeing all sets allocated from it in bulk.
+ *
+ * Cheaper than freeing sets individually. Call once per frame before
+ * re-recording new descriptor writes.
+ *
+ * @param[in] device The GPU device that owns this pool.
+ * @param[in] pool   The pool to reset.
+ */
+void spudgpu_reset_descriptor_pool(
+    spudgpu_device device,
+    spudgpu_descriptor_pool pool);
+
+/**
+ * @brief Destroys a descriptor pool and all sets allocated from it.
+ *
+ * @warning All command lists currently using sets from this pool must have
+ * finished GPU execution before calling this.
+ */
+void spudgpu_destroy_descriptor_pool(
+    spudgpu_device device,
+    spudgpu_descriptor_pool pool);
+
+
+// ============================================================================
+//  Descriptor Set
+//  Maps to: VkDescriptorSet (Vulkan) / MTLBuffer argument buffer (Metal)
+// ============================================================================
+
+typedef struct spudgpu_descriptor_set_t *spudgpu_descriptor_set;
+
+/**
+ * @brief Allocation descriptor for one or more descriptor sets.
+ *
+ * All sets in a single call are allocated from the same pool in one
+ * driver round-trip (matches vkAllocateDescriptorSets semantics).
+ */
+typedef struct spudgpu_descriptor_set_alloc_desc {
+    spudgpu_descriptor_pool pool;
+
+    /// Each element describes the layout for one set being allocated.
+    spudgpu_descriptor_set_layout layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
+    uint32_t set_count;
+} spudgpu_descriptor_set_alloc_desc;
+
+/**
+ * @brief Allocates descriptor sets from a pool.
+ *
+ * @param[in]  device    The GPU device that owns the pool.
+ * @param[in]  desc      Allocation configuration (pool + layouts).
+ * @param[out] out_sets  Caller-supplied array that receives the allocated handles.
+ *                       Must be at least desc->set_count elements wide.
+ * @return true on success; false if the pool is out of capacity.
+ */
+bool spudgpu_allocate_descriptor_sets(
+    spudgpu_device device,
+    const spudgpu_descriptor_set_alloc_desc *desc,
+    spudgpu_descriptor_set *out_sets);
+
+
+// ============================================================================
+//  Descriptor Writes
+//  Wires actual GPU resources into the allocated binding slots.
+// ============================================================================
+
+/**
+ * @brief Describes a buffer range to write into a binding slot.
+ */
+typedef struct spudgpu_descriptor_buffer_info {
+    spudgpu_buffer buffer;
+
+    /// Byte offset from the start of the buffer to begin the binding window.
+    uint64_t offset;
+
+    /// Byte size of the binding window. Pass 0 to bind the entire buffer.
+    uint64_t range;
+} spudgpu_descriptor_buffer_info;
+
+/**
+ * @brief Describes an image view + sampler to write into a binding slot.
+ */
+typedef struct spudgpu_descriptor_image_info {
+    spudgpu_image_view image_view;
+
+    /**
+     * @brief The layout the image is expected to be in when shaders access it.
+     *
+     * On Vulkan this maps to VkImageLayout. Common values:
+     *   - SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY for sampled textures.
+     *   - SPUDGPU_IMAGE_LAYOUT_GENERAL for storage images (read/write).
+     *
+     * @see SPUDGPU_IMAGE_LAYOUT
+     */
+    uint32_t image_layout;
+} spudgpu_descriptor_image_info;
+
+/**
+ * @brief A single write operation targeting one binding slot in a descriptor set.
+ *
+ * Fill either buffer_info or image_info depending on the descriptor_type.
+ * The unused field is ignored by the backend.
+ */
+typedef struct spudgpu_write_descriptor_set {
+    /// The descriptor set to write into.
+    spudgpu_descriptor_set dst_set;
+
+    /// The binding slot index to update (matches spudgpu_descriptor_binding_desc::binding).
+    uint32_t dst_binding;
+
+    /// First array element to update. Use 0 for non-array bindings.
+    uint32_t dst_array_element;
+
+    /// Number of descriptors to update starting at dst_array_element.
+    uint32_t descriptor_count;
+
+    /// The type of descriptor being written. Must match the layout's declared type.
+    SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
+
+    /// Set when writing UNIFORM_BUFFER or STORAGE_BUFFER descriptors.
+    const spudgpu_descriptor_buffer_info *buffer_info;
+
+    /// Set when writing SAMPLED_IMAGE, STORAGE_IMAGE, or COMBINED_IMAGE_SAMPLER descriptors.
+    const spudgpu_descriptor_image_info *image_info;
+} spudgpu_write_descriptor_set;
+
+/**
+ * @brief Writes resource handles into one or more descriptor sets.
+ *
+ * This is the equivalent of vkUpdateDescriptorSets. Call this after allocating
+ * sets and before binding them to a command list.
+ *
+ * @param[in] device       The GPU device that owns the sets.
+ * @param[in] writes       Array of write operations.
+ * @param[in] write_count  Number of elements in the writes array.
+ */
+void spudgpu_update_descriptor_sets(
+    spudgpu_device device,
+    const spudgpu_write_descriptor_set *writes,
+    uint32_t write_count);
+
+
+// ============================================================================
+//  Command list binding
+// ============================================================================
+
+/**
+ * @brief Binds descriptor sets to the pipeline for subsequent draw or dispatch calls.
+ *
+ * Maps to vkCmdBindDescriptorSets. Call after binding the pipeline and before
+ * the draw/dispatch.
+ *
+ * @param[in] cmd          The active command list.
+ * @param[in] pipeline     The graphics pipeline whose layout defines the set slots.
+ * @param[in] first_set    The set index of the first element in sets[] (usually 0).
+ * @param[in] sets         Array of descriptor set handles to bind.
+ * @param[in] set_count    Number of sets to bind.
+ */
+void spudgpu_cmd_bind_descriptor_sets(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline,
+    uint32_t first_set,
+    const spudgpu_descriptor_set *sets,
+    uint32_t set_count);
+
+/**
+ * @brief Compute-pipeline variant of spudgpu_cmd_bind_descriptor_sets.
+ */
+void spudgpu_cmd_bind_descriptor_sets_compute(
+    spudgpu_command_list cmd,
+    spudgpu_compute_pipeline pipeline,
+    uint32_t first_set,
+    const spudgpu_descriptor_set *sets,
+    uint32_t set_count);
+
+
+// ============================================================================
+//  Image Layout
+//  Maps to: VkImageLayout (Vulkan)
+// ============================================================================
+
+typedef uint32_t SPUDGPU_IMAGE_LAYOUT;
+
+enum {
+    SPUDGPU_IMAGE_LAYOUT_UNDEFINED = 0,
+    SPUDGPU_IMAGE_LAYOUT_GENERAL = 1,
+    SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL = 2,
+    SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL = 3,
+    SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY = 4,
+    SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC = 5,
+    SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST = 6,
+    SPUDGPU_IMAGE_LAYOUT_PRESENT_SRC = 7,
+};
+
+
+// ============================================================================
+//  Image Barrier
+//  Maps to: vkCmdPipelineBarrier (Vulkan)
+// ============================================================================
+
+/**
+ * @brief Transitions an image from one layout to another, inserting the
+ * necessary pipeline barrier so dependent stages wait correctly.
+ *
+ * Call before spudgpu_cmd_begin_render_pass to move a swap chain image from
+ * UNDEFINED/PRESENT_SRC to COLOR_ATTACHMENT_OPTIMAL, and after
+ * spudgpu_cmd_end_render_pass to move it back to PRESENT_SRC.
+ *
+ * @param[in] cmd          The active recording command list.
+ * @param[in] image        The image whose layout is being changed.
+ * @param[in] old_layout   The current layout of the image.
+ * @param[in] new_layout   The target layout to transition into.
+ */
+void spudgpu_cmd_image_barrier(
+    spudgpu_command_list cmd,
+    spudgpu_image image,
+    SPUDGPU_IMAGE_LAYOUT old_layout,
+    SPUDGPU_IMAGE_LAYOUT new_layout);
+
+/**
+ * @brief Variant that takes a raw image view instead of a spudgpu_image.
+ *
+ * Useful for swap chain images, which are not created through spudgpu_create_image
+ * and so don't have a spudgpu_image handle. The image view must have been
+ * created from the target image (e.g. a swap chain image view).
+ *
+ * @param[in] cmd          The active recording command list.
+ * @param[in] image_view   An image view whose parent image will be transitioned.
+ * @param[in] old_layout   The current layout of the image.
+ * @param[in] new_layout   The target layout to transition into.
+ */
+void spudgpu_cmd_image_barrier_view(
+    spudgpu_command_list cmd,
+    spudgpu_image_view image_view,
+    SPUDGPU_IMAGE_LAYOUT old_layout,
+    SPUDGPU_IMAGE_LAYOUT new_layout);
+
+
+// ============================================================================
+//  Render Pass Begin / End
+//  Maps to: vkCmdBeginRenderPass / vkCmdEndRenderPass (Vulkan)
+// ============================================================================
+
+/**
+ * @brief Describes the render targets and clear values for one render pass.
+ */
+typedef struct spudgpu_render_pass_begin_desc {
+    /**
+     * @brief The image view to render into (e.g. a swap chain image view).
+     *
+     * On Vulkan, this is used to create (or look up a cached) VkFramebuffer
+     * that wraps this view for the pipeline's VkRenderPass.
+     */
+    spudgpu_image_view color_attachment;
+
+    /**
+     * @brief Optional depth/stencil attachment. Set to NULL for no depth.
+     */
+    spudgpu_image_view depth_attachment;
+
+    /**
+     * @brief The pipeline whose VkRenderPass compatibility this pass must match.
+     *
+     * SpudGPU uses the VkRenderPass stored in the pipeline to begin the pass.
+     * The color and depth attachment formats must match what the pipeline
+     * was created with.
+     */
+    spudgpu_shader_pipeline pipeline;
+
+    /// RGBA clear color applied when the color attachment loadOp is CLEAR.
+    float clear_color[4];
+
+    /// Clear value for the depth buffer (typically 1.0f).
+    float clear_depth;
+
+    /// Clear value for the stencil buffer (typically 0).
+    uint32_t clear_stencil;
+
+    /// Render area width in pixels. Usually the swap chain width.
+    uint32_t width;
+
+    /// Render area height in pixels. Usually the swap chain height.
+    uint32_t height;
+} spudgpu_render_pass_begin_desc;
+
+/**
+ * @brief Begins a render pass, binding the color (and optional depth)
+ * attachments and issuing the configured clear operations.
+ *
+ * Must be matched with spudgpu_cmd_end_render_pass before submitting.
+ *
+ * @param[in] cmd  The active recording command list.
+ * @param[in] desc Render pass configuration and attachment handles.
+ */
+void spudgpu_cmd_begin_render_pass(
+    spudgpu_command_list cmd,
+    const spudgpu_render_pass_begin_desc *desc);
+
+/**
+ * @brief Ends the current render pass.
+ *
+ * @param[in] cmd The active recording command list.
+ */
+void spudgpu_cmd_end_render_pass(spudgpu_command_list cmd);
+
 
 #ifdef __cplusplus
 }

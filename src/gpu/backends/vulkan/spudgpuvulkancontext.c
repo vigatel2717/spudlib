@@ -6,13 +6,6 @@
 #include "stdlib.h"
 #include "stdbool.h"
 
-#if __cplusplus
-extern "C" {
-
-
-
-#endif
-
 VkFormat convert_spud_to_vulkan_format(SPUDGPU_FORMAT format) {
     return VK_FORMAT_UNDEFINED;
 }
@@ -100,6 +93,29 @@ VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     return result;
 };
 
+void spudgpuvulkan__determine_vulkan_extensions(VkInstanceCreateInfo *pOutput) {
+    if (!pOutput) return;
+#if defined(_WIN32)
+    const char *extensions[] = { "VK_KHR_surface", "VK_KHR_win32_surface" };
+#elif defined(__linux__)
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+    // Pick one based on your display server target:
+    const char *extensions[] = { "VK_KHR_surface", "VK_KHR_xlib_surface" };
+#else
+    const char *extensions[] = { "VK_KHR_surface", "VK_KHR_wayland_surface" };
+#endif
+#endif
+    pOutput->enabledExtensionCount   = 2;
+    pOutput->ppEnabledExtensionNames = extensions;
+}
+
+#if __cplusplus
+extern "C" {
+
+
+
+#endif
+
 
 spudgpu_instance spudgpu_init(
     SPUDGPU_NATIVE_API native_api,
@@ -111,7 +127,7 @@ spudgpu_instance spudgpu_init(
 
     VkApplicationInfo appInfo = {0};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pNext = nullptr;
+    appInfo.pNext = NULL;
     appInfo.apiVersion = VK_API_VERSION_1_3;
     appInfo.pApplicationName = application_name;
     appInfo.applicationVersion = application_version;
@@ -120,11 +136,11 @@ spudgpu_instance spudgpu_init(
 
     VkInstanceCreateInfo createInfo = {0};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    createInfo.pNext = nullptr;
+    createInfo.pNext = NULL;
     createInfo.flags = 0;
     createInfo.pApplicationInfo = &appInfo;
-    createInfo.enabledExtensionCount = 0;
-    createInfo.ppEnabledExtensionNames = nullptr;
+    spudgpuvulkan__determine_vulkan_extensions(&createInfo);
+
     createInfo.enabledLayerCount = 0;
     createInfo.ppEnabledLayerNames = nullptr;
 
@@ -145,10 +161,6 @@ void spudgpu_terminate(spudgpu_instance instance) {
     vkDestroyInstance(vk_instance->_instance_vk, nullptr);
     free(vk_instance);
 }
-
-void digraph_sertsdfbsdmngdsgsioledrgskdfnb() <%
-    char name<:3:>="Bob";
-    %>
 
 bool spudgpu_enumerate_devices(
     spudgpu_instance instance,
@@ -176,7 +188,6 @@ bool spudgpu_enumerate_devices(
     *pOutputDevicesCount = deviceCount;
 
     // Instance needs to keep track for memory management.
-    // Eventually we will get rid of SPUDGPU_DEVICE_LIST.
     vkInstance->_devices_pointer_array = malloc(sizeof(uint64_t) * deviceCount);
     vkInstance->_devices_count = deviceCount;
 
@@ -193,7 +204,6 @@ bool spudgpu_enumerate_devices(
         (*ppOutputDevices)[i] = (spudgpu_device) pDeviceVulkan;
 
         // Instance needs to keep track for memory management.
-        // Eventually we will get rid of SPUDGPU_DEVICE_LIST.
         vkInstance->_devices_pointer_array[i] = (uint64_t) (*ppOutputDevices)[i];
     }
 
