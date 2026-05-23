@@ -66,3 +66,22 @@ endif ()
 find_package(Vulkan REQUIRED)
 target_include_directories(spudlib PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(spudlib PRIVATE Vulkan::Vulkan)
+
+
+
+# Path to the folder containing SDL3Config.cmake
+# Usually: [SDL3-folder]/lib/cmake/SDL3
+if (WIN32)
+    set(SDL3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/SDL3-3.4.8/cmake")
+endif ()
+find_package(SDL3 REQUIRED)
+target_link_libraries(spudlib PRIVATE SDL3::SDL3)
+
+# Copy DLL to output folder (So the app actually runs)
+if (WIN32)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:SDL3::SDL3>"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    )
+endif ()

@@ -5,6 +5,19 @@
 #include "spudgpu.h"
 #include <stdlib.h>
 
+VkPrimitiveTopology spudgpuvulkan___primitive_topology(SPUDGPU_PRIMITIVE_TOPOLOGY topology) {
+    switch (topology) {
+        case SPUDGPU_PRIMITIVE_TOPOLOGY_POINT_LIST: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+        case SPUDGPU_PRIMITIVE_TOPOLOGY_LINE_STRIP: return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+        case SPUDGPU_PRIMITIVE_TOPOLOGY_LINE_LIST: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        case SPUDGPU_PRIMITIVE_TOPOLOGY_PATCH_LIST: return VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+        case SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        case SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+        default:
+            return SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    }
+}
+
 VkShaderStageFlagBits spudgpuvulkan___shader_stage_flag_internal(
     SPUDGPU_SHADER_STAGE stage) {
     switch (stage) {
@@ -248,7 +261,7 @@ spudgpu_shader_pipeline spudgpu_create_shader_pipeline(
     // ------------------------------------------------------------------
     VkPipelineInputAssemblyStateCreateInfo inputAssembly = {0};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = (VkPrimitiveTopology) desc->primitive_topology;
+    inputAssembly.topology = spudgpuvulkan___primitive_topology(desc->primitive_topology);
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
     // ------------------------------------------------------------------
@@ -333,6 +346,9 @@ spudgpu_shader_pipeline spudgpu_create_shader_pipeline(
     // ------------------------------------------------------------------
     // 10. Pipeline layout  (push constant ranges + descriptor set layouts)
     // ------------------------------------------------------------------
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {0};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
     VkPushConstantRange push_constant_ranges[SPUDGPU_MAX_PUSH_CONSTANT_RANGES] = {0};
     for (uint32_t i = 0; i < desc->push_constant_range_count; i++) {
         push_constant_ranges[i].stageFlags =
@@ -341,13 +357,18 @@ spudgpu_shader_pipeline spudgpu_create_shader_pipeline(
         push_constant_ranges[i].offset = desc->push_constant_ranges[i].offset;
         push_constant_ranges[i].size = desc->push_constant_ranges[i].size;
     }
-
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {0};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = desc->descriptor_set_layout_count;
-    pipelineLayoutInfo.pSetLayouts = (const VkDescriptorSetLayout *) desc->descriptor_set_layouts;
     pipelineLayoutInfo.pushConstantRangeCount = desc->push_constant_range_count;
     pipelineLayoutInfo.pPushConstantRanges = push_constant_ranges;
+
+    VkDescriptorSetLayout vk_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
+    for (uint32_t i = 0; i < desc->descriptor_set_layout_count; i++) {
+        spudgpu_descriptor_set_layout_vulkan *vk_layout =
+                (spudgpu_descriptor_set_layout_vulkan *) desc->descriptor_set_layouts[i];
+        vk_layouts[i] = vk_layout->_layout_vk;
+    }
+
+    pipelineLayoutInfo.setLayoutCount = desc->descriptor_set_layout_count;
+    pipelineLayoutInfo.pSetLayouts = vk_layouts;
 
     if (vkCreatePipelineLayout(vk_device, &pipelineLayoutInfo, NULL,
                                &result._pipeline_layout_vk) != VK_SUCCESS) {

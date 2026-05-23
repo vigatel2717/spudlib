@@ -63,6 +63,47 @@ void spudgpu_submit_command_lists(
     }
 }
 
+// Submit command lists with full swap chain synchronization.
+// Waits on the swap chain's image_available semaphore,
+// signals its render_finished semaphore, and signals the in-flight fence.
+// Call this instead of spudgpu_submit_command_lists when rendering to a swap chain.
+void spudgpu_submit_command_lists_synced(
+    spudgpu_command_queue queue,
+    spudgpu_command_list *cmd_lists,
+    uint32_t cmd_list_count,
+    spudgpu_swap_chain swap_chain) {
+    if (!(queue && swap_chain)) return;
+
+    spudgpu_command_queue_vulkan *q = (spudgpu_command_queue_vulkan *) queue;
+    spudgpu_swap_chain_vulkan *sc = (spudgpu_swap_chain_vulkan *) swap_chain;
+    uint32_t frame = sc->_current_frame;
+
+    VkCommandBuffer buffers[cmd_list_count];
+    for (uint32_t i = 0; i < cmd_list_count; i++) {
+        spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd_lists[i];
+        buffers[i] = cl->_command_buffer_vk;
+    }
+
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    VkSubmitInfo submit = {0};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.waitSemaphoreCount = 1;
+    submit.pWaitSemaphores = &sc->_image_available_semaphores_vk[frame];
+    submit.pWaitDstStageMask = &wait_stage;
+    submit.commandBufferCount = cmd_list_count;
+    submit.pCommandBuffers = buffers;
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &sc->_render_finished_semaphores_vk[frame];
+
+    VkResult r = vkQueueSubmit(
+        q->_queue_vk, 1, &submit,
+        sc->_in_flight_fences_vk[frame]); // <-- fence gets signaled here
+    if (r != VK_SUCCESS) {
+        printf("spudgpu: vkQueueSubmit (synced) failed (%d)\n", r);
+    }
+}
+
 spudgpu_command_allocator spudgpu_create_command_allocator(spudgpu_device device) {
     if (!device) return NULL;
     spudgpu_device_vulkan *dev = (spudgpu_device_vulkan *) device;
@@ -153,10 +194,14 @@ void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
 void spudgpu_begin_command_list(spudgpu_command_list cmd) {
     if (!cmd) return;
     spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd;
-    VkCommandBufferBeginInfo begin = {0};
-    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    // Reset so this buffer can be re-recorded this frame.
+    vkResetCommandBuffer(cl->_command_buffer_vk, 0);
+
     // ONE_TIME_SUBMIT_BIT is a hint that this buffer is re-recorded each frame.
     // Remove it if you plan to record once and submit many times.
+    VkCommandBufferBeginInfo begin = {0};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cl->_command_buffer_vk, &begin);
 }
@@ -269,6 +314,19 @@ void spudgpu_draw(
         1,
         start_vertex_location,
         0);
+}
+
+void spudgpu_cmd_bind_pipeline(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline) {
+    if (!(cmd && pipeline)) return;
+    spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd;
+    spudgpu_shader_pipeline_vulkan *vk_pipeline = (spudgpu_shader_pipeline_vulkan *) pipeline;
+
+    vkCmdBindPipeline(
+        cl->_command_buffer_vk,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        vk_pipeline->_pipeline_vk);
 }
 
 void spudgpu_draw_indexed(

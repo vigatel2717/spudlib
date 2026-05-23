@@ -298,7 +298,8 @@ void spudgpu_cmd_bind_descriptor_sets(
 
     // The command list's internal VkCommandBuffer lives at the front of the struct,
     // matching the pattern used in spudgpuvulkanbuffer.c / the command list implementation.
-    VkCommandBuffer vk_cmd = *((VkCommandBuffer *) cmd);
+    spudgpu_command_list_vulkan *vkCmd = (spudgpu_command_list_vulkan *) cmd;
+    VkCommandBuffer vk_cmd = vkCmd->_command_buffer_vk;
 
     spudgpu_shader_pipeline_vulkan *vkPipeline =
             (spudgpu_shader_pipeline_vulkan *) pipeline;

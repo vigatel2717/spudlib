@@ -417,6 +417,16 @@ void spudgpu_submit_command_lists(
     spudgpu_command_list *cmd_lists,
     uint32_t cmd_list_count);
 
+// Submit command lists with full swap chain synchronization.
+// Waits on the swap chain's image_available semaphore,
+// signals its render_finished semaphore, and signals the in-flight fence.
+// Call this instead of spudgpu_submit_command_lists when rendering to a swap chain.
+void spudgpu_submit_command_lists_synced(
+    spudgpu_command_queue    queue,
+    spudgpu_command_list    *cmd_lists,
+    uint32_t                 cmd_list_count,
+    spudgpu_swap_chain       swap_chain);
+
 spudgpu_command_allocator spudgpu_create_command_allocator(spudgpu_device device);
 
 void spudgpu_reset_command_allocator(spudgpu_command_allocator allocator);
@@ -1079,6 +1089,16 @@ spudgpu_surface spudgpu_create_surface(spudgpu_instance instance, void *window_h
 
 void spudgpu_destroy_surface(spudgpu_surface surface);
 
+typedef bool (*spudgpu_surface_create_fn)(
+    void *vk_instance,   // VkInstance, typed as void* to keep spudgpu.h Vulkan-free
+    void *user_data,
+    void *out_surface);  // VkSurfaceKHR*, typed as void*
+
+spudgpu_surface spudgpu_create_surface_from_callback(
+    spudgpu_instance instance,
+    void *user_data,
+    spudgpu_surface_create_fn create_fn);
+
 
 /**
  * @brief Dictates the sync relationship between the GPU frame completion and the monitor's refresh cycle.
@@ -1478,6 +1498,9 @@ spudgpu_shader_pipeline spudgpu_create_shader_pipeline(
 
 void spudgpu_destroy_shader_pipeline(spudgpu_device device, spudgpu_shader_pipeline pipeline);
 
+void spudgpu_cmd_bind_pipeline(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline);
 
 /**
  * @brief Complete configuration descriptor for creating a compute shader pipeline.

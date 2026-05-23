@@ -7,7 +7,149 @@
 #include "stdbool.h"
 
 VkFormat convert_spud_to_vulkan_format(SPUDGPU_FORMAT format) {
-    return VK_FORMAT_UNDEFINED;
+    switch (format) {
+        // ── 128-bit ──────────────────────────────────────────────────────────
+        case SPUDGPU_FORMAT_R32G32B32A32_TYPELESS: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        // no typeless in Vulkan; treat as float
+        case SPUDGPU_FORMAT_R32G32B32A32_FLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case SPUDGPU_FORMAT_R32G32B32A32_UINT: return VK_FORMAT_R32G32B32A32_UINT;
+        case SPUDGPU_FORMAT_R32G32B32A32_SINT: return VK_FORMAT_R32G32B32A32_SINT;
+
+        // ── 96-bit ───────────────────────────────────────────────────────────
+        case SPUDGPU_FORMAT_R32G32B32_TYPELESS: return VK_FORMAT_R32G32B32_SFLOAT;
+        case SPUDGPU_FORMAT_R32G32B32_FLOAT: return VK_FORMAT_R32G32B32_SFLOAT;
+        case SPUDGPU_FORMAT_R32G32B32_UINT: return VK_FORMAT_R32G32B32_UINT;
+        case SPUDGPU_FORMAT_R32G32B32_SINT: return VK_FORMAT_R32G32B32_SINT;
+
+        // ── 64-bit ───────────────────────────────────────────────────────────
+        case SPUDGPU_FORMAT_R16G16B16A16_TYPELESS: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case SPUDGPU_FORMAT_R16G16B16A16_FLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case SPUDGPU_FORMAT_R16G16B16A16_UNORM: return VK_FORMAT_R16G16B16A16_UNORM;
+        case SPUDGPU_FORMAT_R16G16B16A16_UINT: return VK_FORMAT_R16G16B16A16_UINT;
+        case SPUDGPU_FORMAT_R16G16B16A16_SNORM: return VK_FORMAT_R16G16B16A16_SNORM;
+        case SPUDGPU_FORMAT_R16G16B16A16_SINT: return VK_FORMAT_R16G16B16A16_SINT;
+
+        case SPUDGPU_FORMAT_R32G32_TYPELESS: return VK_FORMAT_R32G32_SFLOAT;
+        case SPUDGPU_FORMAT_R32G32_FLOAT: return VK_FORMAT_R32G32_SFLOAT;
+        case SPUDGPU_FORMAT_R32G32_UINT: return VK_FORMAT_R32G32_UINT;
+        case SPUDGPU_FORMAT_R32G32_SINT: return VK_FORMAT_R32G32_SINT;
+
+        // ── Depth/stencil packed (64-bit) ────────────────────────────────────
+        case SPUDGPU_FORMAT_R32G8X24_TYPELESS: return VK_FORMAT_D32_SFLOAT_S8_UINT;
+        case SPUDGPU_FORMAT_D32_FLOAT_S8X24_UINT: return VK_FORMAT_D32_SFLOAT_S8_UINT;
+        case SPUDGPU_FORMAT_R32_FLOAT_X8X24_TYPELESS: return VK_FORMAT_D32_SFLOAT_S8_UINT;
+        // no direct equivalent; sampled depth view
+        case SPUDGPU_FORMAT_X32_TYPELESS_G8X24_UINT: return VK_FORMAT_D32_SFLOAT_S8_UINT; // sampled stencil view
+
+        // ── 32-bit ───────────────────────────────────────────────────────────
+        case SPUDGPU_FORMAT_R10G10B10A2_TYPELESS: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+        case SPUDGPU_FORMAT_R10G10B10A2_UNORM: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+        case SPUDGPU_FORMAT_R10G10B10A2_UINT: return VK_FORMAT_A2B10G10R10_UINT_PACK32;
+        case SPUDGPU_FORMAT_R11G11B10_FLOAT: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+
+        case SPUDGPU_FORMAT_R8G8B8A8_TYPELESS: return VK_FORMAT_R8G8B8A8_UNORM;
+        case SPUDGPU_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
+        case SPUDGPU_FORMAT_R8G8B8A8_UNORM_SRGB: return VK_FORMAT_R8G8B8A8_SRGB;
+        case SPUDGPU_FORMAT_R8G8B8A8_UINT: return VK_FORMAT_R8G8B8A8_UINT;
+        case SPUDGPU_FORMAT_R8G8B8A8_SNORM: return VK_FORMAT_R8G8B8A8_SNORM;
+        case SPUDGPU_FORMAT_R8G8B8A8_SINT: return VK_FORMAT_R8G8B8A8_SINT;
+
+        case SPUDGPU_FORMAT_R16G16_TYPELESS: return VK_FORMAT_R16G16_SFLOAT;
+        case SPUDGPU_FORMAT_R16G16_FLOAT: return VK_FORMAT_R16G16_SFLOAT;
+        case SPUDGPU_FORMAT_R16G16_UNORM: return VK_FORMAT_R16G16_UNORM;
+        case SPUDGPU_FORMAT_R16G16_UINT: return VK_FORMAT_R16G16_UINT;
+        case SPUDGPU_FORMAT_R16G16_SNORM: return VK_FORMAT_R16G16_SNORM;
+        case SPUDGPU_FORMAT_R16G16_SINT: return VK_FORMAT_R16G16_SINT;
+
+        case SPUDGPU_FORMAT_R32_TYPELESS: return VK_FORMAT_R32_SFLOAT;
+        case SPUDGPU_FORMAT_D32_FLOAT: return VK_FORMAT_D32_SFLOAT;
+        case SPUDGPU_FORMAT_R32_FLOAT: return VK_FORMAT_R32_SFLOAT;
+        case SPUDGPU_FORMAT_R32_UINT: return VK_FORMAT_R32_UINT;
+        case SPUDGPU_FORMAT_R32_SINT: return VK_FORMAT_R32_SINT;
+
+        // ── Depth/stencil packed (32-bit) ────────────────────────────────────
+        case SPUDGPU_FORMAT_R24G8_TYPELESS: return VK_FORMAT_D24_UNORM_S8_UINT;
+        case SPUDGPU_FORMAT_D24_UNORM_S8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
+        case SPUDGPU_FORMAT_R24_UNORM_X8_TYPELESS: return VK_FORMAT_D24_UNORM_S8_UINT;
+        case SPUDGPU_FORMAT_X24_TYPELESS_G8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
+
+        // ── 16-bit ───────────────────────────────────────────────────────────
+        case SPUDGPU_FORMAT_R8G8_TYPELESS: return VK_FORMAT_R8G8_UNORM;
+        case SPUDGPU_FORMAT_R8G8_UNORM: return VK_FORMAT_R8G8_UNORM;
+        case SPUDGPU_FORMAT_R8G8_UINT: return VK_FORMAT_R8G8_UINT;
+        case SPUDGPU_FORMAT_R8G8_SNORM: return VK_FORMAT_R8G8_SNORM;
+        case SPUDGPU_FORMAT_R8G8_SINT: return VK_FORMAT_R8G8_SINT;
+
+        case SPUDGPU_FORMAT_R16_TYPELESS: return VK_FORMAT_R16_SFLOAT;
+        case SPUDGPU_FORMAT_R16_FLOAT: return VK_FORMAT_R16_SFLOAT;
+        case SPUDGPU_FORMAT_D16_UNORM: return VK_FORMAT_D16_UNORM;
+        case SPUDGPU_FORMAT_R16_UNORM: return VK_FORMAT_R16_UNORM;
+        case SPUDGPU_FORMAT_R16_UINT: return VK_FORMAT_R16_UINT;
+        case SPUDGPU_FORMAT_R16_SNORM: return VK_FORMAT_R16_SNORM;
+        case SPUDGPU_FORMAT_R16_SINT: return VK_FORMAT_R16_SINT;
+
+        // ── 8-bit ────────────────────────────────────────────────────────────
+        case SPUDGPU_FORMAT_R8_TYPELESS: return VK_FORMAT_R8_UNORM;
+        case SPUDGPU_FORMAT_R8_UNORM: return VK_FORMAT_R8_UNORM;
+        case SPUDGPU_FORMAT_R8_UINT: return VK_FORMAT_R8_UINT;
+        case SPUDGPU_FORMAT_R8_SNORM: return VK_FORMAT_R8_SNORM;
+        case SPUDGPU_FORMAT_R8_SINT: return VK_FORMAT_R8_SINT;
+        case SPUDGPU_FORMAT_A8_UNORM: return VK_FORMAT_R8_UNORM;
+        // Vulkan has no dedicated A8; use R8 and swizzle in the image view
+
+        // ── Exotic / packed ──────────────────────────────────────────────────
+        case SPUDGPU_FORMAT_R1_UNORM: return VK_FORMAT_UNDEFINED; // no Vulkan equivalent
+        case SPUDGPU_FORMAT_R9G9B9E5_SHAREDEXP: return VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
+        case SPUDGPU_FORMAT_R8G8_B8G8_UNORM: return VK_FORMAT_B8G8R8G8_422_UNORM; // DXGI packed 4:2:2
+        case SPUDGPU_FORMAT_G8R8_G8B8_UNORM: return VK_FORMAT_G8B8G8R8_422_UNORM;
+
+        // ── BGR / swapchain formats ───────────────────────────────────────────
+        case SPUDGPU_FORMAT_B5G6R5_UNORM: return VK_FORMAT_B5G6R5_UNORM_PACK16;
+        case SPUDGPU_FORMAT_B5G5R5A1_UNORM: return VK_FORMAT_B5G5R5A1_UNORM_PACK16;
+        case SPUDGPU_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM;
+        case SPUDGPU_FORMAT_B8G8R8X8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM; // X = ignored alpha; same bits
+        case SPUDGPU_FORMAT_B8G8R8A8_TYPELESS: return VK_FORMAT_B8G8R8A8_UNORM;
+        case SPUDGPU_FORMAT_B8G8R8A8_UNORM_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
+        case SPUDGPU_FORMAT_B8G8R8X8_TYPELESS: return VK_FORMAT_B8G8R8A8_UNORM;
+        case SPUDGPU_FORMAT_B8G8R8X8_UNORM_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
+        case SPUDGPU_FORMAT_B4G4R4A4_UNORM: return VK_FORMAT_B4G4R4A4_UNORM_PACK16;
+        case SPUDGPU_FORMAT_R10G10B10_XR_BIAS_A2_UNORM: return VK_FORMAT_UNDEFINED;
+        // XR bias is display-only; no Vulkan match
+
+        // ── BC block compression ──────────────────────────────────────────────
+        case SPUDGPU_FORMAT_BC1_TYPELESS: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC1_UNORM: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC1_UNORM_SRGB: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+        case SPUDGPU_FORMAT_BC2_TYPELESS: return VK_FORMAT_BC2_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC2_UNORM: return VK_FORMAT_BC2_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC2_UNORM_SRGB: return VK_FORMAT_BC2_SRGB_BLOCK;
+        case SPUDGPU_FORMAT_BC3_TYPELESS: return VK_FORMAT_BC3_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC3_UNORM: return VK_FORMAT_BC3_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC3_UNORM_SRGB: return VK_FORMAT_BC3_SRGB_BLOCK;
+        case SPUDGPU_FORMAT_BC4_TYPELESS: return VK_FORMAT_BC4_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC4_UNORM: return VK_FORMAT_BC4_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC4_SNORM: return VK_FORMAT_BC4_SNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC5_TYPELESS: return VK_FORMAT_BC5_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC5_UNORM: return VK_FORMAT_BC5_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC5_SNORM: return VK_FORMAT_BC5_SNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC6H_TYPELESS: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+        case SPUDGPU_FORMAT_BC6H_UF16: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+        case SPUDGPU_FORMAT_BC6H_SF16: return VK_FORMAT_BC6H_SFLOAT_BLOCK;
+        case SPUDGPU_FORMAT_BC7_TYPELESS: return VK_FORMAT_BC7_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC7_UNORM: return VK_FORMAT_BC7_UNORM_BLOCK;
+        case SPUDGPU_FORMAT_BC7_UNORM_SRGB: return VK_FORMAT_BC7_SRGB_BLOCK;
+
+        // ── YUV / video formats ───────────────────────────────────────────────
+        case SPUDGPU_FORMAT_NV12: return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+        case SPUDGPU_FORMAT_P010: return VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+        case SPUDGPU_FORMAT_P016: return VK_FORMAT_G16_B16R16_2PLANE_420_UNORM;
+        case SPUDGPU_FORMAT_YUY2: return VK_FORMAT_G8B8G8R8_422_UNORM;
+        case SPUDGPU_FORMAT_420_OPAQUE: return VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM;
+        // Y210/Y216/Y410/Y416/NV11/AYUV/AI44/IA44/P8/A8P8/P208/V208/V408
+        // have no standard Vulkan equivalents; fall through to UNDEFINED
+
+        default: return VK_FORMAT_UNDEFINED;
+    }
 }
 
 
@@ -96,16 +238,18 @@ VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
 void spudgpuvulkan__determine_vulkan_extensions(VkInstanceCreateInfo *pOutput) {
     if (!pOutput) return;
 #if defined(_WIN32)
-    const char *extensions[] = { "VK_KHR_surface", "VK_KHR_win32_surface" };
+    static const char *extensions[] = {"VK_KHR_surface", "VK_KHR_win32_surface"};
 #elif defined(__linux__)
-#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+#if defined(SPUDGPU_PLATFORM_XLIB)
     // Pick one based on your display server target:
-    const char *extensions[] = { "VK_KHR_surface", "VK_KHR_xlib_surface" };
+    static const char *extensions[] = {"VK_KHR_surface", "VK_KHR_xlib_surface"};
+#elif defined(SPUDGPU_PLATFORM_WAYLAND)
+    static const char *extensions[] = {"VK_KHR_surface", "VK_KHR_wayland_surface"};
 #else
-    const char *extensions[] = { "VK_KHR_surface", "VK_KHR_wayland_surface" };
+#error "In Linux, you either need XLIB or WAYLAND"
 #endif
 #endif
-    pOutput->enabledExtensionCount   = 2;
+    pOutput->enabledExtensionCount = 2;
     pOutput->ppEnabledExtensionNames = extensions;
 }
 

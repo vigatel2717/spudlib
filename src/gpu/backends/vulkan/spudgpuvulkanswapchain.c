@@ -173,6 +173,34 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 	return result;
 }
 
+void spudgpuvulkan___fences_semaphores_swapchain_creation_internal(
+	spudgpu_swap_chain_vulkan *pSwapChain) {
+	// In spudgpu_create_swap_chain, after spudgpuvulkan_create_image_views_internal():
+
+	uint32_t max_frames = pSwapChain->_desc.buffer_count > 0 ? pSwapChain->_desc.buffer_count : 2;
+	pSwapChain->_max_frames_in_flight = max_frames;
+	pSwapChain->_current_frame = 0;
+
+	pSwapChain->_image_available_semaphores_vk = malloc(max_frames * sizeof(VkSemaphore));
+	pSwapChain->_render_finished_semaphores_vk = malloc(max_frames * sizeof(VkSemaphore));
+	pSwapChain->_in_flight_fences_vk = malloc(max_frames * sizeof(VkFence));
+
+	VkDevice vk_device = pSwapChain->_device._logical_device_vk;
+
+	VkSemaphoreCreateInfo semInfo = {0};
+	semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+	VkFenceCreateInfo fenceInfo = {0};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // <-- CRITICAL
+
+	for (uint32_t i = 0; i < max_frames; i++) {
+		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_image_available_semaphores_vk[i]);
+		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_render_finished_semaphores_vk[i]);
+		vkCreateFence(vk_device, &fenceInfo, NULL, &pSwapChain->_in_flight_fences_vk[i]);
+	}
+}
+
 /*
 VkExtent2D swap_chain_vulkan::choose_extent(const VkSurfaceCapabilitiesKHR& capabilities, uint32_t width,
                                             uint32_t height) {
@@ -230,17 +258,18 @@ VkResult spudgpuvulkan_create_image_views_internal(
 		createInfo.subresourceRange.layerCount = 1;
 
 		spudgpu_image_view_vulkan *view = &pSwapChain->_swapchain_image_views_vk[i];
-
+		view->_parent_image._image_vk = pSwapChain->_swapchain_images_vk[i]; // Store the VkImage into the parent image object
 		result = vkCreateImageView(pSwapChain->_device._logical_device_vk, &createInfo, nullptr,
 		                           &pSwapChain->_swapchain_image_views_vk[i]._image_view_vk);
 		if (result != VK_SUCCESS) {
 			//throw std::runtime_error("failed to create image views!");
 			return result;
 		}
+
+
 	}
 	return result;
 }
-
 
 
 spudgpu_surface spudgpu_create_surface(
@@ -259,22 +288,22 @@ spudgpu_surface spudgpu_create_surface(
 
 #if defined(SPUDGPU_PLATFORM_WIN32)
 	VkWin32SurfaceCreateInfoKHR ci = {0};
-	ci.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-	ci.hwnd      = (HWND) window_handle;
+	ci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+	ci.hwnd = (HWND) window_handle;
 	ci.hinstance = GetModuleHandle(NULL);
 	r = vkCreateWin32SurfaceKHR(vk, &ci, NULL, &result._surface_vk);
 
 #elif defined(SPUDGPU_PLATFORM_WAYLAND)
 	VkWaylandSurfaceCreateInfoKHR ci = {0};
-	ci.sType   = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+	ci.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
 	ci.display = (struct wl_display *) display_handle;
 	ci.surface = (struct wl_surface *) window_handle;
 	r = vkCreateWaylandSurfaceKHR(vk, &ci, NULL, &result._surface_vk);
 
 #elif defined(SPUDGPU_PLATFORM_XLIB)
 	VkXlibSurfaceCreateInfoKHR ci = {0};
-	ci.sType  = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-	ci.dpy    = (Display *) display_handle;
+	ci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+	ci.dpy = (Display *) display_handle;
 	ci.window = (Window)(uintptr_t) window_handle;
 	r = vkCreateXlibSurfaceKHR(vk, &ci, NULL, &result._surface_vk);
 
@@ -296,6 +325,32 @@ void spudgpu_destroy_surface(spudgpu_surface surface) {
 	free(vk);
 }
 
+spudgpu_surface spudgpu_create_surface_from_callback(
+	spudgpu_instance instance,
+	void *user_data,
+	spudgpu_surface_create_fn create_fn) {
+	if (!(instance && create_fn)) return NULL;
+
+	spudgpu_instance_vulkan *vkInst = (spudgpu_instance_vulkan *) instance;
+
+	spudgpu_surface_vulkan *result = calloc(1, sizeof(spudgpu_surface_vulkan));
+	if (!result) return NULL;
+
+	result->_instance = *vkInst;
+
+	bool ok = create_fn(
+		(void *) vkInst->_instance_vk,
+		user_data,
+		(void *) &result->_surface_vk);
+
+	if (!ok) {
+		free(result);
+		return NULL;
+	}
+
+	return (spudgpu_surface) result;
+}
+
 
 spudgpu_swap_chain spudgpu_create_swap_chain(
 	spudgpu_device device,
@@ -306,6 +361,11 @@ spudgpu_swap_chain spudgpu_create_swap_chain(
 	result._device = *((spudgpu_device_vulkan *) device);
 	memcpy(&result._desc, desc, sizeof(spudgpu_swap_chain_desc));
 
+	if (desc->surface) {
+		spudgpu_surface_vulkan *vk_surface = (spudgpu_surface_vulkan *) desc->surface;
+		result._surface_vk = vk_surface->_surface_vk;
+	}
+
 	VkResult r = VK_SUCCESS;
 	if (r != VK_SUCCESS) return nullptr;
 
@@ -315,6 +375,8 @@ spudgpu_swap_chain spudgpu_create_swap_chain(
 
 	r = spudgpuvulkan_create_image_views_internal(&result, result._swapchain_images_count);
 	if (r != VK_SUCCESS) return nullptr;
+
+	spudgpuvulkan___fences_semaphores_swapchain_creation_internal(&result);
 
 	spudgpu_swap_chain_vulkan *pResult = malloc(sizeof(spudgpu_swap_chain_vulkan));
 	memcpy(pResult, &result, sizeof(spudgpu_swap_chain_vulkan));
