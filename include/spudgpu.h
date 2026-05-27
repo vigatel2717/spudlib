@@ -342,6 +342,7 @@ typedef uint32_t SPUDGPU_NATIVE_API;
  * @name Supported Graphics APIs
  * @anchor SPUDGPU_API_Constants
  * * Defined constants representing the target graphics hardware interface.
+ * Metal for Apple Silicon (macOS, iPadOS, iOS), Vulkan for everything else (Windows, Linux).
  */
 ///@{
 enum {
@@ -362,14 +363,14 @@ enum {
  * @brief Initializes the global SpudGPU context.
  * * Configures the underlying graphics API backend, sets up instances, and internally gathers a list of GPU devices.
  * Use spudgpu_get_devices() after calling this function.
- * * @param[in] native_api                 The targeted graphics backend (Vulkan or Metal).
+ * @param[in] native_api          The targeted graphics backend (Vulkan or Metal).
  * @param[in] application_name    Null-terminated string containing the client application's name.
  * @param[in] application_version Packed 32-bit integer representing the application version.
  * @param[in] engine_name         Null-terminated string containing the custom game/rendering engine name.
  * @param[in] engine_version      Packed 32-bit integer representing the engine version.
- * * @return a new instance of SpudGPU if successful.
+ * @return a new instance of SpudGPU if successful.
  * @return NULL if the requested API is unsupported, or driver initialization failed.
- * * @note Must be called before invoking any other SpudGPU API function.
+ * @note Must be called before invoking any other SpudGPU API function.
  */
 spudgpu_instance spudgpu_init(
     SPUDGPU_NATIVE_API native_api,
@@ -380,10 +381,10 @@ spudgpu_instance spudgpu_init(
 
 /**
  * @brief Shuts down the SpudGPU instance.
- * * Disposes of all internal runtime states, destroys active backend contexts,
+ * Disposes of all internal runtime states, destroys active backend contexts,
  * and releases hooks into the graphics hardware.
- * * @param[in] instance The SpudGPU instance of which to be terminated.
- * * @warning Calling this while resources (like buffers, textures, or pipelines)
+ * @param[in] instance The SpudGPU instance of which to be terminated.
+ * @warning Calling this while resources (like buffers, textures, or pipelines)
  * are still active will result in undefined behavior or memory leaks.
  */
 void spudgpu_terminate(spudgpu_instance instance);
@@ -391,10 +392,10 @@ void spudgpu_terminate(spudgpu_instance instance);
 
 /**
  * @brief Retreive an enumeration of the physical graphics devices available on the host machine.
- * * @param[in] instance The SpudGPU instance of which to enumerate devices through.
- * * @param ppOutputDevices[out]
- * * @param pOutputDevicesCount[out]
- * * @return true if all is successful, false if instance is null, or if the native GPU API had an error.
+ * @param[in] instance The SpudGPU instance of which to enumerate devices through.
+ * @param ppOutputDevices[out]
+ * @param pOutputDevicesCount[out]
+ * @return true if all is successful, false if instance is null, or if the native GPU API had an error.
  */
 bool spudgpu_enumerate_devices(
     spudgpu_instance instance,
@@ -403,13 +404,18 @@ bool spudgpu_enumerate_devices(
 
 /**
  * @brief Retrieves the active graphics API backend for the SpudGPU instance.
- * * @param[in] instance The SpudGPU instance of which to get GPU API.
- * * @return SPUDGPU_API The enum value representing the active backend.
+ * @param[in] instance The SpudGPU instance of which to get GPU API.
+ * @return SPUDGPU_API The enum value representing the active backend.
  * Returns `SPUDGPU_API_NONE` if instance is NULL.
  */
 SPUDGPU_NATIVE_API spudgpu_get_native_gpu_api(spudgpu_instance instance);
 
-
+/**
+ * @brief Get the graphics command queue linked to the GPU device.
+ * @param[in] device The GPU device to get the command queue.
+ * @return Graphics Command Queue.
+ * @return NULL if device is NULL.
+ */
 spudgpu_command_queue spudgpu_get_graphics_queue(spudgpu_device device);
 
 void spudgpu_submit_command_lists(
@@ -422,19 +428,43 @@ void spudgpu_submit_command_lists(
 // signals its render_finished semaphore, and signals the in-flight fence.
 // Call this instead of spudgpu_submit_command_lists when rendering to a swap chain.
 void spudgpu_submit_command_lists_synced(
-    spudgpu_command_queue    queue,
-    spudgpu_command_list    *cmd_lists,
-    uint32_t                 cmd_list_count,
-    spudgpu_swap_chain       swap_chain);
+    spudgpu_command_queue queue,
+    spudgpu_command_list *cmd_lists,
+    uint32_t cmd_list_count,
+    spudgpu_swap_chain swap_chain);
 
+/**
+ * @brief Create a command allocator on the GPU device.
+ * @param[in] device The GPU device to create a command allocator on.
+ * @return A new command allocater.
+ * @return NULL if device is NULL.
+ */
 spudgpu_command_allocator spudgpu_create_command_allocator(spudgpu_device device);
 
+/**
+ * @brief Reset the command allocator.
+ * @param[in] allocator The command allocator to reset.
+ */
 void spudgpu_reset_command_allocator(spudgpu_command_allocator allocator);
 
+/**
+ * @brief Destroy the command allocator.
+ * param[in] allocator The command allocator to destroy.
+ */
 void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator);
 
+/**
+ * @brief Create a new command list used on the command allocator.
+ * param[in] allocator The command allocator used for the command list.
+ * @return A new command list.
+ * @return NULL if allocator is NULL.
+ */
 spudgpu_command_list spudgpu_create_command_list(spudgpu_command_allocator allocator);
 
+/**
+ * @brief Destroy a command list.
+ * @param[in] cmd The command list to destroy.
+ */
 void spudgpu_destroy_command_list(spudgpu_command_list cmd);
 
 
@@ -1070,7 +1100,6 @@ void spudgpu_draw_indexed_instanced(
     uint32_t start_instance_location);
 
 
-
 typedef struct spudgpu_surface_t *spudgpu_surface;
 
 
@@ -1090,9 +1119,9 @@ spudgpu_surface spudgpu_create_surface(spudgpu_instance instance, void *window_h
 void spudgpu_destroy_surface(spudgpu_surface surface);
 
 typedef bool (*spudgpu_surface_create_fn)(
-    void *vk_instance,   // VkInstance, typed as void* to keep spudgpu.h Vulkan-free
+    void *vk_instance, // VkInstance, typed as void* to keep spudgpu.h Vulkan-free
     void *user_data,
-    void *out_surface);  // VkSurfaceKHR*, typed as void*
+    void *out_surface); // VkSurfaceKHR*, typed as void*
 
 spudgpu_surface spudgpu_create_surface_from_callback(
     spudgpu_instance instance,
@@ -1194,7 +1223,7 @@ spudgpu_swap_chain_desc spudgpu_get_swap_chain_desc(spudgpu_swap_chain swap_chai
 uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain);
 
 /**
- * Presents the current backbuffer to the screen.
+ * Presents the current back buffer to the screen.
  * Call this after you have finished recording and submitting commands for the frame.
  * * @param swap_chain The swap chain holding the image to display.
  */
@@ -1207,6 +1236,31 @@ void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain);
 spudgpu_image_view spudgpu_get_swap_chain_image_view(
     spudgpu_swap_chain swap_chain,
     uint32_t image_index);
+
+
+typedef struct spudgpu_semaphore_t *spudgpu_semaphore;
+typedef struct spudgpu_fence_t *spudgpu_fence;
+
+/**
+ * @brief Returns the image-available semaphore for the swap chain's current frame slot.
+ * This semaphore is signaled by vkAcquireNextImageKHR when the image is ready to render into.
+ * Pass it as a wait semaphore in spudgpu_submit_desc. Do NOT destroy it — the swap chain owns it.
+ */
+spudgpu_semaphore spudgpu_swap_chain_get_image_available_semaphore(spudgpu_swap_chain swap_chain);
+
+/**
+ * @brief Returns the render-finished semaphore for the swap chain's current frame slot.
+ * Signal this semaphore on queue submission so the presentation engine waits for rendering.
+ * Pass it as a signal semaphore in spudgpu_submit_desc. Do NOT destroy it — the swap chain owns it.
+ */
+spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_chain swap_chain);
+
+/**
+ * @brief Returns the in-flight fence for the swap chain's current frame slot.
+ * Signal it on queue submission; spudgpu_swap_chain_acquire_next_image waits and resets it.
+ * Pass it as signal_fence in spudgpu_submit_desc. Do NOT destroy it — the swap chain owns it.
+ */
+spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain);
 
 
 typedef uint32_t SPUDGPU_SHADER_STAGE;
@@ -1501,6 +1555,25 @@ void spudgpu_destroy_shader_pipeline(spudgpu_device device, spudgpu_shader_pipel
 void spudgpu_cmd_bind_pipeline(
     spudgpu_command_list cmd,
     spudgpu_shader_pipeline pipeline);
+
+/**
+ * @brief Push constant data to the shader stages declared in the pipeline layout.
+ *
+ * Stage flags are derived automatically from the pipeline's push constant range
+ * declarations — any range that overlaps [offset, offset+size) contributes its stages.
+ *
+ * @param cmd      The active recording command list.
+ * @param pipeline The currently-bound pipeline (used to look up the layout).
+ * @param offset   Byte offset within the push constant block.
+ * @param size     Byte count to update. Must be a non-zero multiple of 4.
+ * @param data     Pointer to the data to push.
+ */
+void spudgpu_cmd_push_constants(
+    spudgpu_command_list    cmd,
+    spudgpu_shader_pipeline pipeline,
+    uint32_t                offset,
+    uint32_t                size,
+    const void             *data);
 
 /**
  * @brief Complete configuration descriptor for creating a compute shader pipeline.
@@ -2013,6 +2086,139 @@ void spudgpu_cmd_begin_render_pass(
  */
 void spudgpu_cmd_end_render_pass(spudgpu_command_list cmd);
 
+typedef struct spudgpu_fence_t *spudgpu_fence;
+
+/**
+ * @brief Creates a fence primitive used to synchronize the CPU with GPU progress.
+ * @param[in] signaled_on_creation If true, the fence starts in a signaled state.
+ */
+spudgpu_fence spudgpu_create_fence(spudgpu_device device, bool signaled_on_creation);
+
+/**
+ * @brief Destroys a fence primitive.
+ */
+void spudgpu_destroy_fence(spudgpu_device device, spudgpu_fence fence);
+
+/**
+ * @brief Blocks the calling CPU thread until one or all specified fences are signaled.
+ * @param[in] timeout_ns Timeout duration in nanoseconds (use UINT64_MAX for infinite).
+ * @param[in] wait_all If true, waits for all fences; if false, waits for at least one.
+ */
+bool spudgpu_wait_for_fences(
+    spudgpu_device device,
+    spudgpu_fence *fences,
+    uint32_t fence_count,
+    bool wait_all,
+    uint64_t timeout_ns);
+
+/**
+ * @brief Resets an array of fences back to the unsignaled state.
+ * Must be done before re-submitting them to a queue.
+ */
+void spudgpu_reset_fences(spudgpu_device device, spudgpu_fence *fences, uint32_t fence_count);
+
+/**
+ * @brief Polls the current status of a fence without blocking.
+ * @return true if the GPU has reached/passed the fence, false otherwise.
+ */
+bool spudgpu_get_fence_status(spudgpu_fence fence);
+
+/**
+ * @brief Creates a binary semaphore for GPU-GPU synchronization.
+ */
+spudgpu_semaphore spudgpu_create_semaphore(spudgpu_device device);
+
+/**
+ * @brief Destroys a semaphore primitive.
+ */
+void spudgpu_destroy_semaphore(spudgpu_semaphore semaphore);
+
+/**
+ * @brief Defines the current state/layout of a resource (useful for pipeline barriers).
+ */
+typedef enum SPUDGPU_RESOURCE_STATE {
+    SPUDGPU_RESOURCE_STATE_COMMON = 0,
+    SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER,
+    SPUDGPU_RESOURCE_STATE_INDEX_BUFFER,
+    SPUDGPU_RESOURCE_STATE_RENDER_TARGET,
+    SPUDGPU_RESOURCE_STATE_DEPTH_WRITE,
+    SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE, // Read-only in shader
+    SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, // Read/Write (SSBO/UAV)
+    SPUDGPU_RESOURCE_STATE_PRESENT
+} SPUDGPU_RESOURCE_STATE;
+
+/**
+ * @brief Pipeline stage flags used in semaphore wait masks on queue submission.
+ *
+ * Values are bit-compatible with VkPipelineStageFlagBits and may be OR'd together.
+ * One mask must be provided per wait semaphore in spudgpu_submit_desc.
+ */
+typedef enum SPUDGPU_PIPELINE_STAGE {
+    SPUDGPU_PIPELINE_STAGE_TOP_OF_PIPE             = 0x00000001,
+    SPUDGPU_PIPELINE_STAGE_DRAW_INDIRECT            = 0x00000002,
+    SPUDGPU_PIPELINE_STAGE_VERTEX_INPUT             = 0x00000004,
+    SPUDGPU_PIPELINE_STAGE_VERTEX_SHADER            = 0x00000008,
+    SPUDGPU_PIPELINE_STAGE_TESSELLATION_CONTROL     = 0x00000010,
+    SPUDGPU_PIPELINE_STAGE_TESSELLATION_EVALUATION  = 0x00000020,
+    SPUDGPU_PIPELINE_STAGE_GEOMETRY_SHADER          = 0x00000040,
+    SPUDGPU_PIPELINE_STAGE_FRAGMENT_SHADER          = 0x00000080,
+    SPUDGPU_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS     = 0x00000100,
+    SPUDGPU_PIPELINE_STAGE_LATE_FRAGMENT_TESTS      = 0x00000200,
+    SPUDGPU_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT  = 0x00000400,
+    SPUDGPU_PIPELINE_STAGE_COMPUTE_SHADER           = 0x00000800,
+    SPUDGPU_PIPELINE_STAGE_TRANSFER                 = 0x00001000,
+    SPUDGPU_PIPELINE_STAGE_BOTTOM_OF_PIPE           = 0x00002000,
+    SPUDGPU_PIPELINE_STAGE_ALL_GRAPHICS             = 0x00008000,
+    SPUDGPU_PIPELINE_STAGE_ALL_COMMANDS             = 0x00010000,
+} SPUDGPU_PIPELINE_STAGE;
+
+typedef struct spudgpu_buffer_barrier {
+    spudgpu_buffer buffer;
+    SPUDGPU_RESOURCE_STATE state_before;
+    SPUDGPU_RESOURCE_STATE state_after;
+} spudgpu_buffer_barrier;
+
+typedef struct spudgpu_image_barrier {
+    spudgpu_image image;
+    SPUDGPU_RESOURCE_STATE state_before;
+    SPUDGPU_RESOURCE_STATE state_after;
+    // Optional: subresource ranges (mips/layers) if needed
+} spudgpu_image_barrier;
+
+/**
+ * @brief Injects an execution and memory barrier into the command list.
+ * Translates to vkCmdPipelineBarrier in Vulkan or MTLBarrier/MTLEvent in Metal.
+ */
+void spudgpu_cmd_pipeline_barrier(
+    spudgpu_command_list cmd,
+    const spudgpu_buffer_barrier *buffer_barriers,
+    uint32_t buffer_barrier_count,
+    const spudgpu_image_barrier *image_barriers,
+    uint32_t image_barrier_count);
+
+typedef struct spudgpu_submit_desc {
+    spudgpu_command_list *cmd_lists;
+    uint32_t cmd_list_count;
+
+    // GPU-GPU Sync
+    spudgpu_semaphore *wait_semaphores;
+    uint32_t wait_semaphore_count;
+    // One SPUDGPU_PIPELINE_STAGE mask per wait semaphore — required when wait_semaphore_count > 0.
+    uint32_t *wait_stage_masks;
+    spudgpu_semaphore *signal_semaphores;
+    uint32_t signal_semaphore_count;
+
+    // CPU-GPU Sync (Optional, can be NULL)
+    spudgpu_fence signal_fence;
+} spudgpu_submit_desc;
+
+void spudgpu_queue_submit(spudgpu_command_queue queue, const spudgpu_submit_desc *desc);
+
+/**
+ * @brief Blocks the calling CPU thread until all pending work on the queue has completed.
+ * Equivalent to vkQueueWaitIdle. Prefer fence-based synchronization in hot paths.
+ */
+void spudgpu_queue_wait_idle(spudgpu_command_queue queue);
 
 #ifdef __cplusplus
 }
