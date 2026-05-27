@@ -123,9 +123,6 @@ spudgpu_image spudgpu_create_image(spudgpu_device device, const spudgpu_image_de
     imageInfo.extent.height = result._desc.height;
     imageInfo.extent.depth = result._desc.depth;
 
-    // Tranfer for uploading data, Sampled for shaders
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-
     if (vkCreateImage(vk_device, &imageInfo, nullptr, &result._image_vk) != VK_SUCCESS) {
         //throw std::runtime_error("Failed to create vulkan image!");
         return nullptr;

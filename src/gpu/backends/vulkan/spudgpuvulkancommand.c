@@ -36,6 +36,7 @@ spudgpu_command_queue spudgpu_get_graphics_queue(spudgpu_device device) {
 
     spudgpu_command_queue_vulkan *q = calloc(1, sizeof(spudgpu_command_queue_vulkan));
     vkGetDeviceQueue(dev->_logical_device_vk, graphics_family, 0, &q->_queue_vk);
+    q->_queue_family_index = graphics_family;
     return (spudgpu_command_queue) q;
 }
 
@@ -89,16 +90,16 @@ void spudgpu_submit_command_lists_synced(
     VkSubmitInfo submit = {0};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.waitSemaphoreCount = 1;
-    submit.pWaitSemaphores = &sc->_image_available_semaphores_vk[frame];
+    submit.pWaitSemaphores = &sc->_image_available_semaphores[frame]._semaphore_vk;
     submit.pWaitDstStageMask = &wait_stage;
     submit.commandBufferCount = cmd_list_count;
     submit.pCommandBuffers = buffers;
     submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &sc->_render_finished_semaphores_vk[frame];
+    submit.pSignalSemaphores = &sc->_render_finished_semaphores[frame]._semaphore_vk;
 
     VkResult r = vkQueueSubmit(
         q->_queue_vk, 1, &submit,
-        sc->_in_flight_fences_vk[frame]); // <-- fence gets signaled here
+        sc->_in_flight_fences[frame]._fence_vk); // <-- fence gets signaled here
     if (r != VK_SUCCESS) {
         printf("spudgpu: vkQueueSubmit (synced) failed (%d)\n", r);
     }
@@ -377,6 +378,94 @@ void spudgpu_draw_indexed_instanced(
         start_index_location,
         base_vertex_location,
         start_instance_location);
+}
+
+void spudgpu_queue_submit(spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
+    if (!(queue && desc && desc->cmd_list_count > 0)) return;
+    spudgpu_command_queue_vulkan *q = (spudgpu_command_queue_vulkan *) queue;
+
+    VkCommandBuffer cmd_bufs[desc->cmd_list_count];
+    for (uint32_t i = 0; i < desc->cmd_list_count; i++) {
+        spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) desc->cmd_lists[i];
+        cmd_bufs[i] = cl->_command_buffer_vk;
+    }
+
+    uint32_t wait_count   = desc->wait_semaphore_count;
+    uint32_t signal_count = desc->signal_semaphore_count;
+
+    // Use heap for semaphore arrays since counts may legitimately be 0 (VLA of size 0 is UB).
+    VkSemaphore          *wait_sems   = wait_count   ? malloc(wait_count   * sizeof(VkSemaphore))          : NULL;
+    VkPipelineStageFlags *wait_stages = wait_count   ? malloc(wait_count   * sizeof(VkPipelineStageFlags)) : NULL;
+    VkSemaphore          *signal_sems = signal_count ? malloc(signal_count * sizeof(VkSemaphore))           : NULL;
+
+    for (uint32_t i = 0; i < wait_count; i++) {
+        spudgpu_semaphore_vulkan *sem = (spudgpu_semaphore_vulkan *) desc->wait_semaphores[i];
+        wait_sems[i]   = sem->_semaphore_vk;
+        wait_stages[i] = (VkPipelineStageFlags) desc->wait_stage_masks[i];
+    }
+    for (uint32_t i = 0; i < signal_count; i++) {
+        spudgpu_semaphore_vulkan *sem = (spudgpu_semaphore_vulkan *) desc->signal_semaphores[i];
+        signal_sems[i] = sem->_semaphore_vk;
+    }
+
+    VkFence signal_fence = VK_NULL_HANDLE;
+    if (desc->signal_fence) {
+        spudgpu_fence_vulkan *f = (spudgpu_fence_vulkan *) desc->signal_fence;
+        signal_fence = f->_fence_vk;
+    }
+
+    VkSubmitInfo submit = {0};
+    submit.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.waitSemaphoreCount   = wait_count;
+    submit.pWaitSemaphores      = wait_sems;
+    submit.pWaitDstStageMask    = wait_stages;
+    submit.commandBufferCount   = desc->cmd_list_count;
+    submit.pCommandBuffers      = cmd_bufs;
+    submit.signalSemaphoreCount = signal_count;
+    submit.pSignalSemaphores    = signal_sems;
+
+    VkResult r = vkQueueSubmit(q->_queue_vk, 1, &submit, signal_fence);
+    if (r != VK_SUCCESS) {
+        printf("spudgpu: vkQueueSubmit failed (%d)\n", r);
+    }
+
+    free(wait_sems);
+    free(wait_stages);
+    free(signal_sems);
+}
+
+void spudgpu_queue_wait_idle(spudgpu_command_queue queue) {
+    if (!queue) return;
+    spudgpu_command_queue_vulkan *q = (spudgpu_command_queue_vulkan *) queue;
+    vkQueueWaitIdle(q->_queue_vk);
+}
+
+void spudgpu_cmd_push_constants(
+    spudgpu_command_list    cmd,
+    spudgpu_shader_pipeline pipeline,
+    uint32_t                offset,
+    uint32_t                size,
+    const void             *data) {
+    if (!cmd || !pipeline || !data || size == 0) return;
+
+    spudgpu_command_list_vulkan    *cl = (spudgpu_command_list_vulkan    *)cmd;
+    spudgpu_shader_pipeline_vulkan *pl = (spudgpu_shader_pipeline_vulkan *)pipeline;
+
+    /* Collect stage flags from all push constant ranges that overlap [offset, offset+size). */
+    VkShaderStageFlags stages = 0;
+    uint32_t range_count = pl->_desc.push_constant_range_count;
+    for (uint32_t i = 0; i < range_count; i++) {
+        const spudgpu_push_constant_range_desc *r = &pl->_desc.push_constant_ranges[i];
+        if (r->offset < offset + size && r->offset + r->size > offset) {
+            SPUDGPU_SHADER_STAGE sf = (SPUDGPU_SHADER_STAGE)r->stage_flags;
+            if (sf & SPUDGPU_SHADER_STAGE_VERTEX)   stages |= VK_SHADER_STAGE_VERTEX_BIT;
+            if (sf & SPUDGPU_SHADER_STAGE_FRAGMENT) stages |= VK_SHADER_STAGE_FRAGMENT_BIT;
+            if (sf & SPUDGPU_SHADER_STAGE_COMPUTE)  stages |= VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+    }
+    if (!stages) return;
+
+    vkCmdPushConstants(cl->_command_buffer_vk, pl->_pipeline_layout_vk, stages, offset, size, data);
 }
 
 #if __cplusplus

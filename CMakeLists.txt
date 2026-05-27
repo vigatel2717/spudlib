@@ -21,7 +21,10 @@ if (WIN32 OR (UNIX AND NOT APPLE))
             src/gpu/backends/vulkan/spudgpuvulkandescriptors.c
             src/gpu/backends/vulkan/spudgpuvulkancommand.c
             src/gpu/backends/vulkan/spudgpuvulkanrenderpass.c
+            src/gpu/backends/vulkan/spudgpuvulkannative.c
             include/spudgpu_sdl3.h
+            include/spudgpu_vulkan_natives.h
+            src/gpu/backends/vulkan/spudgpuvulkansync.c
     )
     target_compile_definitions(spudlib PUBLIC SPUDGPU_COMPILE_VULKAN_API=1)
 
@@ -49,6 +52,9 @@ elseif (APPLE)
     set(CMAKE_CXX_STANDARD 26)
     target_compile_definitions(spudlib PUBLIC SPUDGPU_COMPILE_METAL_API=1)
 endif ()
+
+
+target_precompile_headers(spudlib PRIVATE include/spudgpu.h)
 
 
 target_include_directories(spudlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

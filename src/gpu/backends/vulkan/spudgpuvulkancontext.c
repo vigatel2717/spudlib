@@ -179,6 +179,8 @@ VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
             }
         }
 
+        device->_graphics_queue_family_index = (uint32_t) graphicsQueueFamilyIndex;
+
         float graphicsQueuePriority = 1.0f;
 
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -189,9 +191,12 @@ VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     }
 
     VkPhysicalDeviceFeatures deviceFeatures = {0};
-    // Example: deviceFeatures.samplerAnisotropy = VK_TRUE;
 
-    //const std::vector<const char *> deviceExtensions = {
+    VkPhysicalDeviceVulkan13Features vk13Features = {0};
+    vk13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    vk13Features.dynamicRendering = VK_TRUE;
+    vk13Features.synchronization2 = VK_TRUE;
+
     const char *deviceExtensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
     };
@@ -199,7 +204,7 @@ VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
 
     VkDeviceCreateInfo createInfo = {0};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext = nullptr;
+    createInfo.pNext = &vk13Features;
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.queueCreateInfoCount = queueCount;
     createInfo.pEnabledFeatures = &deviceFeatures;

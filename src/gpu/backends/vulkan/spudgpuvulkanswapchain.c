@@ -175,15 +175,13 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 
 void spudgpuvulkan___fences_semaphores_swapchain_creation_internal(
 	spudgpu_swap_chain_vulkan *pSwapChain) {
-	// In spudgpu_create_swap_chain, after spudgpuvulkan_create_image_views_internal():
-
 	uint32_t max_frames = pSwapChain->_desc.buffer_count > 0 ? pSwapChain->_desc.buffer_count : 2;
 	pSwapChain->_max_frames_in_flight = max_frames;
 	pSwapChain->_current_frame = 0;
 
-	pSwapChain->_image_available_semaphores_vk = malloc(max_frames * sizeof(VkSemaphore));
-	pSwapChain->_render_finished_semaphores_vk = malloc(max_frames * sizeof(VkSemaphore));
-	pSwapChain->_in_flight_fences_vk = malloc(max_frames * sizeof(VkFence));
+	pSwapChain->_image_available_semaphores = calloc(max_frames, sizeof(spudgpu_semaphore_vulkan));
+	pSwapChain->_render_finished_semaphores = calloc(max_frames, sizeof(spudgpu_semaphore_vulkan));
+	pSwapChain->_in_flight_fences           = calloc(max_frames, sizeof(spudgpu_fence_vulkan));
 
 	VkDevice vk_device = pSwapChain->_device._logical_device_vk;
 
@@ -192,12 +190,15 @@ void spudgpuvulkan___fences_semaphores_swapchain_creation_internal(
 
 	VkFenceCreateInfo fenceInfo = {0};
 	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-	fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // <-- CRITICAL
+	fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // <-- CRITICAL: first frame must not block
 
 	for (uint32_t i = 0; i < max_frames; i++) {
-		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_image_available_semaphores_vk[i]);
-		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_render_finished_semaphores_vk[i]);
-		vkCreateFence(vk_device, &fenceInfo, NULL, &pSwapChain->_in_flight_fences_vk[i]);
+		pSwapChain->_image_available_semaphores[i]._device_vk = vk_device;
+		pSwapChain->_render_finished_semaphores[i]._device_vk = vk_device;
+		pSwapChain->_in_flight_fences[i]._device_vk           = vk_device;
+		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_image_available_semaphores[i]._semaphore_vk);
+		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_render_finished_semaphores[i]._semaphore_vk);
+		vkCreateFence(vk_device, &fenceInfo, NULL, &pSwapChain->_in_flight_fences[i]._fence_vk);
 	}
 }
 
@@ -258,7 +259,8 @@ VkResult spudgpuvulkan_create_image_views_internal(
 		createInfo.subresourceRange.layerCount = 1;
 
 		spudgpu_image_view_vulkan *view = &pSwapChain->_swapchain_image_views_vk[i];
-		view->_parent_image._image_vk = pSwapChain->_swapchain_images_vk[i]; // Store the VkImage into the parent image object
+		view->_parent_image._device = pSwapChain->_device;
+		view->_parent_image._image_vk = pSwapChain->_swapchain_images_vk[i];
 		result = vkCreateImageView(pSwapChain->_device._logical_device_vk, &createInfo, nullptr,
 		                           &pSwapChain->_swapchain_image_views_vk[i]._image_view_vk);
 		if (result != VK_SUCCESS) {
@@ -385,18 +387,27 @@ spudgpu_swap_chain spudgpu_create_swap_chain(
 
 void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 	if (!swap_chain) return;
-	spudgpu_swap_chain_vulkan *vk_SwapChain = (spudgpu_swap_chain_vulkan *) swap_chain;
-	for (uint32_t i = 0; i < vk_SwapChain->_swapchain_image_views_count; i++) {
-		//vkDestroyImageView(vk_SwapChain->_device._logical_device_vk, vk_SwapChain->_swapchain_image_views_vk[i]._image_view_vk, nullptr);
-		spudgpu_destroy_image_view((spudgpu_device) &vk_SwapChain->_device,
-		                           (spudgpu_image_view) &vk_SwapChain->_swapchain_image_views_vk[i]);
+	spudgpu_swap_chain_vulkan *sc = (spudgpu_swap_chain_vulkan *) swap_chain;
+	VkDevice dev = sc->_device._logical_device_vk;
+
+	for (uint32_t i = 0; i < sc->_max_frames_in_flight; i++) {
+		vkDestroySemaphore(dev, sc->_image_available_semaphores[i]._semaphore_vk, NULL);
+		vkDestroySemaphore(dev, sc->_render_finished_semaphores[i]._semaphore_vk, NULL);
+		vkDestroyFence(dev, sc->_in_flight_fences[i]._fence_vk, NULL);
 	}
-	if (vk_SwapChain->_surface_vk != VK_NULL_HANDLE) {
-		vkDestroySurfaceKHR(vk_SwapChain->_device._instance._instance_vk, vk_SwapChain->_surface_vk, nullptr);
-	}
-	//free(vk_SwapChain->_swapchain_image_views_vk); Don't need this since spudgpu_destroy_image_view() already calls it for each image view destroyed.
-	if (vk_SwapChain->_swapchain_vk != VK_NULL_HANDLE)
-		vkDestroySwapchainKHR(vk_SwapChain->_device._logical_device_vk, vk_SwapChain->_swapchain_vk, nullptr);
+	free(sc->_image_available_semaphores);
+	free(sc->_render_finished_semaphores);
+	free(sc->_in_flight_fences);
+
+	for (uint32_t i = 0; i < sc->_swapchain_image_views_count; i++)
+		vkDestroyImageView(dev, sc->_swapchain_image_views_vk[i]._image_view_vk, NULL);
+	free(sc->_swapchain_image_views_vk);
+
+	if (sc->_surface_vk != VK_NULL_HANDLE)
+		vkDestroySurfaceKHR(sc->_device._instance._instance_vk, sc->_surface_vk, NULL);
+	if (sc->_swapchain_vk != VK_NULL_HANDLE)
+		vkDestroySwapchainKHR(dev, sc->_swapchain_vk, NULL);
+
 	free(swap_chain);
 }
 
@@ -413,18 +424,17 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 
 	// Wait for the fence of the current frame slot, so we don't overwrite
 	// GPU resources that are still in flight.
-	vkWaitForFences(device, 1, &vk->_in_flight_fences_vk[vk->_current_frame],
+	vkWaitForFences(device, 1, &vk->_in_flight_fences[vk->_current_frame]._fence_vk,
 	                VK_TRUE, UINT64_MAX);
-	vkResetFences(device, 1, &vk->_in_flight_fences_vk[vk->_current_frame]);
+	vkResetFences(device, 1, &vk->_in_flight_fences[vk->_current_frame]._fence_vk);
 
 	// Ask the driver for the next available swapchain image.
-	// Signals _image_available_semaphores_vk[_current_frame] when the image
-	// is ready for rendering.
+	// Signals _image_available_semaphores[_current_frame] when the image is ready.
 	VkResult result = vkAcquireNextImageKHR(
 		device,
 		vk->_swapchain_vk,
 		UINT64_MAX, // No timeout — block until an image is available
-		vk->_image_available_semaphores_vk[vk->_current_frame],
+		vk->_image_available_semaphores[vk->_current_frame]._semaphore_vk,
 		VK_NULL_HANDLE,
 		&vk->_current_image_index);
 
@@ -441,10 +451,10 @@ void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain) {
 	spudgpu_swap_chain_vulkan *vk = (spudgpu_swap_chain_vulkan *) swap_chain;
 
 	// Tell the presentation engine to display _current_image_index.
-	// Wait on _render_finished_semaphores_vk[_current_frame], which your
-	// command submission must signal when rendering is done.
+	// Wait on _render_finished_semaphores[_current_frame], which the
+	// command submission signals when rendering is done.
 	VkSemaphore waitSemaphores[] = {
-		vk->_render_finished_semaphores_vk[vk->_current_frame]
+		vk->_render_finished_semaphores[vk->_current_frame]._semaphore_vk
 	};
 
 	// Retrieve the graphics queue at present-time.
@@ -477,6 +487,24 @@ spudgpu_image_view spudgpu_get_swap_chain_image_view(
 	spudgpu_swap_chain_vulkan *sc = (spudgpu_swap_chain_vulkan *) swap_chain;
 	if (image_index >= sc->_swapchain_image_views_count) return NULL;
 	return (spudgpu_image_view) &sc->_swapchain_image_views_vk[image_index];
+}
+
+spudgpu_semaphore spudgpu_swap_chain_get_image_available_semaphore(spudgpu_swap_chain swap_chain) {
+	if (!swap_chain) return NULL;
+	spudgpu_swap_chain_vulkan *sc = (spudgpu_swap_chain_vulkan *) swap_chain;
+	return (spudgpu_semaphore) &sc->_image_available_semaphores[sc->_current_frame];
+}
+
+spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_chain swap_chain) {
+	if (!swap_chain) return NULL;
+	spudgpu_swap_chain_vulkan *sc = (spudgpu_swap_chain_vulkan *) swap_chain;
+	return (spudgpu_semaphore) &sc->_render_finished_semaphores[sc->_current_frame];
+}
+
+spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain) {
+	if (!swap_chain) return NULL;
+	spudgpu_swap_chain_vulkan *sc = (spudgpu_swap_chain_vulkan *) swap_chain;
+	return (spudgpu_fence) &sc->_in_flight_fences[sc->_current_frame];
 }
 
 #if __cplusplus

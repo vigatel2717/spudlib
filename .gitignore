@@ -53,6 +53,10 @@ _deps/
 # CLion / JetBrains
 .idea/
 cmake-build-*/
+.clang-tidy
+
+# Vendored dependencies
+lib/
 
 # Rust binding target folder
 target/

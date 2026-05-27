@@ -61,8 +61,8 @@ VkResult spudgpuvulkan___create_render_pass_internal(
     attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     attachment_count++;
 
     VkAttachmentReference color_ref = {0};
@@ -351,9 +351,15 @@ spudgpu_shader_pipeline spudgpu_create_shader_pipeline(
 
     VkPushConstantRange push_constant_ranges[SPUDGPU_MAX_PUSH_CONSTANT_RANGES] = {0};
     for (uint32_t i = 0; i < desc->push_constant_range_count; i++) {
-        push_constant_ranges[i].stageFlags =
-                (VkShaderStageFlags) spudgpuvulkan___shader_stage_flag_internal(
-                    desc->push_constant_ranges[i].stage_flags);
+        uint32_t s = desc->push_constant_ranges[i].stage_flags;
+        VkShaderStageFlags sf = 0;
+        if (s & SPUDGPU_SHADER_STAGE_VERTEX)                  sf |= VK_SHADER_STAGE_VERTEX_BIT;
+        if (s & SPUDGPU_SHADER_STAGE_FRAGMENT)                sf |= VK_SHADER_STAGE_FRAGMENT_BIT;
+        if (s & SPUDGPU_SHADER_STAGE_COMPUTE)                 sf |= VK_SHADER_STAGE_COMPUTE_BIT;
+        if (s & SPUDGPU_SHADER_STAGE_GEOMETRY)                sf |= VK_SHADER_STAGE_GEOMETRY_BIT;
+        if (s & SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL)    sf |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+        if (s & SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION) sf |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+        push_constant_ranges[i].stageFlags = sf;
         push_constant_ranges[i].offset = desc->push_constant_ranges[i].offset;
         push_constant_ranges[i].size = desc->push_constant_ranges[i].size;
     }
