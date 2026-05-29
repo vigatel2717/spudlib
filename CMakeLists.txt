@@ -78,7 +78,7 @@ target_link_libraries(spudlib PRIVATE Vulkan::Vulkan)
 # Path to the folder containing SDL3Config.cmake
 # Usually: [SDL3-folder]/lib/cmake/SDL3
 if (WIN32)
-    set(SDL3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/SDL3-3.4.8/cmake")
+    set(SDL3_DIR "../SDL3-3.4.8/cmake")
 endif ()
 find_package(SDL3 REQUIRED)
 target_link_libraries(spudlib PRIVATE SDL3::SDL3)

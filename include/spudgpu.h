@@ -769,14 +769,14 @@ enum {
 typedef struct spudgpu_image_desc {
     /// Bitmask configuration specifying texture layout type (2D, 3D, etc.).
     /// @see SPUDGPU_IMAGE_USAGE
-    uint32_t usage;
+    SPUDGPU_IMAGE_USAGE usage;
 
-    uint32_t type;
+    SPUDGPU_IMAGE_TYPE type;
 
     /// Bitmask configuration specifying VRAM residency rules.
     /// Typically set to `SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL` for performance.
     /// @see SPUDGPU_MEMORY_FLAGS
-    uint32_t memory_flags;
+    SPUDGPU_MEMORY_FLAGS memory_flags;
 
     /** @brief Hardware memory address.
      * @note This will remain '0' until after the gpu_image is created.
