@@ -24,14 +24,17 @@ static VkDescriptorType spudgpuvulkan___descriptor_type_internal(
     }
 }
 
-spudgpu_descriptor_set_layout spudgpu_create_descriptor_set_layout(
+SPUDRESULT spudgpu_create_descriptor_set_layout(
     spudgpu_device device,
-    const spudgpu_descriptor_set_layout_desc *desc) {
-    if (!(device && desc)) return NULL;
-    if (desc->binding_count > SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET) return NULL;
+    const spudgpu_descriptor_set_layout_desc *desc,
+	spudgpu_descriptor_set_layout *out_layout) {
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!desc) return SPUDRESULT_NULL_DESC;
+    if (desc->binding_count > SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET) return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS;
+    if (!out_layout) return SPUD_SUCCESS;
 
     spudgpu_descriptor_set_layout_vulkan result = {0};
-    result._device = *((spudgpu_device_vulkan *) device);
+    result._device = *device;
     result._desc = *desc;
 
     VkDevice vk_device = result._device._logical_device_vk;
@@ -42,7 +45,7 @@ spudgpu_descriptor_set_layout spudgpu_create_descriptor_set_layout(
         const spudgpu_descriptor_binding_desc *b = &desc->bindings[i];
 
         VkDescriptorType vk_type = spudgpuvulkan___descriptor_type_internal(b->descriptor_type);
-        if (vk_type == VK_DESCRIPTOR_TYPE_MAX_ENUM) return NULL; // Unknown type — bail early
+        if (vk_type == VK_DESCRIPTOR_TYPE_MAX_ENUM) return SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE; // Unknown type — bail early
 
         vk_bindings[i].binding = b->binding;
         vk_bindings[i].descriptorType = vk_type;
@@ -56,9 +59,10 @@ spudgpu_descriptor_set_layout spudgpu_create_descriptor_set_layout(
     layoutInfo.bindingCount = desc->binding_count;
     layoutInfo.pBindings = vk_bindings;
 
-    if (vkCreateDescriptorSetLayout(vk_device, &layoutInfo, NULL,
-                                    &result._layout_vk) != VK_SUCCESS) {
-        return NULL;
+    if (vkCreateDescriptorSetLayout(
+        vk_device, &layoutInfo, NULL,
+        &result._layout_vk) != VK_SUCCESS) {
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
 
 #if _DEBUG
@@ -80,31 +84,31 @@ spudgpu_descriptor_set_layout spudgpu_create_descriptor_set_layout(
     spudgpu_descriptor_set_layout_vulkan *pResult =
             malloc(sizeof(spudgpu_descriptor_set_layout_vulkan));
     memcpy(pResult, &result, sizeof(spudgpu_descriptor_set_layout_vulkan));
-    return (spudgpu_descriptor_set_layout) pResult;
+    *out_layout = pResult;
+    return SPUD_SUCCESS;
 }
 
 void spudgpu_destroy_descriptor_set_layout(
-    spudgpu_device device,
     spudgpu_descriptor_set_layout layout) {
-    if (!(device && layout)) return;
-    spudgpu_descriptor_set_layout_vulkan *vkLayout =
-            (spudgpu_descriptor_set_layout_vulkan *) layout;
+    if (!layout) return;
     vkDestroyDescriptorSetLayout(
-        vkLayout->_device._logical_device_vk,
-        vkLayout->_layout_vk,
+        layout->_device._logical_device_vk,
+        layout->_layout_vk,
         NULL);
-    free(vkLayout);
+    free(layout);
 }
 
-spudgpu_descriptor_pool spudgpu_create_descriptor_pool(
+SPUDRESULT spudgpu_create_descriptor_pool(
     spudgpu_device device,
-    const spudgpu_descriptor_pool_desc *desc) {
-    if (!(device && desc)) return NULL;
-    if (!desc->max_sets) return NULL;
-    if (desc->pool_size_count > SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES) return NULL;
+    const spudgpu_descriptor_pool_desc *desc,
+	spudgpu_descriptor_pool *out_pool) {
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!desc) return SPUDRESULT_NULL_DESC;
+    if (desc->pool_size_count > SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES) return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_POOLS;
+    if (!out_pool) return SPUD_SUCCESS;
 
     spudgpu_descriptor_pool_vulkan result = {0};
-    result._device = *((spudgpu_device_vulkan *) device);
+    result._device = *device;
     result._desc = *desc;
 
     VkDevice vk_device = result._device._logical_device_vk;
@@ -113,7 +117,7 @@ spudgpu_descriptor_pool spudgpu_create_descriptor_pool(
     for (uint32_t i = 0; i < desc->pool_size_count; i++) {
         VkDescriptorType vk_type =
                 spudgpuvulkan___descriptor_type_internal(desc->pool_sizes[i].descriptor_type);
-        if (vk_type == VK_DESCRIPTOR_TYPE_MAX_ENUM) return NULL;
+        if (vk_type == VK_DESCRIPTOR_TYPE_MAX_ENUM) return SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE;
 
         vk_pool_sizes[i].type = vk_type;
         vk_pool_sizes[i].descriptorCount = desc->pool_sizes[i].count;
@@ -127,9 +131,10 @@ spudgpu_descriptor_pool spudgpu_create_descriptor_pool(
     poolInfo.poolSizeCount = desc->pool_size_count;
     poolInfo.pPoolSizes = vk_pool_sizes;
 
-    if (vkCreateDescriptorPool(vk_device, &poolInfo, NULL,
-                               &result._pool_vk) != VK_SUCCESS) {
-        return NULL;
+    if (vkCreateDescriptorPool(
+        vk_device, &poolInfo, NULL,
+        &result._pool_vk) != VK_SUCCESS) {
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
 
 #if _DEBUG
@@ -139,51 +144,55 @@ spudgpu_descriptor_pool spudgpu_create_descriptor_pool(
         nameInfo.objectType = VK_OBJECT_TYPE_DESCRIPTOR_POOL;
         nameInfo.objectHandle = (uint64_t) result._pool_vk;
         nameInfo.pObjectName = desc->debug_name;
+        SPUDRESULT sr = SPUD_SUCCESS;
         PFN_vkSetDebugUtilsObjectNameEXT fn =
                 (PFN_vkSetDebugUtilsObjectNameEXT) vkGetDeviceProcAddr(
                     vk_device, "vkSetDebugUtilsObjectNameEXT");
-        if (fn) fn(vk_device, &nameInfo);
-    }
+		if (fn)
+			if (fn(vk_device, &nameInfo))
+				sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+		if (sr != SPUD_SUCCESS)
+			return sr;
+	}
 #endif
 
     spudgpu_descriptor_pool_vulkan *pResult = malloc(sizeof(spudgpu_descriptor_pool_vulkan));
     memcpy(pResult, &result, sizeof(spudgpu_descriptor_pool_vulkan));
-    return (spudgpu_descriptor_pool) pResult;
+    *out_pool = pResult;
+    return SPUD_SUCCESS;
 }
 
 void spudgpu_reset_descriptor_pool(
-    spudgpu_device device,
     spudgpu_descriptor_pool pool) {
-    if (!(device && pool)) return;
-    spudgpu_descriptor_pool_vulkan *vkPool = (spudgpu_descriptor_pool_vulkan *) pool;
+    if (!pool) return;
     // Bulk-free all sets allocated from this pool. The 'flags' parameter is reserved and must be 0.
-    vkResetDescriptorPool(vkPool->_device._logical_device_vk, vkPool->_pool_vk, 0);
+	vkResetDescriptorPool(pool->_device._logical_device_vk, pool->_pool_vk, 0);
 }
 
 void spudgpu_destroy_descriptor_pool(
-    spudgpu_device device,
     spudgpu_descriptor_pool pool) {
-    if (!(device && pool)) return;
-    spudgpu_descriptor_pool_vulkan *vkPool = (spudgpu_descriptor_pool_vulkan *) pool;
+    if (!pool) return;
     // vkDestroyDescriptorPool implicitly frees all descriptor sets allocated from it.
     vkDestroyDescriptorPool(
-        vkPool->_device._logical_device_vk,
-        vkPool->_pool_vk,
+        pool->_device._logical_device_vk,
+        pool->_pool_vk,
         NULL);
-    free(vkPool);
+    free(pool);
 }
 
-bool spudgpu_allocate_descriptor_sets(
+SPUDRESULT spudgpu_allocate_descriptor_sets(
     spudgpu_device device,
     const spudgpu_descriptor_set_alloc_desc *desc,
     spudgpu_descriptor_set *out_sets) {
-    if (!(device && desc && out_sets)) return false;
-    if (!desc->pool) return false;
-    if (!desc->set_count || desc->set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS) return false;
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!desc) return SPUDRESULT_NULL_DESC;
+    if (!desc->pool) return SPUDRESULT_GPU_INVALID_DESCRIPTOR_POOL;
+	if (!desc->set_count)
+		return SPUDRESULT_GPU_ZERO_DESCRIPTOR_SET_LAYOUTS;
+	if (desc->set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
+		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_SET_LAYOUTS;
 
-    spudgpu_descriptor_pool_vulkan *vkPool =
-            (spudgpu_descriptor_pool_vulkan *) desc->pool;
-    VkDevice vk_device = vkPool->_device._logical_device_vk;
+    VkDevice vk_device = desc->pool->_device._logical_device_vk;
 
     // Gather the raw VkDescriptorSetLayout handles from the typed wrappers.
     VkDescriptorSetLayout vk_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS] = {0};
@@ -199,12 +208,12 @@ bool spudgpu_allocate_descriptor_sets(
 
     VkDescriptorSetAllocateInfo allocInfo = {0};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = vkPool->_pool_vk;
+    allocInfo.descriptorPool = desc->pool->_pool_vk;
     allocInfo.descriptorSetCount = desc->set_count;
     allocInfo.pSetLayouts = vk_layouts;
 
     if (vkAllocateDescriptorSets(vk_device, &allocInfo, vk_sets) != VK_SUCCESS) {
-        return false;
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
 
     // Wrap each raw VkDescriptorSet in a heap-allocated SpudGPU handle.
@@ -214,14 +223,14 @@ bool spudgpu_allocate_descriptor_sets(
         if (!pSet) {
             // Partial allocation — caller's out_sets is partially populated.
             // The pool reset at the next frame will reclaim the Vulkan-side sets.
-            return false;
+            return SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
         }
-        pSet->_pool = *vkPool;
+        pSet->_pool = *desc->pool;
         pSet->_set_vk = vk_sets[i];
         out_sets[i] = (spudgpu_descriptor_set) pSet;
     }
 
-    return true;
+    return SPUD_SUCCESS;
 }
 
 
@@ -230,9 +239,6 @@ void spudgpu_update_descriptor_sets(
     const spudgpu_write_descriptor_set *writes,
     uint32_t write_count) {
     if (!(device && writes && write_count)) return;
-
-    spudgpu_device_vulkan *vkDevice = (spudgpu_device_vulkan *) device;
-    VkDevice vk_device = vkDevice->_logical_device_vk;
 
     // We translate each SpudGPU write into a VkWriteDescriptorSet on the stack.
     // For larger write counts a heap allocation would be safer, but the per-frame
@@ -284,7 +290,7 @@ void spudgpu_update_descriptor_sets(
         }
     }
 
-    vkUpdateDescriptorSets(vk_device, clamped, vk_writes, 0, NULL);
+    vkUpdateDescriptorSets(device->_logical_device_vk, clamped, vk_writes, 0, NULL);
 }
 
 void spudgpu_cmd_bind_descriptor_sets(
@@ -298,11 +304,7 @@ void spudgpu_cmd_bind_descriptor_sets(
 
     // The command list's internal VkCommandBuffer lives at the front of the struct,
     // matching the pattern used in spudgpuvulkanbuffer.c / the command list implementation.
-    spudgpu_command_list_vulkan *vkCmd = (spudgpu_command_list_vulkan *) cmd;
-    VkCommandBuffer vk_cmd = vkCmd->_command_buffer_vk;
-
-    spudgpu_shader_pipeline_vulkan *vkPipeline =
-            (spudgpu_shader_pipeline_vulkan *) pipeline;
+    VkCommandBuffer vk_cmd = cmd->_command_buffer_vk;
 
     // Unwrap each SpudGPU handle to its raw VkDescriptorSet.
     VkDescriptorSet vk_sets[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS] = {0};
@@ -316,7 +318,7 @@ void spudgpu_cmd_bind_descriptor_sets(
     vkCmdBindDescriptorSets(
         vk_cmd,
         VK_PIPELINE_BIND_POINT_GRAPHICS,
-        vkPipeline->_pipeline_layout_vk,
+        pipeline->_pipeline_layout_vk,
         first_set,
         set_count,
         vk_sets,
@@ -333,11 +335,6 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
     if (!(cmd && pipeline && sets && set_count)) return;
     if (set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS) return;
 
-    VkCommandBuffer vk_cmd = *((VkCommandBuffer *) cmd);
-
-    spudgpu_compute_pipeline_vulkan *vkPipeline =
-            (spudgpu_compute_pipeline_vulkan *) pipeline;
-
     VkDescriptorSet vk_sets[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS] = {0};
     for (uint32_t i = 0; i < set_count; i++) {
         if (!sets[i]) return;
@@ -347,9 +344,9 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
     }
 
     vkCmdBindDescriptorSets(
-        vk_cmd,
+        cmd->_command_buffer_vk,
         VK_PIPELINE_BIND_POINT_COMPUTE,
-        vkPipeline->_pipeline_layout_vk,
+        pipeline->_pipeline_layout_vk,
         first_set,
         set_count,
         vk_sets,

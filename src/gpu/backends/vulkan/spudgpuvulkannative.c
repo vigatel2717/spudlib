@@ -9,33 +9,27 @@ extern "C" {
 #endif
 
 VkInstance spudgpu_get_vk_instance(spudgpu_instance instance) {
-    if (!instance) return NULL;
-    return ((spudgpu_instance_vulkan *) instance)->_instance_vk;
+    return instance ? instance->_instance_vk : NULL;
 }
 
 VkPhysicalDevice spudgpu_get_vk_physical_device(spudgpu_device device) {
-    if (!device) return NULL;
-    return ((spudgpu_device_vulkan *) device)->_physical_device_vk;
+    return device ? device->_physical_device_vk : NULL;
 }
 
 VkDevice spudgpu_get_vk_device(spudgpu_device device) {
-    if (!device) return NULL;
-    return ((spudgpu_device_vulkan *) device)->_logical_device_vk;
+    return device ? device->_logical_device_vk : NULL;
 }
 
 VkQueue spudgpu_get_vk_queue(spudgpu_command_queue queue) {
-    if (!queue) return NULL;
-    return ((spudgpu_command_queue_vulkan *) queue)->_queue_vk;
+    return queue ? queue->_queue_vk : NULL;
 }
 
 uint32_t spudgpu_get_vk_queue_family_index(spudgpu_command_queue queue) {
-    if (!queue) return UINT32_MAX;
-    return ((spudgpu_command_queue_vulkan *) queue)->_queue_family_index;
+    return queue ? queue->_queue_family_index : UINT32_MAX;
 }
 
 VkCommandBuffer spudgpu_get_vk_command_buffer(spudgpu_command_list cmd) {
-    if (!cmd) return NULL;
-    return ((spudgpu_command_list_vulkan *) cmd)->_command_buffer_vk;
+    return cmd ? cmd->_command_buffer_vk : NULL;
 }
 
 VkImageView spudgpu_get_vk_image_view(spudgpu_image_view view) {
@@ -46,8 +40,7 @@ VkImageView spudgpu_get_vk_image_view(spudgpu_image_view view) {
 }
 
 VkFormat spudgpu_get_vk_swap_chain_format(spudgpu_swap_chain swap_chain) {
-    if (!swap_chain) return 0;
-    return ((spudgpu_swap_chain_vulkan *) swap_chain)->_format_vk;
+    return swap_chain ? swap_chain->_format_vk : VK_FORMAT_UNDEFINED;
 }
 
 #if __cplusplus

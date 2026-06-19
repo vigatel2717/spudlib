@@ -123,8 +123,6 @@ void spudgpu_cmd_image_barrier(
     spudgpu_image image,
     SPUDGPU_IMAGE_LAYOUT old_layout,
     SPUDGPU_IMAGE_LAYOUT new_layout) {
-    spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd;
-    spudgpu_image_vulkan *img = (spudgpu_image_vulkan *) image;
 
     VkImageLayout vk_old = spud_layout_to_vk(old_layout);
     VkImageLayout vk_new = spud_layout_to_vk(new_layout);
@@ -136,8 +134,10 @@ void spudgpu_cmd_image_barrier(
         aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
     }
 
-    spudgpuvulkan___cmd_image_barrier_raw(cl->_command_buffer_vk, img->_image_vk,
-                                          vk_old, vk_new, aspect);
+    spudgpuvulkan___cmd_image_barrier_raw(
+        cmd->_command_buffer_vk,
+        image->_image_vk,
+        vk_old, vk_new, aspect);
 }
 
 // ---------------------------------------------------------------------------
@@ -163,9 +163,10 @@ void spudgpu_cmd_image_barrier_view(
     }
 
     // Pull the raw VkImage out of the parent image stored in the view struct.
-    spudgpuvulkan___cmd_image_barrier_raw(cl->_command_buffer_vk,
-                                          view->_parent_image._image_vk,
-                                          vk_old, vk_new, aspect);
+    spudgpuvulkan___cmd_image_barrier_raw(
+        cmd->_command_buffer_vk,
+        view->_desc.parent_image->_image_vk,
+        vk_old, vk_new, aspect);
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +177,6 @@ void spudgpu_cmd_image_barrier_view(
 void spudgpu_cmd_begin_render_pass(
     spudgpu_command_list cmd,
     const spudgpu_render_pass_begin_desc *desc) {
-    spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd;
     spudgpu_shader_pipeline_vulkan *pipeline = (spudgpu_shader_pipeline_vulkan *) desc->pipeline;
     spudgpu_image_view_vulkan *color_view = (spudgpu_image_view_vulkan *) desc->color_attachment;
 
@@ -212,8 +212,8 @@ void spudgpu_cmd_begin_render_pass(
     }
 
     // Store the framebuffer on the command list so end_render_pass can destroy it.
-    cl->_transient_framebuffer_vk = framebuffer;
-    cl->_transient_framebuffer_device_vk = vk_device;
+    cmd->_transient_framebuffer_vk = framebuffer;
+    cmd->_transient_framebuffer_device_vk = vk_device;
 
     // Build clear values (color + optional depth).
     VkClearValue clear_values[2] = {0};
@@ -235,7 +235,9 @@ void spudgpu_cmd_begin_render_pass(
     rp_begin.clearValueCount = attachment_count;
     rp_begin.pClearValues = clear_values;
 
-    vkCmdBeginRenderPass(cl->_command_buffer_vk, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBeginRenderPass(
+        cmd->_command_buffer_vk,
+        &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 // ---------------------------------------------------------------------------
@@ -243,15 +245,14 @@ void spudgpu_cmd_begin_render_pass(
 // ---------------------------------------------------------------------------
 
 void spudgpu_cmd_end_render_pass(spudgpu_command_list cmd) {
-    spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd;
-    vkCmdEndRenderPass(cl->_command_buffer_vk);
+    vkCmdEndRenderPass(cmd->_command_buffer_vk);
 
     // Destroy the transient framebuffer that begin_render_pass created.
-    if (cl->_transient_framebuffer_vk != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(cl->_transient_framebuffer_device_vk,
-                             cl->_transient_framebuffer_vk, NULL);
-        cl->_transient_framebuffer_vk = VK_NULL_HANDLE;
-        cl->_transient_framebuffer_device_vk = VK_NULL_HANDLE;
+    if (cmd->_transient_framebuffer_vk != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(cmd->_transient_framebuffer_device_vk,
+                             cmd->_transient_framebuffer_vk, NULL);
+        cmd->_transient_framebuffer_vk = VK_NULL_HANDLE;
+        cmd->_transient_framebuffer_device_vk = VK_NULL_HANDLE;
     }
 }
 

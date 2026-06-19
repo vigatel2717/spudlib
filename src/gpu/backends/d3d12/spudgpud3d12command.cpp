@@ -1,0 +1,305 @@
+
+#if SPUDGPU_COMPILE_D3D12_API
+
+#include "spudgpud3d12.hpp"
+
+extern "C" {
+
+spudgpu_command_queue spudgpu_get_graphics_queue(spudgpu_device device) {
+	if (!device)
+		return nullptr;
+	return device->_cmd_queues_direct[0];
+}
+
+uint32_t spudgpu_get_max_queue_count(
+    spudgpu_device device, SPUDGPU_COMMAND_LIST_TYPE type) {
+	return SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY;
+}
+
+SPUDRESULT spudgpu_get_command_queue(
+    spudgpu_device device,
+    SPUDGPU_COMMAND_LIST_TYPE type,
+    uint32_t index,
+    spudgpu_command_queue *out_queue) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (index >= SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY)
+		return SPUDRESULT_INDEX_OUT_OF_RANGE;
+	if (!out_queue)
+		return SPUD_SUCCESS;
+	switch (type) {
+	case SPUDGPU_COMMAND_LIST_TYPE_DIRECT:
+		*out_queue = device->_cmd_queues_direct[index];
+		break;
+	case SPUDGPU_COMMAND_LIST_TYPE_COPY:
+		*out_queue = device->_cmd_queues_copy[index];
+		break;
+	case SPUDGPU_COMMAND_LIST_TYPE_COMPUTE:
+		*out_queue = device->_cmd_queues_compute[index];
+		break;
+	default:
+		return SPUDRESULT_GPU_INVALID_COMMAND_LIST_TYPE;
+	}
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudgpu_submit_command_lists(
+    spudgpu_command_queue queue,
+    spudgpu_command_list *cmd_lists,
+    uint32_t cmd_list_count) {
+	if (!queue)
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+	if (!cmd_lists || !cmd_list_count)
+		return SPUD_SUCCESS;
+	ID3D12CommandList **d3dLists =
+	    (ID3D12CommandList **)malloc(sizeof(ID3D12CommandList *) * cmd_list_count);
+	for (uint32_t i = 0; i < cmd_list_count; ++i)
+		d3dLists[i] = cmd_lists[i]->_d3d_cmd_list.Get();
+	queue->_d3d_cmd_queue->ExecuteCommandLists(
+	    static_cast<UINT>(cmd_list_count), d3dLists);
+	free(d3dLists);
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudgpu_create_command_allocator(
+    spudgpu_device device,
+    const spudgpu_command_allocator_desc *desc,
+    spudgpu_command_allocator *out_allocator) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!desc)
+		return SPUDRESULT_NULL_DESC;
+	if (!out_allocator)
+		return SPUD_SUCCESS;
+	spudgpu_command_allocator_d3d12 *pResult =
+	    (spudgpu_command_allocator_d3d12 *)calloc(
+	        1, sizeof(spudgpu_command_allocator_d3d12));
+	pResult->_device = device;
+    pResult->_d3d_cmd_list_type = spudgpu_d3d12_get_command_list_type(desc->type);
+	if (FAILED(device->_d3d_device->CreateCommandAllocator(
+	        pResult->_d3d_cmd_list_type,
+	        IID_PPV_ARGS(&pResult->_d3d_cmd_allocator)))) {
+		free(pResult);
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+	*out_allocator = pResult;
+	return SPUD_SUCCESS;
+}
+
+void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator) {
+	if (!allocator)
+		return;
+	allocator->_d3d_cmd_allocator.Reset();
+	free(allocator);
+}
+
+SPUDRESULT
+spudgpu_reset_command_allocator(spudgpu_command_allocator allocator) {
+	if (!allocator)
+		return SPUDRESULT_GPU_INVALID_COMMAND_ALLOCATOR;
+	if (FAILED(allocator->_d3d_cmd_allocator->Reset()))
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudgpu_create_command_list(
+    spudgpu_command_allocator allocator, spudgpu_command_list *out_cmd_list) {
+	if (!allocator)
+		return SPUDRESULT_GPU_INVALID_COMMAND_ALLOCATOR;
+    if (!out_cmd_list)
+        return SPUD_SUCCESS;
+    spudgpu_command_list_d3d12 *pResult = (spudgpu_command_list_d3d12 *) calloc(1, sizeof(spudgpu_command_list_d3d12));
+    pResult->_allocator = allocator;
+    if (FAILED(pResult->_allocator->_device->_d3d_device->CreateCommandList1(
+        1, allocator->_d3d_cmd_list_type, D3D12_COMMAND_LIST_FLAG_NONE,
+        IID_PPV_ARGS(&pResult->_d3d_cmd_list)
+    ))) {
+        free(pResult);
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
+    }
+	*out_cmd_list = pResult;
+    return SPUD_SUCCESS;
+}
+void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
+    if (!cmd) return;
+    cmd->_d3d_cmd_list.Reset();
+    free(cmd);
+}
+void spudgpu_begin_command_list(spudgpu_command_list cmd)
+{
+	if (!cmd) return;
+	cmd->_d3d_cmd_list->Reset(
+	    cmd->_allocator->_d3d_cmd_allocator.Get(), nullptr);
+}
+void spudgpu_end_command_list(spudgpu_command_list cmd)
+{
+	if (!cmd) return;
+	cmd->_d3d_cmd_list->Close();
+}
+void spudgpu_set_viewports(
+    spudgpu_command_list cmd,
+    uint32_t first_viewport,
+    uint32_t viewport_count,
+    const SPUDGPU_VIEWPORT *viewports) {
+	if (!(cmd && viewports && viewport_count))
+		return;
+	//D3D12_VIEWPORT *d3dViewports;
+	cmd->_d3d_cmd_list->RSSetViewports(
+	    static_cast<UINT>(viewport_count),
+	    reinterpret_cast<D3D12_VIEWPORT *>(
+	        const_cast<SPUDGPU_VIEWPORT *>(viewports)));
+}
+void spudgpu_set_scissor_rects(
+    spudgpu_command_list cmd,
+    uint32_t first_scissor_rect,
+    uint32_t scissor_rect_count,
+    const SPUDGPU_SCISSOR_RECT *scissor_rects) {
+	if (!(cmd && scissor_rects && scissor_rect_count))
+		return;
+	// D3D12_RECT d3dRects;
+	cmd->_d3d_cmd_list->RSSetScissorRects(
+	    static_cast<UINT>(scissor_rect_count),
+	    reinterpret_cast<D3D12_RECT *>(
+	        const_cast<SPUDGPU_SCISSOR_RECT *>(scissor_rects)));
+}
+void spudgpu_set_vertex_buffers(
+    spudgpu_command_list cmd,
+    uint32_t start_slot,
+    uint32_t view_count,
+    spudgpu_buffer_view *buffer_views) {
+	if (!(cmd && view_count && buffer_views))
+		return;
+	D3D12_VERTEX_BUFFER_VIEW *d3dVbViews = (D3D12_VERTEX_BUFFER_VIEW *)malloc(
+	    sizeof(D3D12_VERTEX_BUFFER_VIEW) * view_count);
+	for (uint32_t i = 0; i < view_count; ++i)
+		d3dVbViews[i] = buffer_views[i]->_d3d_view._vb;
+	cmd->_d3d_cmd_list->IASetVertexBuffers(
+		static_cast<UINT>(start_slot),
+		static_cast<UINT>(view_count),
+		d3dVbViews
+	);
+	free(d3dVbViews);
+}
+void spudgpu_set_index_buffer(
+    spudgpu_command_list cmd,
+    spudgpu_buffer_view buffer_view) {
+	if (!(cmd && buffer_view))
+		return;
+	cmd->_d3d_cmd_list->IASetIndexBuffer(&buffer_view->_d3d_view._ib);
+}
+void spudgpu_draw(
+    spudgpu_command_list cmd,
+    uint32_t vertex_count,
+    uint32_t start_vertex_location) {
+	if (!cmd)
+		return;
+	cmd->_d3d_cmd_list->DrawInstanced(
+	    vertex_count, 1, start_vertex_location, 0);
+}
+void spudgpu_draw_indexed(
+    spudgpu_command_list cmd,
+    uint32_t index_count,
+    uint32_t start_index_location,
+    int32_t base_vertex_location) {
+	if (!cmd)
+		return;
+	cmd->_d3d_cmd_list->DrawIndexedInstanced(
+		index_count, 1, start_index_location, base_vertex_location, 0);
+}
+void spudgpu_draw_instanced(
+    spudgpu_command_list cmd,
+    uint32_t vertex_count_per_instance,
+    uint32_t instance_count,
+    uint32_t start_vertex_location,
+    uint32_t start_instance_location) {
+	if (!cmd)
+		return;
+	cmd->_d3d_cmd_list->DrawInstanced(
+		vertex_count_per_instance,
+		instance_count,
+		start_vertex_location,
+		start_instance_location);
+}
+void spudgpu_draw_indexed_instanced(
+    spudgpu_command_list cmd,
+    uint32_t index_count_per_instance,
+    uint32_t instance_count,
+    uint32_t start_index_location,
+    int32_t base_vertex_location,
+    uint32_t start_instance_location) {
+	if (!cmd)
+		return;
+	cmd->_d3d_cmd_list->DrawIndexedInstanced(
+		index_count_per_instance,
+		instance_count,
+		start_index_location,
+		base_vertex_location,
+		start_instance_location);
+}
+/*
+void spudgpu_cmd_bind_pipeline(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline) {
+	if (!cmd || !pipeline)
+		return;
+	ID3D12GraphicsCommandList *cmdList = cmd->_d3d_cmd_list.Get();
+	cmdList->SetPipelineState(pipeline->_d3d_pipeline_state.Get());
+	cmdList->SetGraphicsRootSignature(pipeline->_d3d_root_signature.Get());
+	cmdList->IASetPrimitiveTopology(pipeline->_d3d_primitive_topology);
+}
+void spudgpu_cmd_push_constants(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline,
+    uint32_t offset,
+    uint32_t size,
+    const void *data) {
+	if (!cmd || !pipeline || !data || size == 0)
+		return;
+	cmd->_d3d_cmd_list->SetGraphicsRoot32BitConstants(
+	    0,
+	    size / sizeof(uint32_t),
+	    data,
+	    offset / sizeof(uint32_t));
+}*/
+void spudgpu_queue_submit(
+    spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
+	if (!(queue && desc && desc->cmd_list_count > 0))
+		return;
+	for (uint32_t i = 0; i < desc->wait_semaphore_count; ++i) {
+		spudgpu_semaphore sem = desc->wait_semaphores[i];
+		queue->_d3d_cmd_queue->Wait(sem->_d3d_fence.Get(), sem->_signal_value);
+	}
+	ID3D12CommandList **d3dLists =
+	    (ID3D12CommandList **)malloc(sizeof(ID3D12CommandList *) * desc->cmd_list_count);
+	for (uint32_t i = 0; i < desc->cmd_list_count; ++i)
+		d3dLists[i] = desc->cmd_lists[i]->_d3d_cmd_list.Get();
+	queue->_d3d_cmd_queue->ExecuteCommandLists(
+	    static_cast<UINT>(desc->cmd_list_count), d3dLists);
+	free(d3dLists);
+	for (uint32_t i = 0; i < desc->signal_semaphore_count; ++i) {
+		spudgpu_semaphore sem = desc->signal_semaphores[i];
+		queue->_d3d_cmd_queue->Signal(sem->_d3d_fence.Get(), ++sem->_signal_value);
+	}
+	if (desc->signal_fence)
+		queue->_d3d_cmd_queue->Signal(
+		    desc->signal_fence->_d3d_fence.Get(),
+		    ++desc->signal_fence->_signal_value);
+}
+void spudgpu_queue_wait_idle(spudgpu_command_queue queue) {
+	if (!queue)
+		return;
+	Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+	if (FAILED(queue->_device->_d3d_device->CreateFence(
+	        0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+		return;
+	queue->_d3d_cmd_queue->Signal(fence.Get(), 1);
+	if (fence->GetCompletedValue() < 1) {
+		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		fence->SetEventOnCompletion(1, event);
+		WaitForSingleObject(event, INFINITE);
+		CloseHandle(event);
+	}
+}
+}
+
+#endif // SPUDGPU_COMPILE_D3D12_API

@@ -1,3 +1,4 @@
+
 #if SPUDGPU_COMPILE_VULKAN_API
 
 #include <vulkan/vulkan.h>
@@ -50,13 +51,15 @@ void spudgpuvulkan___memory_property_flags_internal(
 
 #if __cplusplus
 extern "C" {
-
-
-
 #endif
 
-spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer_desc *desc) {
-    if (!(desc && device)) return nullptr;
+SPUDRESULT spudgpu_create_buffer(
+    spudgpu_device device,
+    const spudgpu_buffer_desc *desc,
+    spudgpu_buffer *out_buffer) {
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!desc) return SPUDRESULT_NULL_DESC;
+    if (!out_buffer) return SPUD_SUCCESS;
 
     // Validate desc
     {
@@ -68,22 +71,22 @@ spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer
         if (desc->size == 0)
             //throw std::runtime_error(
             //   "SpudGPU create_buffer: invalid size: " + std::to_string(desc->size));
-            return nullptr;
+            return SPUDRESULT_GPU_ZERO_BUFFER_SIZE;
 
         if (desc->usage == 0)
             //throw std::runtime_error(
             //  "SpudGPU create_buffer: invalid usage: SPUDGPU_BUFFER_USAGE_NONE");
-            return nullptr;
+            return SPUDRESULT_GPU_INVALID_BUFFER_USAGE;
     }
 
     // Create the result struct
     spudgpu_buffer_vulkan result = {0};
-    memcpy(&result._device, (spudgpu_device_vulkan *) device, sizeof(spudgpu_device_vulkan));
+    result._device = *device;
     result._desc = *desc;
 
     // Get native Vulkan device handles
-    auto vk_device = result._device._logical_device_vk;
-    auto vk_physical_device = result._device._physical_device_vk;
+    VkDevice vk_device = result._device._logical_device_vk;
+    VkPhysicalDevice vk_physical_device = result._device._physical_device_vk;
 
     VkBufferCreateInfo bufferInfo = {0};
     bufferInfo.pNext = NULL;
@@ -95,9 +98,9 @@ spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer
     spudgpuvulkan___buffer_usage_flags_internal(desc->usage, &bufferInfo.usage);
 
     // Create buffer
-    if (vkCreateBuffer(vk_device, &bufferInfo, nullptr, &result._buffer_vk) != VK_SUCCESS) {
+    if (vkCreateBuffer(vk_device, &bufferInfo, NULL, &result._buffer_vk) != VK_SUCCESS) {
         //throw std::runtime_error("SpudGPU Vulkan: failed to create buffer!");
-        return nullptr;
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
 
     // Allocate memory
@@ -117,13 +120,15 @@ spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer
             vk_physical_device, memRequirements.memoryTypeBits,
             properties);
 
-        if (vkAllocateMemory(vk_device, &allocInfo, nullptr, &result._memory_vk) != VK_SUCCESS) {
+        if (vkAllocateMemory(vk_device, &allocInfo, NULL, &result._memory_vk) != VK_SUCCESS) {
             //throw std::runtime_error("SpudGPU Vulkan: failed to allocate buffer memory!");
-            vkDestroyBuffer(vk_device, result._buffer_vk, nullptr);
-            return nullptr;
+            vkDestroyBuffer(vk_device, result._buffer_vk, NULL);
+            return SPUDRESULT_API_SPECIFIC_FAILURE;
         }
 
-        vkBindBufferMemory(vk_device, result._buffer_vk, result._memory_vk, 0);
+        if (vkBindBufferMemory(vk_device, result._buffer_vk, result._memory_vk, 0) != VK_SUCCESS){
+            return SPUDRESULT_API_SPECIFIC_FAILURE;
+        }
     }
 
     // Retrieve the GPU Address point for gpu_buffer_desc
@@ -138,88 +143,107 @@ spudgpu_buffer spudgpu_create_buffer(spudgpu_device device, const spudgpu_buffer
     // If all successful, return a memcpy'ed heap pointer
     spudgpu_buffer_vulkan *pResult = malloc(sizeof(spudgpu_buffer_vulkan));
     memcpy(pResult, &result, sizeof(spudgpu_buffer_vulkan));
-    return (spudgpu_buffer) pResult;
+    *out_buffer = pResult;
+    return SPUD_SUCCESS;
 }
 
-spudgpu_buffer_desc spudgpu_get_buffer_desc(spudgpu_buffer buffer) {
-    if (!buffer) return (spudgpu_buffer_desc){0};
-    return ((spudgpu_buffer_vulkan *) buffer)->_desc;
+SPUDRESULT spudgpu_get_buffer_desc(
+    spudgpu_buffer buffer,
+    spudgpu_buffer_desc *out_desc) {
+    if (!buffer) return SPUDRESULT_GPU_INVALID_BUFFER;
+    if (out_desc) *out_desc = buffer->_desc;
+    return SPUD_SUCCESS;
 }
 
-void spudgpu_destroy_buffer(spudgpu_device device, spudgpu_buffer buffer) {
-    if (!(device && buffer)) return;
-    spudgpu_buffer_vulkan *vkBuffer = (spudgpu_buffer_vulkan *) buffer;
-    vkDestroyBuffer(vkBuffer->_device._logical_device_vk, vkBuffer->_buffer_vk, nullptr);
-    vkFreeMemory(vkBuffer->_device._logical_device_vk, vkBuffer->_memory_vk, nullptr);
-    free(vkBuffer);
+void spudgpu_destroy_buffer(spudgpu_buffer buffer) {
+    if (!buffer) return;
+    vkDestroyBuffer(buffer->_device._logical_device_vk, buffer->_buffer_vk, NULL);
+    vkFreeMemory(buffer->_device._logical_device_vk, buffer->_memory_vk, NULL);
+    free(buffer);
 }
 
-spudgpu_buffer_view spudgpu_create_buffer_view(spudgpu_buffer buffer, const spudgpu_buffer_view_desc *desc) {
-    if (!(buffer && desc)) return nullptr;
+SPUDRESULT spudgpu_create_buffer_view(
+    spudgpu_buffer buffer,
+    const spudgpu_buffer_view_desc *desc,
+    spudgpu_buffer_view *out_view) {
+    if (!buffer) return SPUDRESULT_GPU_INVALID_BUFFER;
+    if (!desc) return SPUDRESULT_NULL_DESC;
+    if (!out_view) return SPUD_SUCCESS;
 
-    spudgpu_buffer_vulkan *vkBuffer = (spudgpu_buffer_vulkan *) buffer;
+	// Validate desc
+	if (desc->size == 0)
+		return SPUDRESULT_GPU_ZERO_BUFFER_SIZE;
 
-    // Validate that the view range fits within the parent buffer
-    if (desc->offset_from_parent_buffer + desc->size > vkBuffer->_desc.size)
-        return nullptr;
+	// Validate that the view range fits within the parent buffer
+	if (desc->offset_from_parent_buffer + desc->size > buffer->_desc.size)
+		return SPUDRESULT_GPU_BUFFER_OR_IMAGE_VIEW_RANGE_OUT_OF_SCOPE;
 
-    spudgpu_buffer_view_vulkan result = {0};
+	spudgpu_buffer_view_vulkan result = {0};
     result._desc = *desc;
     result._desc.parent_buffer = buffer;
-    result._parent_buffer = *vkBuffer;
     result._buffer_view_vk = VK_NULL_HANDLE; // Only needed for texel buffers
 
+    /*
+     * Vulkan buffer views are not needed for anything other than a texel buffer.
+     * This is because buffer handles + offsets are passed directly into Vulkan commands.
+     * Unlike D3D12 which has explicit D3D12*_VIEW handles.
+     */
 
     // If all successful, return a memcpy'ed heap pointer
-    spudgpu_buffer_vulkan *pResult = malloc(sizeof(spudgpu_buffer_view_vulkan));
+    spudgpu_buffer_view pResult = malloc(sizeof(spudgpu_buffer_view_vulkan));
     memcpy(pResult, &result, sizeof(spudgpu_buffer_view_vulkan));
-    return (spudgpu_buffer_view) pResult;
+    *out_view = pResult;
+    return SPUD_SUCCESS;
 }
 
-spudgpu_buffer_view_desc spudgpu_get_buffer_view_desc(spudgpu_buffer_view buffer_view) {
-    if (!buffer_view) return (spudgpu_buffer_view_desc){0};
-    return ((spudgpu_buffer_view_vulkan *) buffer_view)->_desc;
+SPUDRESULT spudgpu_get_buffer_view_desc(
+    spudgpu_buffer_view buffer_view,
+    spudgpu_buffer_view_desc *out_desc) {
+    if (!buffer_view) return SPUDRESULT_GPU_INVALID_BUFFER_VIEW;
+    if (out_desc) *out_desc = buffer_view->_desc;
+    return SPUD_SUCCESS;
 }
 
 void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer_view) {
     if (!buffer_view) return;
-    spudgpu_buffer_view_vulkan *vkBufferView = (spudgpu_buffer_view_vulkan *) buffer_view;
-    vkDestroyBufferView(vkBufferView->_parent_buffer._device._logical_device_vk, vkBufferView->_buffer_view_vk,
-                        nullptr);
-    free(vkBufferView);
+	vkDestroyBufferView(
+	    buffer_view->_desc.parent_buffer->_device._logical_device_vk,
+	    buffer_view->_buffer_view_vk, NULL);
+	free(buffer_view);
 }
 
-bool spudgpu_map_buffer(
+SPUDRESULT spudgpu_map_buffer(
     spudgpu_buffer buffer,
     uint64_t offset,
     uint64_t size,
     void **ppData) {
-    if (!(buffer && ppData)) return false;
-    spudgpu_buffer_vulkan *vkBuffer = (spudgpu_buffer_vulkan *) buffer;
+    if (!buffer) return SPUDRESULT_GPU_INVALID_BUFFER;
+    //if (!size) return SPUDRESULT_GPU_ZERO_BUFFER_SIZE;
+    if (!(offset + size < buffer->_desc.size)) return SPUDRESULT_GPU_MAP_OUT_OF_RANGE;
 
     // Guard: must have been allocated with HOST_VISIBLE
-    if (!(vkBuffer->_desc.memory_flags & SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE))
-        return false;
+    if (!(buffer->_desc.memory_flags & SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE))
+        return SPUDRESULT_GPU_INVALID_MEMORY_FLAGS;
 
-    VkDeviceSize mapSize = (size == 0) ? vkBuffer->_desc.size : size;
+    VkDeviceSize mapSize = (size == 0) ? buffer->_desc.size : size;
 
-    VkResult result = vkMapMemory(
-        vkBuffer->_device._logical_device_vk,
-        vkBuffer->_memory_vk,
+    if (!vkMapMemory(
+        buffer->_device._logical_device_vk,
+        buffer->_memory_vk,
         (VkDeviceSize) offset,
         mapSize,
         0, // flags — reserved, must be 0
-        ppData);
+        ppData))
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
 
-    return result == VK_SUCCESS;
+	return SPUD_SUCCESS;
 }
 
 void spudgpu_unmap_buffer(spudgpu_buffer buffer) {
     if (!buffer) return;
-    spudgpu_buffer_vulkan *vkBuffer = (spudgpu_buffer_vulkan *) buffer;
     vkUnmapMemory(
-        vkBuffer->_device._logical_device_vk,
-        vkBuffer->_memory_vk);
+        buffer->_device._logical_device_vk,
+        buffer->_memory_vk);
 }
 
 void spudgpu_flush_buffer(
@@ -227,37 +251,38 @@ void spudgpu_flush_buffer(
     uint64_t offset,
     uint64_t size) {
     if (!buffer) return;
-    spudgpu_buffer_vulkan *vkBuffer = (spudgpu_buffer_vulkan *) buffer;
-
+    
     VkMappedMemoryRange range = {0};
     range.pNext = NULL;
     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    range.memory = vkBuffer->_memory_vk;
+    range.memory = buffer->_memory_vk;
     range.offset = (VkDeviceSize) offset;
     range.size = (size == 0) ? VK_WHOLE_SIZE : (VkDeviceSize) size;
 
     vkFlushMappedMemoryRanges(
-        vkBuffer->_device._logical_device_vk,
+        buffer->_device._logical_device_vk,
         1, &range);
 }
 
-void spudgpu_invalidate_buffer(
+SPUDRESULT spudgpu_invalidate_buffer(
     spudgpu_buffer buffer,
     uint64_t offset,
     uint64_t size) {
-    if (!buffer) return;
-    spudgpu_buffer_vulkan *vkBuffer = (spudgpu_buffer_vulkan *) buffer;
+    if (!buffer) return SPUD_SUCCESS;
 
     VkMappedMemoryRange range = {0};
     range.pNext = NULL;
     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    range.memory = vkBuffer->_memory_vk;
+    range.memory = buffer->_memory_vk;
     range.offset = (VkDeviceSize) offset;
     range.size = (size == 0) ? VK_WHOLE_SIZE : (VkDeviceSize) size;
 
-    vkInvalidateMappedMemoryRanges(
-        vkBuffer->_device._logical_device_vk,
-        1, &range);
+    if (vkInvalidateMappedMemoryRanges(
+        buffer->_device._logical_device_vk,
+        1, &range) != VK_SUCCESS )
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
+    
+    return SPUD_SUCCESS;
 }
 
 #if __cplusplus
