@@ -44,6 +44,12 @@ if(NOT TARGET spudlib)
     if(WIN32)
         list(APPEND SPUDLIB_SOURCES
             src/files/backends/windows/spudfileswindows.c
+            src/net/backends/windows/spudnetwindows.c
+        )
+    endif()
+    if(UNIX AND NOT APPLE)
+        list(APPEND SPUDLIB_SOURCES
+            src/net/backends/linux/spudnetlinux.c
         )
     endif()
     if(WIN32 OR(UNIX AND NOT APPLE))
@@ -100,7 +106,7 @@ if(NOT TARGET spudlib)
     if(WIN32)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_WIN32=1)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_WINDOWS=1)
-        target_link_libraries(spudlib PRIVATE shlwapi)
+        target_link_libraries(spudlib PRIVATE shlwapi ws2_32)
     elseif (UNIX AND NOT APPLE)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_LINUX=1)
     elseif (APPLE)
