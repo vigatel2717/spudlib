@@ -126,6 +126,7 @@ typedef struct spudgpu_device_t {
 	spudgpu_instance_d3d12 *_instance;
 	Microsoft::WRL::ComPtr<IDXGIAdapter4> _dxgi_adapter;
 	Microsoft::WRL::ComPtr<ID3D12Device14> _d3d_device;
+	SPUDGPU_DEVICE_PROPERTIES _properties;
 	std::array<spudgpu_command_queue, SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY>
 	    _cmd_queues_direct;
 	std::array<spudgpu_command_queue, SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY>

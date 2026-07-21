@@ -1,6 +1,6 @@
 
 #include "spudcore.h"
-#include "stddef.h"
+#include <stddef.h>
 
 #if __cplusplus
 extern "C" {

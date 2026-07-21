@@ -21,7 +21,7 @@ spudgpuvulkan___primitive_topology(SPUDGPU_PRIMITIVE_TOPOLOGY topology) {
 	case SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
 		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
 	default:
-		return SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	}
 }
 
@@ -61,75 +61,19 @@ VkResult spudgpuvulkan___create_shader_module_internal(
 	return vkCreateShaderModule(vk_device, &createInfo, NULL, out_module);
 }
 
-VkResult spudgpuvulkan___create_render_pass_internal(
-    VkDevice vk_device,
-    const spudgpu_shader_pipeline_desc *desc,
-    VkRenderPass *out_render_pass) {
-	// Colour attachment
-	VkAttachmentDescription attachments[2] = {0};
-	uint32_t attachment_count              = 0;
-
-	attachments[0].format =
-	    convert_spud_to_vulkan_format((VkFormat)desc->color_attachment_format);
-	attachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
-	attachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[0].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[0].initialLayout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	attachments[0].finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	attachment_count++;
-
-	VkAttachmentReference color_ref = {0};
-	color_ref.attachment            = 0;
-	color_ref.layout                = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-	// Optional depth attachment
-	VkAttachmentReference depth_ref = {0};
-	int has_depth = (desc->depth_format != SPUDGPU_FORMAT_UNKNOWN);
-	if (has_depth) {
-		attachments[1].format =
-		    convert_spud_to_vulkan_format((VkFormat)desc->depth_format);
-		attachments[1].samples        = VK_SAMPLE_COUNT_1_BIT;
-		attachments[1].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		attachments[1].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		attachments[1].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		attachments[1].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
-		attachments[1].finalLayout =
-		    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-		attachment_count++;
-
-		depth_ref.attachment = 1;
-		depth_ref.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+// Depth/stencil-combined formats need stencilAttachmentFormat set to the same
+// format for VkPipelineRenderingCreateInfo; depth-only formats must leave it
+// VK_FORMAT_UNDEFINED (Vulkan validation rejects a stencil format on a view
+// with no stencil aspect).
+static int spudgpuvulkan___format_has_stencil(VkFormat fmt) {
+	switch (fmt) {
+	case VK_FORMAT_D16_UNORM_S8_UINT:
+	case VK_FORMAT_D24_UNORM_S8_UINT:
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:
+		return 1;
+	default:
+		return 0;
 	}
-
-	VkSubpassDescription subpass    = {0};
-	subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subpass.colorAttachmentCount    = 1;
-	subpass.pColorAttachments       = &color_ref;
-	subpass.pDepthStencilAttachment = has_depth ? &depth_ref : NULL;
-
-	// Single subpass dependency: external → colour output stage
-	VkSubpassDependency dependency = {0};
-	dependency.srcSubpass          = VK_SUBPASS_EXTERNAL;
-	dependency.dstSubpass          = 0;
-	dependency.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependency.srcAccessMask = 0;
-	dependency.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-	VkRenderPassCreateInfo renderPassInfo = {0};
-	renderPassInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-	renderPassInfo.attachmentCount = attachment_count;
-	renderPassInfo.pAttachments    = attachments;
-	renderPassInfo.subpassCount    = 1;
-	renderPassInfo.pSubpasses      = &subpass;
-	renderPassInfo.dependencyCount = 1;
-	renderPassInfo.pDependencies   = &dependency;
-
-	return vkCreateRenderPass(
-	    vk_device, &renderPassInfo, NULL, out_render_pass);
 }
 
 #if __cplusplus
@@ -456,13 +400,26 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	}
 
 	// ------------------------------------------------------------------
-	// 11. Render pass
+	// 11. Dynamic rendering attachment formats — no VkRenderPass object.
+	// Vulkan requires these to match whatever's actually bound at
+	// spudgpu_cmd_begin_rendering time (see spudgpu.h's rendering section).
 	// ------------------------------------------------------------------
-	if (spudgpuvulkan___create_render_pass_internal(
-	        vk_device, desc, &result._render_pass_vk) != VK_SUCCESS) {
-		vkDestroyPipelineLayout(vk_device, result._pipeline_layout_vk, NULL);
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	VkFormat color_format =
+	    convert_spud_to_vulkan_format((VkFormat)desc->color_attachment_format);
+	VkFormat depth_format   = VK_FORMAT_UNDEFINED;
+	VkFormat stencil_format = VK_FORMAT_UNDEFINED;
+	if (desc->depth_format != SPUDGPU_FORMAT_UNKNOWN) {
+		depth_format = convert_spud_to_vulkan_format((VkFormat)desc->depth_format);
+		if (spudgpuvulkan___format_has_stencil(depth_format))
+			stencil_format = depth_format;
 	}
+
+	VkPipelineRenderingCreateInfo renderingInfo = {0};
+	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	renderingInfo.colorAttachmentCount    = 1;
+	renderingInfo.pColorAttachmentFormats = &color_format;
+	renderingInfo.depthAttachmentFormat   = depth_format;
+	renderingInfo.stencilAttachmentFormat = stencil_format;
 
 	// ------------------------------------------------------------------
 	// 12. Tessellation state (only wired up when both tess stages present)
@@ -478,6 +435,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	// ------------------------------------------------------------------
 	VkGraphicsPipelineCreateInfo pipelineInfo = {0};
 	pipelineInfo.sType      = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.pNext      = &renderingInfo;
 	pipelineInfo.stageCount = stage_count;
 	pipelineInfo.pStages    = shader_stages;
 	pipelineInfo.pVertexInputState   = &vertexInputInfo;
@@ -489,7 +447,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	pipelineInfo.pColorBlendState    = &colorBlending;
 	pipelineInfo.pDynamicState       = &dynamicState;
 	pipelineInfo.layout              = result._pipeline_layout_vk;
-	pipelineInfo.renderPass          = result._render_pass_vk;
+	pipelineInfo.renderPass          = VK_NULL_HANDLE; // dynamic rendering — no render pass object
 	pipelineInfo.subpass             = 0;
 	pipelineInfo.basePipelineHandle  = VK_NULL_HANDLE;
 	pipelineInfo.basePipelineIndex   = -1;
@@ -502,7 +460,6 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	if (vkCreateGraphicsPipelines(
 	        vk_device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL,
 	        &result._pipeline_vk) != VK_SUCCESS) {
-		vkDestroyRenderPass(vk_device, result._render_pass_vk, NULL);
 		vkDestroyPipelineLayout(vk_device, result._pipeline_layout_vk, NULL);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
@@ -523,7 +480,6 @@ void spudgpu_destroy_shader_pipeline(spudgpu_shader_pipeline pipeline) {
 	VkDevice vk_device = vkPipeline->_device._logical_device_vk;
 	vkDestroyPipeline(vk_device, vkPipeline->_pipeline_vk, NULL);
 	vkDestroyPipelineLayout(vk_device, vkPipeline->_pipeline_layout_vk, NULL);
-	vkDestroyRenderPass(vk_device, vkPipeline->_render_pass_vk, NULL);
 	free(vkPipeline);
 }
 

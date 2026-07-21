@@ -94,10 +94,14 @@ SPUDRESULT spudgpu_create_image(
 	// D3D12 requires the clear value format to match the resource format exactly.
 	d3dClearValue.Format = spudgpu_d3d12_get_dxgi_format(desc->format);
 
-	if (FAILED(device->_d3d_device->CreateCommittedResource1(
-	        &d3dHeapProperties, d3dHeapFlags, &pResult->_d3d_resource_desc,
-	        d3dInitialState, hasOptimizedClearValue ? &d3dClearValue : nullptr,
-	        nullptr, IID_PPV_ARGS(&pResult->_d3d_resource)))) {
+	HRESULT hr = device->_d3d_device->CreateCommittedResource1(
+	    &d3dHeapProperties, d3dHeapFlags, &pResult->_d3d_resource_desc,
+	    d3dInitialState, hasOptimizedClearValue ? &d3dClearValue : nullptr,
+	    nullptr, IID_PPV_ARGS(&pResult->_d3d_resource));
+	if (FAILED(hr)) {
+		printf("apricot: CreateCommittedResource1 failed (%ux%u, fmt=%u, flags=0x%x, heapFlags=0x%x, initialState=0x%x): hr=0x%08lx\n",
+		    desc->width, desc->height, (unsigned)pResult->_d3d_resource_desc.Format, (unsigned)pResult->_d3d_resource_desc.Flags,
+		    (unsigned)d3dHeapFlags, (unsigned)d3dInitialState, (unsigned long)hr);
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}

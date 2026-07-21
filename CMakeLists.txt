@@ -6,7 +6,7 @@ project(spudlib)
 set(VALID_BACKENDS "Vulkan" "D3D12" "Metal")
 
 # Initialize the cache variable with a default value
-set(GRAPHICS_BACKEND "D3D12" CACHE STRING "Choose exactly one graphics backend to compile")
+set(GRAPHICS_BACKEND "Vulkan" CACHE STRING "Choose exactly one graphics backend to compile")
 
 # Create the drop-down menu restriction for interactive GUIs
 set_property(CACHE GRAPHICS_BACKEND PROPERTY STRINGS ${VALID_BACKENDS})
@@ -31,9 +31,14 @@ if(NOT TARGET spudlib)
         include/spudfiles.h
         include/spudgpu.h
         include/spudmemory.h
+        include/spudnet.h
+        include/spudperf.h
         src/spudcore.c
         src/spudmemory.c
         src/spudfiles.c
+        src/spudperf.c
+        src/gpu/spudgpuformat.c
+        src/gpu/spudgpurendering.c
     )
     # Determine which backend sources to append.
     if(WIN32)
@@ -94,6 +99,7 @@ if(NOT TARGET spudlib)
     # Now set the compile-time macros and packages and whatnot.
     if(WIN32)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_WIN32=1)
+        target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_WINDOWS=1)
         target_link_libraries(spudlib PRIVATE shlwapi)
     elseif (UNIX AND NOT APPLE)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_LINUX=1)
@@ -148,20 +154,38 @@ if(NOT TARGET spudlib)
             if(WIN32)
                 # Use ENV hint so any installed Vulkan SDK version works.
                 set(Vulkan_INCLUDE_DIR "$ENV{VULKAN_SDK}/Include")
-                set(SPIRV_CROSS_LIB_DIR "$ENV{VULKAN_SDK}/Lib")
 
                 find_package(Vulkan REQUIRED)
                 target_include_directories(spudlib PRIVATE ${Vulkan_INCLUDE_DIRS})
+
+                # Built from source (not the Vulkan SDK's prebuilt .lib files) so it
+                # picks up CMAKE_MSVC_RUNTIME_LIBRARY and matches our CRT per-config
+                # (the SDK's libs are release-only /MD and mismatch /MDd debug builds).
+                include(FetchContent)
+                set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+                set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+                set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+                set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
+                set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+                set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+                set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+                FetchContent_Declare(
+                    spirv_cross
+                    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
+                    GIT_TAG        vulkan-sdk-1.4.341.0
+                )
+                set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+                FetchContent_MakeAvailable(spirv_cross)
+
                 target_link_libraries(spudlib PRIVATE
                     d3d12
                     dxgi
                     dxguid
                     "$ENV{VULKAN_SDK}/Lib/dxcompiler.lib"
-                    "${SPIRV_CROSS_LIB_DIR}/spirv-cross-hlsl.lib"
-                    "${SPIRV_CROSS_LIB_DIR}/spirv-cross-core.lib"
-                    "${SPIRV_CROSS_LIB_DIR}/spirv-cross-glsl.lib" # core depends on this
+                    spirv-cross-hlsl
+                    spirv-cross-glsl
+                    spirv-cross-core
                 )
-                #target_compile_definitions(spudlib PRIVATE _ITERATOR_DEBUG_LEVEL=0)
             else()
                 return()
             endif()

@@ -150,7 +150,11 @@ SPUDRESULT spudgpu_create_image(
             return SPUDRESULT_API_SPECIFIC_FAILURE;
         }
 
-        vkBindImageMemory(vk_device, result._image_vk, result._memory_vk, 0);
+        if (vkBindImageMemory(vk_device, result._image_vk, result._memory_vk, 0) != VK_SUCCESS) {
+            vkDestroyImage(vk_device, result._image_vk, NULL);
+            vkFreeMemory(vk_device, result._memory_vk, NULL);
+            return SPUDRESULT_API_SPECIFIC_FAILURE;
+        }
     }
 
     // If all successful, return a memcpy'ed heap pointer
@@ -203,8 +207,11 @@ SPUDRESULT spudgpu_create_image_view(
     viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
     viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
-    // Subresource range — which mip levels and array layers this view covers
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // Subresource range — which mip levels and array layers this view covers.
+    // aspect_mask values are deliberately Vulkan-aligned (COLOR=1, DEPTH=2,
+    // STENCIL=4 — see spudgpu.h) so this is a direct passthrough, not a
+    // choice SpudGPU makes on the caller's behalf.
+    viewInfo.subresourceRange.aspectMask = (VkImageAspectFlags)desc->subresource_range.aspect_mask;
     viewInfo.subresourceRange.baseMipLevel = desc->subresource_range.base_mip_level;
     viewInfo.subresourceRange.levelCount = desc->subresource_range.mip_level_count;
     viewInfo.subresourceRange.baseArrayLayer = desc->subresource_range.base_array_layer;

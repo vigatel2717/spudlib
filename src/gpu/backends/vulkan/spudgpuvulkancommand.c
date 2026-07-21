@@ -18,7 +18,7 @@ spudgpu_command_queue spudgpu_get_graphics_queue(spudgpu_device device) {
     // Find graphics queue family
     uint32_t family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device->_physical_device_vk, &family_count, NULL);
-    VkQueueFamilyProperties families[family_count];
+    VkQueueFamilyProperties  *families = calloc(family_count, sizeof(VkQueueFamilyProperties));
     vkGetPhysicalDeviceQueueFamilyProperties(device->_physical_device_vk, &family_count, families);
 
     uint32_t graphics_family = UINT32_MAX;
@@ -30,12 +30,14 @@ spudgpu_command_queue spudgpu_get_graphics_queue(spudgpu_device device) {
     }
     if (graphics_family == UINT32_MAX) {
         printf("spudgpu: no graphics queue family found\n");
+        free(families);
         return NULL;
     }
 
     spudgpu_command_queue_vulkan *q = calloc(1, sizeof(spudgpu_command_queue_vulkan));
     vkGetDeviceQueue(device->_logical_device_vk, graphics_family, 0, &q->_queue_vk);
     q->_queue_family_index = graphics_family;
+    free(families);
     return q;
 }
 
@@ -45,7 +47,7 @@ SPUDRESULT spudgpu_submit_command_lists(
     uint32_t cmd_list_count) {
     if (!queue) return SPUD_SUCCESS;
     
-    VkCommandBuffer buffers[cmd_list_count];
+    VkCommandBuffer *buffers = calloc(cmd_list_count, sizeof(VkCommandBuffer));
     for (uint32_t i = 0; i < cmd_list_count; i++) {
         spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd_lists[i];
         buffers[i] = cl->_command_buffer_vk;
@@ -59,8 +61,10 @@ SPUDRESULT spudgpu_submit_command_lists(
     VkResult r = vkQueueSubmit(queue->_queue_vk, 1, &submit, VK_NULL_HANDLE);
     if (r != VK_SUCCESS) {
         printf("spudgpu: vkQueueSubmit failed (%d)\n", r);
+        free(buffers);
         return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
+    free(buffers);
     return SPUD_SUCCESS;
 }
 
@@ -77,7 +81,7 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
 
     uint32_t frame = swap_chain->_current_frame;
 
-    VkCommandBuffer buffers[cmd_list_count];
+    VkCommandBuffer *buffers = calloc(cmd_list_count, sizeof(VkCommandBuffer));
     for (uint32_t i = 0; i < cmd_list_count; i++) {
         spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd_lists[i];
         buffers[i] = cl->_command_buffer_vk;
@@ -100,8 +104,10 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
         swap_chain->_in_flight_fences[frame]._fence_vk); // <-- fence gets signaled here
     if (r != VK_SUCCESS) {
         printf("spudgpu: vkQueueSubmit (synced) failed (%d)\n", r);
+        free(buffers);
         return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
+    free(buffers);
     return SPUD_SUCCESS;
 }
 
@@ -116,7 +122,7 @@ SPUDRESULT spudgpu_create_command_allocator(
     // Re-query graphics family (you'll want to cache this on the device later)
     uint32_t family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device->_physical_device_vk, &family_count, NULL);
-    VkQueueFamilyProperties families[family_count];
+    VkQueueFamilyProperties *families = calloc(family_count, sizeof(VkQueueFamilyProperties));
     vkGetPhysicalDeviceQueueFamilyProperties(device->_physical_device_vk, &family_count, families);
 
     uint32_t graphics_family = SPUD_UINT32_MAX;
@@ -143,10 +149,12 @@ SPUDRESULT spudgpu_create_command_allocator(
     if (r != VK_SUCCESS) {
         printf("spudgpu: vkCreateCommandPool failed (%d)\n", r);
         free(alloc);
+        free(families);
         return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
 
     *out_allocator = alloc;
+    free(families);
     return SPUD_SUCCESS;
 }
 
@@ -224,7 +232,7 @@ void spudgpu_set_viewports(
     const SPUDGPU_VIEWPORT *viewports) {
     if (!(cmd && viewports) || viewport_count == 0) return;
 
-    VkViewport vk_viewports[viewport_count];
+    VkViewport *vk_viewports = calloc(viewport_count, sizeof(VkViewport));
     for (uint32_t i = 0; i < viewport_count; i++) {
         vk_viewports[i].x = viewports[i].x;
         vk_viewports[i].y = viewports[i].y;
@@ -235,6 +243,8 @@ void spudgpu_set_viewports(
     }
 
     vkCmdSetViewport(cmd->_command_buffer_vk, first_viewport, viewport_count, vk_viewports);
+
+    free(vk_viewports);
 }
 
 void spudgpu_set_scissor_rects(
@@ -244,7 +254,7 @@ void spudgpu_set_scissor_rects(
     const SPUDGPU_SCISSOR_RECT *scissor_rects) {
     if (!(cmd && scissor_rects) || scissor_rect_count == 0) return;
 
-    VkRect2D vk_scissors[scissor_rect_count];
+    VkRect2D *vk_scissors = calloc(scissor_rect_count, sizeof(VkRect2D));
     for (uint32_t i = 0; i < scissor_rect_count; i++) {
         vk_scissors[i].offset.x = (int32_t) scissor_rects[i].x;
         vk_scissors[i].offset.y = (int32_t) scissor_rects[i].y;
@@ -253,6 +263,8 @@ void spudgpu_set_scissor_rects(
     }
 
     vkCmdSetScissor(cmd->_command_buffer_vk, first_scissor_rect, scissor_rect_count, vk_scissors);
+    
+    free(vk_scissors);
 }
 
 void spudgpu_set_vertex_buffers(
@@ -262,8 +274,8 @@ void spudgpu_set_vertex_buffers(
     spudgpu_buffer_view *buffer_views) {
     if (!(cmd && buffer_views) || view_count == 0) return;
 
-    VkBuffer vk_buffers[view_count];
-    VkDeviceSize vk_offsets[view_count];
+    VkBuffer *vk_buffers = calloc(view_count, sizeof(VkBuffer));
+    VkDeviceSize *vk_offsets = calloc(view_count, sizeof(VkDeviceSize));
 
     for (uint32_t i = 0; i < view_count; i++) {
         spudgpu_buffer_view_vulkan *bv = (spudgpu_buffer_view_vulkan *) buffer_views[i];
@@ -277,6 +289,9 @@ void spudgpu_set_vertex_buffers(
         view_count,
         vk_buffers,
         vk_offsets);
+
+    free(vk_buffers);
+    free(vk_offsets);
 }
 
 void spudgpu_set_index_buffer(
@@ -368,7 +383,7 @@ void spudgpu_draw_indexed_instanced(
 void spudgpu_queue_submit(spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
     if (!(queue && desc && desc->cmd_list_count > 0)) return;
 
-    VkCommandBuffer cmd_bufs[desc->cmd_list_count];
+    VkCommandBuffer *cmd_bufs = calloc(desc->cmd_list_count, sizeof(VkCommandBuffer));
     for (uint32_t i = 0; i < desc->cmd_list_count; i++) {
         spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) desc->cmd_lists[i];
         cmd_bufs[i] = cl->_command_buffer_vk;
@@ -412,10 +427,11 @@ void spudgpu_queue_submit(spudgpu_command_queue queue, const spudgpu_submit_desc
     if (r != VK_SUCCESS) {
         printf("spudgpu: vkQueueSubmit failed (%d)\n", r);
     }
-
+    
     free(wait_sems);
     free(wait_stages);
     free(signal_sems);
+    free(cmd_bufs);
 }
 
 void spudgpu_queue_wait_idle(spudgpu_command_queue queue) {

@@ -97,6 +97,11 @@ SPUDRESULT spudgpu_create_buffer(
     // Covert SPUDGPU_BUFFER_USAGE to native Vulkan usage
     spudgpuvulkan___buffer_usage_flags_internal(desc->usage, &bufferInfo.usage);
 
+    // Every spudgpu_buffer gets a valid desc.gpu_address_location after
+    // creation (see spudgpu.h), mirroring D3D12's always-available
+    // GetGPUVirtualAddress — so every buffer needs this usage bit.
+    bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+
     // Create buffer
     if (vkCreateBuffer(vk_device, &bufferInfo, NULL, &result._buffer_vk) != VK_SUCCESS) {
         //throw std::runtime_error("SpudGPU Vulkan: failed to create buffer!");
@@ -112,8 +117,16 @@ SPUDRESULT spudgpu_create_buffer(
         VkMemoryRequirements memRequirements;
         vkGetBufferMemoryRequirements(vk_device, result._buffer_vk, &memRequirements);
 
+        // Required whenever the buffer was created with
+        // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT (see bufferInfo.usage
+        // above) — vkGetBufferDeviceAddress below requires the backing
+        // memory to have been allocated with this flag set.
+        VkMemoryAllocateFlagsInfo allocFlagsInfo = {0};
+        allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
         VkMemoryAllocateInfo allocInfo = {0};
-        allocInfo.pNext = NULL;
+        allocInfo.pNext = &allocFlagsInfo;
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex = spudgpuvulkan___find_memory_type_internal(
@@ -126,7 +139,9 @@ SPUDRESULT spudgpu_create_buffer(
             return SPUDRESULT_API_SPECIFIC_FAILURE;
         }
 
-        if (vkBindBufferMemory(vk_device, result._buffer_vk, result._memory_vk, 0) != VK_SUCCESS){
+        if (vkBindBufferMemory(vk_device, result._buffer_vk, result._memory_vk, 0) != VK_SUCCESS) {
+            vkDestroyBuffer(vk_device, result._buffer_vk, NULL);
+            vkFreeMemory(vk_device, result._memory_vk, NULL);
             return SPUDRESULT_API_SPECIFIC_FAILURE;
         }
     }
@@ -219,7 +234,7 @@ SPUDRESULT spudgpu_map_buffer(
     void **ppData) {
     if (!buffer) return SPUDRESULT_GPU_INVALID_BUFFER;
     //if (!size) return SPUDRESULT_GPU_ZERO_BUFFER_SIZE;
-    if (!(offset + size < buffer->_desc.size)) return SPUDRESULT_GPU_MAP_OUT_OF_RANGE;
+    if (offset + size > buffer->_desc.size) return SPUDRESULT_GPU_MAP_OUT_OF_RANGE;
 
     // Guard: must have been allocated with HOST_VISIBLE
     if (!(buffer->_desc.memory_flags & SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE))
@@ -227,13 +242,13 @@ SPUDRESULT spudgpu_map_buffer(
 
     VkDeviceSize mapSize = (size == 0) ? buffer->_desc.size : size;
 
-    if (!vkMapMemory(
+    if (vkMapMemory(
         buffer->_device._logical_device_vk,
         buffer->_memory_vk,
         (VkDeviceSize) offset,
         mapSize,
         0, // flags — reserved, must be 0
-        ppData))
+        ppData) != VK_SUCCESS)
         return SPUDRESULT_API_SPECIFIC_FAILURE;
 
 	return SPUD_SUCCESS;

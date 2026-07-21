@@ -2,6 +2,7 @@
 #if SPUDGPU_COMPILE_VULKAN_API
 
 #include <stdio.h>
+#include <string.h>
 
 #include "spudgpuvulkan.h"
 #include "stdlib.h"
@@ -146,9 +147,30 @@ VkFormat convert_spud_to_vulkan_format(SPUDGPU_FORMAT format) {
         case SPUDGPU_FORMAT_P016: return VK_FORMAT_G16_B16R16_2PLANE_420_UNORM;
         case SPUDGPU_FORMAT_YUY2: return VK_FORMAT_G8B8G8R8_422_UNORM;
         case SPUDGPU_FORMAT_420_OPAQUE: return VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM;
-        // Y210/Y216/Y410/Y416/NV11/AYUV/AI44/IA44/P8/A8P8/P208/V208/V408
-        // have no standard Vulkan equivalents; fall through to UNDEFINED
+        case SPUDGPU_FORMAT_Y210: return VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16;
+        case SPUDGPU_FORMAT_Y216: return VK_FORMAT_G16B16G16R16_422_UNORM;
+        case SPUDGPU_FORMAT_P208: return VK_FORMAT_G8_B8R8_2PLANE_422_UNORM;
+        // AYUV/Y410/Y416/NV11/AI44/IA44/P8/A8P8/V208/V408 have no standard
+        // Vulkan equivalent (packed 4:4:4 YUVA, 4:1:1 chroma subsampling, or
+        // legacy 8-bit palette formats aren't representable by any core or
+        // KHR_sampler_ycbcr_conversion VkFormat) — explicitly UNDEFINED
+        // rather than falling through, so the gap is visible here rather
+        // than being indistinguishable from a genuinely unmapped value.
+        case SPUDGPU_FORMAT_AYUV:
+        case SPUDGPU_FORMAT_Y410:
+        case SPUDGPU_FORMAT_Y416:
+        case SPUDGPU_FORMAT_NV11:
+        case SPUDGPU_FORMAT_AI44:
+        case SPUDGPU_FORMAT_IA44:
+        case SPUDGPU_FORMAT_P8:
+        case SPUDGPU_FORMAT_A8P8:
+        case SPUDGPU_FORMAT_V208:
+        case SPUDGPU_FORMAT_V408:
+            return VK_FORMAT_UNDEFINED;
 
+        // SPUDGPU_FORMAT_UNKNOWN (0) and SPUDGPU_FORMAT_FORCE_UINT (sentinel,
+        // not a real format) fall through to here along with any value that
+        // isn't a defined SPUDGPU_FORMAT at all.
         default: return VK_FORMAT_UNDEFINED;
     }
 }
@@ -164,7 +186,7 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, NULL);
 
     //std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-    VkQueueFamilyProperties queueFamilies[queueFamilyCount];
+    VkQueueFamilyProperties *queueFamilies = calloc(queueFamilyCount, sizeof(VkQueueFamilyProperties));
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies);
 
     // Set params to create (1) command queue with type graphics.
@@ -193,8 +215,19 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
 
     VkPhysicalDeviceFeatures deviceFeatures = {0};
 
+    // spudgpu_create_buffer/spudgpu_create_image always call
+    // vkGetBufferDeviceAddress/equivalent to populate desc.gpu_address_location
+    // (see spudgpu.h's documented contract that it's valid after creation,
+    // matching D3D12's always-available GetGPUVirtualAddress), so this
+    // feature must be enabled here and VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+    // must be set on every buffer (see spudgpuvulkanbuffer.c).
+    VkPhysicalDeviceVulkan12Features vk12Features = {0};
+    vk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vk12Features.bufferDeviceAddress = VK_TRUE;
+
     VkPhysicalDeviceVulkan13Features vk13Features = {0};
     vk13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    vk13Features.pNext = &vk12Features;
     vk13Features.dynamicRendering = VK_TRUE;
     vk13Features.synchronization2 = VK_TRUE;
 
@@ -216,6 +249,7 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     if (r != VK_SUCCESS) {
         //throw std::runtime_error("failed to create logical device!");
         printf("failed to create logical device\n");
+        free(queueFamilies);
         return NULL;
     }
 
@@ -238,6 +272,7 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
         m_resource_pool = std::static_pointer_cast<gpu_resource_pool_vulkan>(spudGpuVulkanPool);
     }*/
 
+    free(queueFamilies);
     return result;
 };
 
@@ -297,6 +332,25 @@ SPUDRESULT spudgpu_create_instance(
     createInfo.enabledLayerCount = 0;
     createInfo.ppEnabledLayerNames = NULL;
 
+#if _DEBUG
+    // Without this, invalid API usage tends to surface as an access violation
+    // deep inside the ICD (e.g. igvk64.dll) instead of a VK_ERROR_* return,
+    // since the driver isn't required to validate its own inputs.
+    static const char *validationLayer = "VK_LAYER_KHRONOS_validation";
+    uint32_t availableLayerCount = 0;
+    vkEnumerateInstanceLayerProperties(&availableLayerCount, NULL);
+    VkLayerProperties *availableLayers = malloc(sizeof(VkLayerProperties) * availableLayerCount);
+    vkEnumerateInstanceLayerProperties(&availableLayerCount, availableLayers);
+    for (uint32_t i = 0; i < availableLayerCount; i++) {
+        if (strcmp(availableLayers[i].layerName, validationLayer) == 0) {
+            createInfo.enabledLayerCount = 1;
+            createInfo.ppEnabledLayerNames = &validationLayer;
+            break;
+        }
+    }
+    free(availableLayers);
+#endif
+
     if (vkCreateInstance(&createInfo, NULL, &result._instance_vk) != VK_SUCCESS) {
         //throw std::runtime_error("failed to create vulkan instance!");
         return SPUDRESULT_API_SPECIFIC_FAILURE;
@@ -311,9 +365,58 @@ SPUDRESULT spudgpu_create_instance(
 
 SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance) {
     if (!instance) return SPUD_SUCCESS;
+
+    // instance owns every spudgpu_device handed out by spudgpu_enumerate_devices
+    // (there is no public spudgpu_destroy_device) — _devices_pointer_array
+    // exists precisely to make that cleanup possible; see its declaration.
+    for (uint32_t i = 0; i < instance->_devices_count; i++) {
+        spudgpu_device_vulkan *dev = (spudgpu_device_vulkan *) instance->_devices_pointer_array[i];
+        if (!dev) continue;
+        vkDestroyDevice(dev->_logical_device_vk, NULL);
+        free(dev);
+    }
+    free(instance->_devices_pointer_array);
+
     vkDestroyInstance(instance->_instance_vk, NULL);
     free(instance);
     return SPUD_SUCCESS;
+}
+
+static void spudgpuvulkan___internal_make_device_properties(
+    spudgpu_device_vulkan *device) {
+    if (!device) return;
+
+    const VkPhysicalDeviceProperties *props = &device->_properties_vk;
+
+    size_t nameLen = strnlen(
+        props->deviceName, sizeof(device->_properties.description) - 1);
+    memcpy(device->_properties.description, props->deviceName, nameLen);
+    device->_properties.description[nameLen] = '\0';
+
+    device->_properties.vendor_id = props->vendorID;
+    device->_properties.device_id = props->deviceID;
+    // Vulkan has no standard equivalent to DXGI's subsystem ID or hardware
+    // revision, so these are left unset.
+    device->_properties.subSys_id = 0;
+    device->_properties.revision  = 0;
+
+    VkPhysicalDeviceMemoryProperties memProps = {0};
+    vkGetPhysicalDeviceMemoryProperties(device->_physical_device_vk, &memProps);
+
+    uint64_t deviceLocalMemory = 0;
+    uint64_t hostVisibleMemory = 0;
+    for (uint32_t i = 0; i < memProps.memoryHeapCount; i++) {
+        if (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            deviceLocalMemory += memProps.memoryHeaps[i].size;
+        else
+            hostVisibleMemory += memProps.memoryHeaps[i].size;
+    }
+
+    device->_properties.dedicated_video_memory = deviceLocalMemory;
+    // Vulkan does not distinguish a GPU-private system memory pool from
+    // shared system memory the way DXGI does.
+    device->_properties.dedicated_system_memory = 0;
+    device->_properties.shared_system_memory    = hostVisibleMemory;
 }
 
 SPUDRESULT spudgpu_enumerate_devices(
@@ -328,11 +431,8 @@ SPUDRESULT spudgpu_enumerate_devices(
         //throw std::runtime_error("failed to find GPUs with Vulkan support!");
         return SPUDRESULT_GPU_DEVICE_ENUMERATION_FAILURE;
     }
-    VkPhysicalDevice physicalDevices[deviceCount];
+    VkPhysicalDevice *physicalDevices = malloc(sizeof(VkPhysicalDevice) * deviceCount);
     vkEnumeratePhysicalDevices(instance->_instance_vk, &deviceCount, physicalDevices);
-    //
-    //spudVulkanDevices = (spudgpu_device_vulkan *) malloc(sizeof(spudgpu_device_vulkan) * deviceCount);
-    //spudVulkanDevices.resize(deviceCount);
 
     // Finally initialize the Vulkan logical devices and gather them.
     *ppOutputDevices = malloc(sizeof(spudgpu_device) * deviceCount);
@@ -351,6 +451,7 @@ SPUDRESULT spudgpu_enumerate_devices(
         // Grab the properties and feature descriptors.
         vkGetPhysicalDeviceProperties(pDeviceVulkan->_physical_device_vk, &pDeviceVulkan->_properties_vk);
         vkGetPhysicalDeviceFeatures(pDeviceVulkan->_physical_device_vk, &pDeviceVulkan->_features_vk);
+        spudgpuvulkan___internal_make_device_properties(pDeviceVulkan);
 
         (*ppOutputDevices)[i] = (spudgpu_device) pDeviceVulkan;
 
@@ -358,7 +459,20 @@ SPUDRESULT spudgpu_enumerate_devices(
         instance->_devices_pointer_array[i] = (uint64_t) (*ppOutputDevices)[i];
     }
 
+    free(physicalDevices);
     return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudgpu_get_device_properties(
+    spudgpu_device device, SPUDGPU_DEVICE_PROPERTIES *out_properties) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!out_properties)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	memcpy(
+	    out_properties, &device->_properties,
+	    sizeof(SPUDGPU_DEVICE_PROPERTIES));
+	return SPUD_SUCCESS;
 }
 
 SPUDGPU_NATIVE_API spudgpu_get_native_gpu_api(spudgpu_instance instance) {

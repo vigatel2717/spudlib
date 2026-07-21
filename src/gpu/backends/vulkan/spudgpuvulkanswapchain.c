@@ -7,15 +7,15 @@
 #include "spudgpuvulkan.h"
 #include "spudgpu.h"
 
-#if defined(SPUDGPU_PLATFORM_WIN32)
+#if defined(SPUDLIB_PLATFORM_WIN32)
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
 
-#elif defined(SPUDGPU_PLATFORM_WAYLAND)
+#elif defined(SPUDLIB_PLATFORM_WAYLAND)
 #include <wayland-client.h>
 #include <vulkan/vulkan_wayland.h>
 
-#elif defined(SPUDGPU_PLATFORM_XLIB)
+#elif defined(SPUDLIB_PLATFORM_XLIB)
 //#include <vulkan/vulkan_xlib.h>
 //#include <X11/Xlib.h>
 #endif
@@ -63,14 +63,24 @@ VkSurfaceFormatKHR spudgpuvulkan___choose_surface_format_internal(
 	return (VkSurfaceFormatKHR){0};
 }
 
+VkPresentModeKHR spudgpuvulkan___translate_present_mode_internal(
+	SPUDGPU_PRESENT_MODE mode) {
+	switch (mode) {
+		case SPUDGPU_PRESENT_MODE_IMMEDIATE: return VK_PRESENT_MODE_IMMEDIATE_KHR;
+		case SPUDGPU_PRESENT_MODE_MAILBOX: return VK_PRESENT_MODE_MAILBOX_KHR;
+		case SPUDGPU_PRESENT_MODE_FIFO:
+		default: return VK_PRESENT_MODE_FIFO_KHR;
+	}
+}
+
 VkPresentModeKHR spudgpuvulkan___choose_present_mode_internal(
 	VkPresentModeKHR *pAvailablePresentModes,
-	uint32_t availablePresentModeCount) {
-	// "Mailbox" is the gold standard (Triple Buffering)
-	// It avoids tearing while maintaining low latency.
+	uint32_t availablePresentModeCount,
+	SPUDGPU_PRESENT_MODE requested) {
+	VkPresentModeKHR wanted = spudgpuvulkan___translate_present_mode_internal(requested);
 	for (uint32_t i = 0; i < availablePresentModeCount; i++)
-		if (pAvailablePresentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
-			return pAvailablePresentModes[i];
+		if (pAvailablePresentModes[i] == wanted)
+			return wanted;
 	return VK_PRESENT_MODE_FIFO_KHR; // FIFO is guaranteed to be available by the Vulkan spec (Standard V-Sync)
 }
 
@@ -119,7 +129,7 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 		VkPresentModeKHR *pPresentModes = NULL;
 		uint32_t presentModeCount = 0;
 		spudgpuvulkan___get_available_present_modes_internal(pSwapChain, &pPresentModes, &presentModeCount);
-		presentMode = spudgpuvulkan___choose_present_mode_internal(pPresentModes, presentModeCount);
+		presentMode = spudgpuvulkan___choose_present_mode_internal(pPresentModes, presentModeCount, pSwapChain->_desc.present_mode);
 		free(pPresentModes);
 		pSwapChain->_extent_vk = spudgpuvulkan___choose_extent_internal(capabilities, width, height);
 		pSwapChain->_format_vk = surfaceFormat.format;
@@ -129,6 +139,23 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 	uint32_t imageCount = capabilities.minImageCount + 1;
 	if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount)
 		imageCount = capabilities.maxImageCount;
+
+	// Pick the best supported composite alpha mode — prefer OPAQUE (the
+	// window isn't meant to be blended with what's behind it), falling back
+	// to whatever the surface actually supports if OPAQUE isn't available.
+	static const VkCompositeAlphaFlagBitsKHR compositeAlphaCandidates[] = {
+		VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+		VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+		VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+		VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+	};
+	VkCompositeAlphaFlagBitsKHR compositeAlpha = compositeAlphaCandidates[0];
+	for (size_t i = 0; i < sizeof(compositeAlphaCandidates) / sizeof(compositeAlphaCandidates[0]); i++) {
+		if (capabilities.supportedCompositeAlpha & compositeAlphaCandidates[i]) {
+			compositeAlpha = compositeAlphaCandidates[i];
+			break;
+		}
+	}
 
 	// Populate Creation Info
 	VkSwapchainCreateInfoKHR createInfo = {0};
@@ -141,7 +168,10 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 	createInfo.imageExtent = pSwapChain->_extent_vk;
 	createInfo.imageArrayLayers = 1;
 	createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	createInfo.preTransform = capabilities.currentTransform;
+	createInfo.compositeAlpha = compositeAlpha;
 	createInfo.presentMode = presentMode;
+	createInfo.clipped = VK_TRUE;
 
 	// Pass the old swap chain handle when this function is called inside of recreate()
 	// This is for Vulkan optimization
@@ -172,12 +202,33 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 
 void spudgpuvulkan___fences_semaphores_swapchain_creation_internal(
 	spudgpu_swap_chain_vulkan *pSwapChain) {
-	uint32_t max_frames = pSwapChain->_desc.buffer_count > 0 ? pSwapChain->_desc.buffer_count : 2;
+	// This is the CPU-GPU pipelining depth, not the swapchain image count —
+	// deliberately independent of desc.buffer_count. The caller records into
+	// a single shared command buffer/allocator per frame (not one per frame
+	// in flight), so _in_flight_fences[_current_frame] only actually
+	// tracks that command buffer's previous submission if there is exactly
+	// one slot: with buffer_count (e.g. 2) slots instead, alternate frames
+	// wait on a fence that was never signaled by a real submission (still in
+	// its initial signaled state), so the wait is a no-op and the shared
+	// command buffer gets reset/re-recorded while the GPU may still be
+	// executing it from the previous frame — see app_render (main.cpp),
+	// which resets app.cmd_allocator/app.cmd_list right after acquire.
+	uint32_t max_frames = 1;
 	pSwapChain->_max_frames_in_flight = max_frames;
 	pSwapChain->_current_frame = 0;
 
+	// render_finished_semaphores is sized/indexed by swapchain IMAGE index
+	// (_current_image_index), not by _current_frame — it's waited on by
+	// vkQueuePresentKHR, and the presentation engine can hold a semaphore in
+	// use past the point where our fence signals GPU completion. With only
+	// max_frames_in_flight (1) of them shared across desc.buffer_count (e.g.
+	// 2) images, present("image 0", sem) followed by acquire+submit+present
+	// for image 1 re-signals that same semaphore while the engine may still
+	// be consuming it for image 0 (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+	uint32_t image_count = pSwapChain->_swapchain_images_count > 0 ? pSwapChain->_swapchain_images_count : max_frames;
+
 	pSwapChain->_image_available_semaphores = calloc(max_frames, sizeof(spudgpu_semaphore_vulkan));
-	pSwapChain->_render_finished_semaphores = calloc(max_frames, sizeof(spudgpu_semaphore_vulkan));
+	pSwapChain->_render_finished_semaphores = calloc(image_count, sizeof(spudgpu_semaphore_vulkan));
 	pSwapChain->_in_flight_fences           = calloc(max_frames, sizeof(spudgpu_fence_vulkan));
 
 	VkDevice vk_device = pSwapChain->_device._logical_device_vk;
@@ -191,11 +242,14 @@ void spudgpuvulkan___fences_semaphores_swapchain_creation_internal(
 
 	for (uint32_t i = 0; i < max_frames; i++) {
 		pSwapChain->_image_available_semaphores[i]._device_vk = vk_device;
-		pSwapChain->_render_finished_semaphores[i]._device_vk = vk_device;
 		pSwapChain->_in_flight_fences[i]._device_vk           = vk_device;
 		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_image_available_semaphores[i]._semaphore_vk);
-		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_render_finished_semaphores[i]._semaphore_vk);
 		vkCreateFence(vk_device, &fenceInfo, NULL, &pSwapChain->_in_flight_fences[i]._fence_vk);
+	}
+
+	for (uint32_t i = 0; i < image_count; i++) {
+		pSwapChain->_render_finished_semaphores[i]._device_vk = vk_device;
+		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_render_finished_semaphores[i]._semaphore_vk);
 	}
 }
 
@@ -280,7 +334,7 @@ SPUDRESULT spudgpu_create_surface(
 	spudgpu_surface *out_surface) {
 	if (!instance) return SPUDRESULT_GPU_INVALID_INSTANCE;
 	if (!window_handle) return SPUDRESULT_GPU_INVALID_WINDOW_HANDLE;
-	if (!window_handle) return SPUDRESULT_GPU_INVALID_DISPLAY_HANDLE;
+	if (!display_handle) return SPUDRESULT_GPU_INVALID_DISPLAY_HANDLE;
 	if (!out_surface) return SPUD_SUCCESS;
 
 	spudgpu_surface_vulkan result = {0};
@@ -288,21 +342,21 @@ SPUDRESULT spudgpu_create_surface(
 
 	VkResult r = VK_SUCCESS;
 
-#if defined(SPUDGPU_PLATFORM_WIN32)
+#if defined(SPUDLIB_PLATFORM_WIN32)
 	VkWin32SurfaceCreateInfoKHR ci = {0};
 	ci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
 	ci.hwnd = (HWND) window_handle;
 	ci.hinstance = GetModuleHandle(NULL);
 	r = vkCreateWin32SurfaceKHR(instance->_instance_vk, &ci, NULL, &result._surface_vk);
 
-#elif defined(SPUDGPU_PLATFORM_WAYLAND)
+#elif defined(SPUDLIB_PLATFORM_WAYLAND)
 	VkWaylandSurfaceCreateInfoKHR ci = {0};
 	ci.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
 	ci.display = (struct wl_display *) display_handle;
 	ci.surface = (struct wl_surface *) window_handle;
 	r = vkCreateWaylandSurfaceKHR(instance->_instance_vk, &ci, NULL, &result._surface_vk);
 
-#elif defined(SPUDGPU_PLATFORM_XLIB)
+#elif defined(SPUDLIB_PLATFORM_XLIB)
 	VkXlibSurfaceCreateInfoKHR ci = {0};
 	ci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
 	ci.dpy = (Display *) display_handle;
@@ -395,8 +449,12 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 
 	for (uint32_t i = 0; i < swap_chain->_max_frames_in_flight; i++) {
 		vkDestroySemaphore(dev, swap_chain->_image_available_semaphores[i]._semaphore_vk, NULL);
-		vkDestroySemaphore(dev, swap_chain->_render_finished_semaphores[i]._semaphore_vk, NULL);
 		vkDestroyFence(dev, swap_chain->_in_flight_fences[i]._fence_vk, NULL);
+	}
+	// render_finished_semaphores is sized/indexed by swapchain image count, not
+	// _max_frames_in_flight — see spudgpuvulkan___fences_semaphores_swapchain_creation_internal.
+	for (uint32_t i = 0; i < swap_chain->_swapchain_images_count; i++) {
+		vkDestroySemaphore(dev, swap_chain->_render_finished_semaphores[i]._semaphore_vk, NULL);
 	}
 	free(swap_chain->_image_available_semaphores);
 	free(swap_chain->_render_finished_semaphores);
@@ -407,9 +465,10 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 		vkDestroyImageView(dev, swap_chain->_swapchain_image_views_vk[i]._image_view_vk, NULL);
 	}
 	free(swap_chain->_swapchain_image_views_vk);
+	free(swap_chain->_swapchain_images_vk);
 
-	if (swap_chain->_surface_vk != VK_NULL_HANDLE)
-		vkDestroySurfaceKHR(swap_chain->_device._instance._instance_vk, swap_chain->_surface_vk, NULL);
+	// The surface is owned by the caller — do not destroy it here.
+	// The caller is responsible for calling spudgpu_destroy_surface separately.
 	if (swap_chain->_swapchain_vk != VK_NULL_HANDLE)
 		vkDestroySwapchainKHR(dev, swap_chain->_swapchain_vk, NULL);
 
@@ -434,7 +493,6 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 	// GPU resources that are still in flight.
 	vkWaitForFences(device, 1, &swap_chain->_in_flight_fences[swap_chain->_current_frame]._fence_vk,
 	                VK_TRUE, SPUD_UINT64_MAX);
-	vkResetFences(device, 1, &swap_chain->_in_flight_fences[swap_chain->_current_frame]._fence_vk);
 
 	// Ask the driver for the next available swapchain image.
 	// Signals _image_available_semaphores[_current_frame] when the image is ready.
@@ -447,9 +505,21 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 		&swap_chain->_current_image_index);
 
 	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-		// Caller should handle swap chain recreation on VK_ERROR_OUT_OF_DATE_KHR
+		// Caller should handle swap chain recreation on VK_ERROR_OUT_OF_DATE_KHR.
+		// Do NOT reset the fence here: _current_frame only advances on a
+		// successful present (see below), so a caller that bails out on a
+		// failed acquire (as Erethal's app_render does) submits nothing that
+		// would ever re-signal this fence. Resetting it unconditionally,
+		// before knowing the acquire would succeed, left it permanently
+		// unsignaled the moment a resize made the swap chain go out of
+		// date — and the very next acquire's wait above would then block
+		// forever on that same fence, freezing the render thread.
 		return SPUD_UINT32_MAX;
 	}
+
+	// Only reset now that we know real work is about to be submitted for
+	// this frame, which will eventually re-signal the fence.
+	vkResetFences(device, 1, &swap_chain->_in_flight_fences[swap_chain->_current_frame]._fence_vk);
 
 	return swap_chain->_current_image_index;
 }
@@ -458,10 +528,11 @@ void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain) {
 	if (!swap_chain) return;
 
 	// Tell the presentation engine to display _current_image_index.
-	// Wait on _render_finished_semaphores[_current_frame], which the
-	// command submission signals when rendering is done.
+	// Wait on _render_finished_semaphores[_current_image_index] — indexed by
+	// swapchain image, not frame-in-flight slot, since this semaphore is
+	// specifically what the present engine consumes for this image.
 	VkSemaphore waitSemaphores[] = {
-		swap_chain->_render_finished_semaphores[swap_chain->_current_frame]._semaphore_vk
+		swap_chain->_render_finished_semaphores[swap_chain->_current_image_index]._semaphore_vk
 	};
 
 	// Retrieve the graphics queue at present-time.
@@ -503,7 +574,8 @@ spudgpu_semaphore spudgpu_swap_chain_get_image_available_semaphore(spudgpu_swap_
 
 spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_chain swap_chain) {
 	if (!swap_chain) return NULL;
-	else return &swap_chain->_render_finished_semaphores[swap_chain->_current_frame];
+	// Indexed by swapchain image, not frame-in-flight slot — see spudgpu_swap_chain_present.
+	else return &swap_chain->_render_finished_semaphores[swap_chain->_current_image_index];
 }
 
 spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain) {

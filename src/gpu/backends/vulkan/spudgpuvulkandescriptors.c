@@ -197,7 +197,7 @@ SPUDRESULT spudgpu_allocate_descriptor_sets(
     // Gather the raw VkDescriptorSetLayout handles from the typed wrappers.
     VkDescriptorSetLayout vk_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS] = {0};
     for (uint32_t i = 0; i < desc->set_count; i++) {
-        if (!desc->layouts[i]) return false;
+        if (!desc->layouts[i]) return SPUDRESULT_GPU_INVALID_DESCRIPTOR_SET_LAYOUT;
         spudgpu_descriptor_set_layout_vulkan *vkLayout =
                 (spudgpu_descriptor_set_layout_vulkan *) desc->layouts[i];
         vk_layouts[i] = vkLayout->_layout_vk;

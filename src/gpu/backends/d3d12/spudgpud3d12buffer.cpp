@@ -149,6 +149,21 @@ void spudgpu_unmap_buffer(spudgpu_buffer buffer) {
 	if (!buffer) return;
 	buffer->_d3d_resource->Unmap(0, nullptr);
 }
+
+// D3D12 has no standalone flush/invalidate call the way Vulkan does
+// (vkFlushMappedMemoryRanges / vkInvalidateMappedMemoryRanges) — that
+// behavior is folded into Map()'s pReadRange and Unmap()'s pWrittenRange
+// parameters instead, which spudgpu_map_buffer/spudgpu_unmap_buffer above
+// already pass. By the time a caller could invoke either of these, the
+// runtime has already guaranteed the mapped range is coherent, so both are
+// correctly no-ops here.
+void spudgpu_flush_buffer(spudgpu_buffer buffer, uint64_t offset, uint64_t size) {
+}
+SPUDRESULT spudgpu_invalidate_buffer(spudgpu_buffer buffer, uint64_t offset, uint64_t size) {
+	// SPUD_SUCCESS unconditionally, including for a null buffer — matches the
+	// Vulkan backend's null-buffer behavior for cross-backend parity.
+	return SPUD_SUCCESS;
+}
 }
 
 #endif // SPUDGPU_COMPILE_D3D12_API

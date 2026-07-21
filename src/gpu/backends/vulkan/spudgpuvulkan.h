@@ -28,6 +28,7 @@ typedef struct spudgpu_device_t {
     VkDevice _logical_device_vk;
     VkPhysicalDevice _physical_device_vk;
     spudgpu_instance_vulkan _instance;
+    SPUDGPU_DEVICE_PROPERTIES _properties;
     VkPhysicalDeviceProperties _properties_vk;
     VkPhysicalDeviceFeatures _features_vk;
     uint32_t _graphics_queue_family_index;
@@ -56,10 +57,6 @@ typedef struct spudgpu_command_list_t {
 #endif
     VkCommandBuffer _command_buffer_vk;
     spudgpu_command_allocator_vulkan _allocator;
-
-    // Transient framebuffer created by begin_render_pass, destroyed by end_render_pass.
-    VkFramebuffer _transient_framebuffer_vk;
-    VkDevice _transient_framebuffer_device_vk;
 } spudgpu_command_list_vulkan;
 
 typedef struct spudgpu_buffer_t {
@@ -162,7 +159,6 @@ typedef struct spudgpu_shader_pipeline_t {
 #endif
     VkPipeline _pipeline_vk;
     VkPipelineLayout _pipeline_layout_vk;
-    VkRenderPass _render_pass_vk; // Owned by this pipeline
     spudgpu_device_vulkan _device;
     spudgpu_shader_pipeline_desc _desc;
 } spudgpu_shader_pipeline_vulkan;

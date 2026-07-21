@@ -3,6 +3,7 @@
 
 #include "spudgpud3d12.hpp"
 #include <vector>
+#include <string>
 
 static SPUDRESULT ___internal_spudgpu_d3d12_create_command_queues_per_family(
     spudgpu_device device,
@@ -12,8 +13,9 @@ static SPUDRESULT ___internal_spudgpu_d3d12_create_command_queues_per_family(
 	for (size_t i = 0; i < arr.size(); ++i) {
 		arr[i] = (spudgpu_command_queue_d3d12 *)calloc(
 		    1, sizeof(spudgpu_command_queue_d3d12));
-		if (device->_d3d_device->CreateCommandQueue(
-		        desc, IID_PPV_ARGS(&arr[i]->_d3d_cmd_queue)))
+		arr[i]->_device = device;
+		if (FAILED(device->_d3d_device->CreateCommandQueue(
+		        desc, IID_PPV_ARGS(&arr[i]->_d3d_cmd_queue))))
 			return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 	return SPUD_SUCCESS;
@@ -33,21 +35,24 @@ ___internal_spudgpu_d3d12_create_device_command_queues(spudgpu_device device) {
 
 	// Direct Queues
 	desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-	r = ___internal_spudgpu_d3d12_create_command_queues_per_family(
+	r         = ___internal_spudgpu_d3d12_create_command_queues_per_family(
 	    device, &desc, device->_cmd_queues_direct);
-	if (r != SPUD_SUCCESS) return r;
+	if (r != SPUD_SUCCESS)
+		return r;
 
 	// Copy Queues
 	desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
-	r = ___internal_spudgpu_d3d12_create_command_queues_per_family(
+	r         = ___internal_spudgpu_d3d12_create_command_queues_per_family(
 	    device, &desc, device->_cmd_queues_copy);
-	if (r != SPUD_SUCCESS) return r;
+	if (r != SPUD_SUCCESS)
+		return r;
 
 	// Compute Queues
 	desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-	r = ___internal_spudgpu_d3d12_create_command_queues_per_family(
+	r         = ___internal_spudgpu_d3d12_create_command_queues_per_family(
 	    device, &desc, device->_cmd_queues_compute);
-	if (r != SPUD_SUCCESS) return r;
+	if (r != SPUD_SUCCESS)
+		return r;
 
 	return r;
 }
@@ -75,12 +80,21 @@ SPUDRESULT spudgpu_create_instance(
 	pResult->_gpu_devices            = nullptr;
 	pResult->_gpu_device_count       = 0;
 	pResult->_gpu_devices_enumerated = false;
-	
-	UINT dxgiFlags = 0;
-#if _DEBUG
-	dxgiFlags |= DXGI_CREATE_FACTORY_DEBUG;
+
+#ifdef _DEBUG
+	Microsoft::WRL::ComPtr<ID3D12Debug1> d3dDebugController;
+	if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&d3dDebugController)))) {
+		d3dDebugController->EnableDebugLayer();
+		printf("Enabled D3D12 Debug Interface Layer\r\n");
+	}
 #endif
-	HRESULT hr = CreateDXGIFactory2(dxgiFlags, IID_PPV_ARGS(&pResult->_dxgi_factory));
+
+	UINT dxgiFlags = 0;
+#ifdef _DEBUG
+	//dxgiFlags |= DXGI_CREATE_FACTORY_DEBUG;
+#endif
+	HRESULT hr =
+	    CreateDXGIFactory2(dxgiFlags, IID_PPV_ARGS(&pResult->_dxgi_factory));
 	if (FAILED(hr)) {
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
@@ -90,7 +104,8 @@ SPUDRESULT spudgpu_create_instance(
 	return SPUD_SUCCESS;
 }
 
-static SPUDRESULT ___internal_spudgpu_d3d12_destroy_device(spudgpu_device device) {
+static SPUDRESULT
+___internal_spudgpu_d3d12_destroy_device(spudgpu_device device) {
 	for (size_t i = 0; i < device->_cmd_queues_direct.size(); ++i)
 		if (device->_cmd_queues_direct[i])
 			device->_cmd_queues_direct[i]->_d3d_cmd_queue.Reset();
@@ -119,6 +134,29 @@ SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance) {
 	return SPUD_SUCCESS;
 }
 
+bool ___internal_spudgpu_d3d12_make_device_properties(
+    spudgpu_device_d3d12 *device) {
+	if (!device)
+		return false;
+	if (!device->_dxgi_adapter)
+		return false;
+	DXGI_ADAPTER_DESC3 aDesc;
+	if (FAILED(device->_dxgi_adapter->GetDesc3(&aDesc)))
+		return false;
+	int the_wide_dog_has_bluffed_the_smaller_dog_because_he_thinks_he_is_a_buffalo, strSize =
+	WideCharToMultiByte(
+	    CP_UTF8, 0, &aDesc.Description[0], 128,
+	    &device->_properties.description[0], 128, NULL, FALSE);
+	// device->_properties.description;
+	device->_properties.dedicated_video_memory  = aDesc.DedicatedVideoMemory;
+	device->_properties.dedicated_system_memory = aDesc.DedicatedSystemMemory;
+	device->_properties.shared_system_memory    = aDesc.SharedSystemMemory;
+	device->_properties.device_id               = aDesc.DeviceId;
+	device->_properties.revision                = aDesc.Revision;
+	device->_properties.subSys_id               = aDesc.SubSysId;
+	device->_properties.vendor_id               = aDesc.VendorId;
+	return true;
+}
 SPUDRESULT spudgpu_enumerate_devices(
     spudgpu_instance instance,
     spudgpu_device **ppOutputDevices,
@@ -127,6 +165,8 @@ SPUDRESULT spudgpu_enumerate_devices(
 		return SPUDRESULT_GPU_INVALID_INSTANCE;
 	if (instance->_gpu_devices_enumerated)
 		return SPUD_SUCCESS;
+
+	SPUDRESULT sr = SPUD_SUCCESS;
 
 	const D3D_FEATURE_LEVEL minimumFeatureLevel = D3D_FEATURE_LEVEL_12_2;
 
@@ -152,8 +192,8 @@ SPUDRESULT spudgpu_enumerate_devices(
 
 		// Validate a possible creation of an ID3D12Device
 		if (SUCCEEDED(D3D12CreateDevice(
-		        dxgiAdapter.Get(), minimumFeatureLevel, __uuidof(ID3D12Device14),
-		        nullptr))) {
+		        dxgiAdapter.Get(), minimumFeatureLevel,
+		        __uuidof(ID3D12Device14), nullptr))) {
 
 			// Create a new SpudGPU Device
 			spudgpu_device_d3d12 *gpuDevice =
@@ -166,9 +206,19 @@ SPUDRESULT spudgpu_enumerate_devices(
 				return SPUDRESULT_API_SPECIFIC_FAILURE;
 			gpuDevice->_dxgi_adapter = dxgiAdapter;
 			gpuDevice->_instance     = instance;
+			if (!___internal_spudgpu_d3d12_make_device_properties(gpuDevice)) {
+				free(gpuDevice);
+				return sr;
+			}
+
 			// Create the premade command queues for use.
-			SPUDRESULT sr = ___internal_spudgpu_d3d12_create_device_command_queues(gpuDevice);
-			if (sr != SPUD_SUCCESS) return sr;
+			SPUDRESULT sr =
+			    ___internal_spudgpu_d3d12_create_device_command_queues(
+			        gpuDevice);
+			if (sr != SPUD_SUCCESS) {
+				free(gpuDevice);
+				return sr;
+			}
 			gpuDevices.push_back(gpuDevice);
 			continue;
 		} else
@@ -183,8 +233,19 @@ SPUDRESULT spudgpu_enumerate_devices(
 	instance->_gpu_devices_enumerated = true;
 
 	*pOutputDevicesCount = instance->_gpu_device_count;
-	*ppOutputDevices = instance->_gpu_devices;
+	*ppOutputDevices     = instance->_gpu_devices;
 
+	return SPUD_SUCCESS;
+}
+SPUDRESULT spudgpu_get_device_properties(
+    spudgpu_device device, SPUDGPU_DEVICE_PROPERTIES *out_properties) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!out_properties)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	memcpy(
+	    out_properties, &device->_properties,
+	    sizeof(SPUDGPU_DEVICE_PROPERTIES));
 	return SPUD_SUCCESS;
 }
 
@@ -210,9 +271,7 @@ SPUDRESULT spudgpu_create_surface(
 	*out_surface       = pResult;
 	return SPUD_SUCCESS;
 }
-void spudgpu_destroy_surface(spudgpu_surface surface) {
-	free(surface);
-}
+void spudgpu_destroy_surface(spudgpu_surface surface) { free(surface); }
 }
 
 #endif

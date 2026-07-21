@@ -10,9 +10,10 @@ extern "C" {
 #endif
 
 SPUDRESULT spudgpu_create_fence(
-    spudgpu_device device,
-    bool signaled_on_creation,
-    spudgpu_fence *out_fence) {
+	spudgpu_device device,
+	SPUDGPU_FENCE_FLAGS flags,
+	bool signaled_on_creation,
+	spudgpu_fence *out_fence) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!out_fence) return SPUD_SUCCESS;
     
@@ -40,36 +41,42 @@ void spudgpu_destroy_fence(spudgpu_fence fence) {
     free(fence);
 }
 
-bool spudgpu_wait_for_fences(
+SPUDRESULT spudgpu_wait_for_fences(
     spudgpu_device device,
     spudgpu_fence *fences,
     uint32_t fence_count,
     bool wait_all,
     uint64_t timeout_ns) {
-    if (!fences || fence_count == 0) return false;
-    spudgpu_fence_vulkan *first = fences[0];
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!fences || fence_count == 0) return SPUDRESULT_GPU_INVALID_FENCE;
 
-    VkFence vk_fences[fence_count];
+    VkFence *vk_fences = malloc(fence_count * sizeof(VkFence));
+    if (!vk_fences) return SPUDRESULT_GENERAL_FAILURE;
     for (uint32_t i = 0; i < fence_count; i++)
         vk_fences[i] = fences[i]->_fence_vk;
 
     VkResult r = vkWaitForFences(
-        first->_device_vk,
+        device->_logical_device_vk,
         fence_count,
         vk_fences,
         wait_all ? VK_TRUE : VK_FALSE,
         timeout_ns);
-    return r == VK_SUCCESS;
+    free(vk_fences);
+    if (r != VK_SUCCESS)
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
+    return SPUD_SUCCESS;
 }
 
 void spudgpu_reset_fences(spudgpu_device device, spudgpu_fence *fences, uint32_t fence_count) {
     if (!device || (!fences || fence_count == 0)) return;
 
-    VkFence vk_fences[fence_count];
-    for (uint32_t i = 0; i < fence_count; i++) 
+    VkFence *vk_fences = malloc(fence_count * sizeof(VkFence));
+    if (!vk_fences) return;
+    for (uint32_t i = 0; i < fence_count; i++)
         vk_fences[i] = fences[i]->_fence_vk;
 
     vkResetFences(device->_logical_device_vk, fence_count, vk_fences);
+    free(vk_fences);
 }
 
 bool spudgpu_get_fence_status(spudgpu_fence fence) {

@@ -2,42 +2,55 @@
 #ifndef SPUDMEMORY_H
 #define SPUDMEMORY_H
 
-#include <stdint.h>
+/*
+ * Much of this code is inspired by a YouTuber named Magicalbat
+ * He hates malloc() and free() with a passion
+ * Checkout his memory arena code video here:
+ * https://www.youtube.com/watch?v=jgiMagdjA1s
+ */
+
+#include <spudcore.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
 
+#define SMEM_KiB(n) ((uint64_t)(n) << 10)
+#define SMEM_MiB(n) ((uint64_t)(n) << 20)
+#define SMEM_GiB(n) ((uint64_t)(n) << 30)
+
+#define SMEM_ALIGN_UP_POW2(n, p) (((uint64_t)(n) + ((uint64_t)(p) - 1)) & (~(uint64_t)(p) - 1))
+#define SMEM_ARENA_BASE_POS (sizeof(smem_arena_t))
+#define SMEM_ARENA_ALIGN (sizeof(void *))
+
 typedef struct smem_arena_t *smem_arena;
 
-smem_arena smem_arena_create(uint64_t initial_capacity, bool autogrow);
+SPUDRESULT smem_arena_create(uint64_t reserve_size, uint64_t commit_size, smem_arena *out_arena);
+
 void smem_arena_destroy(smem_arena arena);
-uint64_t smem_arena_get_current_capacity(smem_arena arena);
-uint64_t smem_arena_get_current_size(smem_arena arena);
-bool smem_arena_is_autogrow(smem_arena arena);
-void smem_arena_reserve(smem_arena arena, uint64_t add_capacity);
+uint64_t smem_arena_get_reserve_size(smem_arena arena);
+uint64_t smem_arena_get_commit_size(smem_arena arena);
 
-//typedef struct smem_ptr_t *smem_ptr;
-//void smem_assign(smem_arena arena, void *obj, smem_ptr *out_assigned_ptr);
+SPUDRESULT smem_arena_push(smem_arena arena, uint64_t size, bool non_zero, void **out_ptr);
+SPUDRESULT smem_arena_pop(smem_arena arena, uint64_t size);
+SPUDRESULT smem_arena_pop_to(smem_arena arena, uint64_t pos);
+void smem_arena_clear(smem_arena arena);
 
-void *smem_alloc(smem_arena arena, uint64_t size);
-void *smem_calloc(smem_arena arena, uint64_t size);
-void smem_zero(smem_arena arena);
+#define SMEM_PUSH_STRUCT(arena, ptr) smem_arena_push(arena, sizeof(*ptr), false, ptr)
+#define SMEM_PUSH_STRUCT_NZ(arena, ptr) smem_arena_push(arena, sizeof(*ptr), true, ptr)
+#define SMEM_PUSH_ARRAY(arena, n, ptr) smem_arena_push(arena, sizeof(*ptr) * (n), false, ptr)
+#define SMEM_PUSH_ARRAY_NZ(arena, n, ptr) smem_arena_push(arena, sizeof(*ptr) * (n), true, ptr)
 
-/*
-// Save/restore position for temporary scratch allocations
-typedef struct smem_arena_mark_t *smem_arena_mark;
-smem_arena_mark smem_arena_save(smem_arena arena);
-void smem_arena_restore(smem_arena arena, smem_arena_mark mark);
+uint32_t smem_plat_get_pagesize(void);
 
-// Duplicate a string/buffer into the arena (extremely common need)
-char *smem_strdup(smem_arena arena, const char *str);
-void *smem_memdup(smem_arena arena, const void *ptr, uint64_t size);
+void *smem_plat_reserve(uint64_t size);
+bool smem_plat_commit(void *ptr, uint64_t size);
+bool smem_plat_decommit(void *ptr, uint64_t size);
+bool smem_plat_release(void *ptr, uint64_t size);
 
-// Aligned allocation (needed for SIMD, GPU upload buffers, etc.)
-void *smem_alloc_aligned(smem_arena arena, uint64_t size, uint64_t alignment);
-*/
+
 #ifdef __cplusplus
 }
 #endif // __cplusplus
