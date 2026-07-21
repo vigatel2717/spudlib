@@ -280,17 +280,14 @@ static void spudgpuvulkan__determine_vulkan_extensions(VkInstanceCreateInfo *pOu
     if (!pOutput) return;
 #if defined(_WIN32)
     static const char *extensions[] = {"VK_KHR_surface", "VK_KHR_win32_surface"};
-#elif defined(__linux__)
-#if defined(SPUDGPU_PLATFORM_XLIB)
-    // Pick one based on your display server target:
-    static const char *extensions[] = {"VK_KHR_surface", "VK_KHR_xlib_surface"};
-#elif defined(SPUDGPU_PLATFORM_WAYLAND)
-    static const char *extensions[] = {"VK_KHR_surface", "VK_KHR_wayland_surface"};
-#else
-#error "In Linux, you either need XLIB or WAYLAND"
-#endif
-#endif
     pOutput->enabledExtensionCount = 2;
+#elif defined(__linux__)
+    // SDL picks Wayland vs Xlib at runtime (independent of whichever one
+    // SPUDGPU_PLATFORM_* was compiled against), so both surface extensions
+    // must be enabled on the instance rather than just one.
+    static const char *extensions[] = {"VK_KHR_surface", "VK_KHR_wayland_surface", "VK_KHR_xlib_surface"};
+    pOutput->enabledExtensionCount = 3;
+#endif
     pOutput->ppEnabledExtensionNames = extensions;
 }
 

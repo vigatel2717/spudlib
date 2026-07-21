@@ -14,11 +14,14 @@ static bool spudgpu_impl_sdl3_create_surface_fn(
     void *vk_instance,
     void *user_data,
     void *out_surface) {
-    return SDL_Vulkan_CreateSurface(
+    bool ok = SDL_Vulkan_CreateSurface(
         (SDL_Window *) user_data,
         (VkInstance) vk_instance,
         NULL,
         (VkSurfaceKHR *) out_surface);
+    if (!ok)
+        SDL_Log("SDL_Vulkan_CreateSurface failed: %s", SDL_GetError());
+    return ok;
 }
 
 static inline spudgpu_surface spudgpu_create_surface_from_sdl3(

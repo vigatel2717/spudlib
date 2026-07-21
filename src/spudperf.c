@@ -17,7 +17,7 @@ uint64_t spudperf_catch_current_clock_cycle() {
 	return __rdtsc();
 #else
 	uint32_t lo, hi;
-	__asm__ volatile("rtdsc" : "=a"(lo), "=d"(hi));
+	__asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
 	return ((uint64_t)hi << 32) | lo;
 #endif
 }

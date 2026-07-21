@@ -76,6 +76,27 @@ SPUDRESULT spudnet_set_blocking(spudnet_socket socket, bool blocking);
 
 void spudnet_close(spudnet_socket socket);
 
+/*
+ * Local address discovery — for display/sharing (e.g. "here's the IP to
+ * type into the other machine's Join field"), not used by connect/listen
+ * themselves.
+ */
+
+#define SPUDNET_MAX_IPV4_STRING_LEN 16 /* "255.255.255.255\0" */
+
+/* Fills `out_addresses` with up to `out_capacity` of this machine's own
+ * IPv4 addresses (deduplicated, loopback/127.x excluded — never useful to
+ * hand to another machine). `out_count` is the number actually written,
+ * which may be less than `out_capacity` (or 0 on a machine with no
+ * non-loopback IPv4 interface, e.g. offline). Resolver-based (gethostname +
+ * getaddrinfo), so on a machine with several adapters it reflects whatever
+ * the OS resolver associates with the local hostname — a diagnostic/display
+ * helper, not an exhaustive adapter enumeration. */
+SPUDRESULT spudnet_get_local_ipv4_addresses(
+    char out_addresses[][SPUDNET_MAX_IPV4_STRING_LEN],
+    uint32_t out_capacity,
+    uint32_t *out_count);
+
 #if __cplusplus
 }
 #endif

@@ -37,6 +37,7 @@ if(NOT TARGET spudlib)
         src/spudmemory.c
         src/spudfiles.c
         src/spudperf.c
+        src/spudnet.c
         src/gpu/spudgpuformat.c
         src/gpu/spudgpurendering.c
     )
@@ -45,11 +46,13 @@ if(NOT TARGET spudlib)
         list(APPEND SPUDLIB_SOURCES
             src/files/backends/windows/spudfileswindows.c
             src/net/backends/windows/spudnetwindows.c
+            src/memory/backends/windows/spudmemorywindows.c
         )
     endif()
     if(UNIX AND NOT APPLE)
         list(APPEND SPUDLIB_SOURCES
             src/net/backends/linux/spudnetlinux.c
+            src/memory/backends/linux/spudmemorylinux.c
         )
     endif()
     if(WIN32 OR(UNIX AND NOT APPLE))

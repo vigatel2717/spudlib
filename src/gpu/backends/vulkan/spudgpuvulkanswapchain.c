@@ -11,13 +11,13 @@
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
 
-#elif defined(SPUDLIB_PLATFORM_WAYLAND)
+#elif defined(SPUDGPU_PLATFORM_WAYLAND)
 #include <wayland-client.h>
 #include <vulkan/vulkan_wayland.h>
 
-#elif defined(SPUDLIB_PLATFORM_XLIB)
-//#include <vulkan/vulkan_xlib.h>
-//#include <X11/Xlib.h>
+#elif defined(SPUDGPU_PLATFORM_XLIB)
+#include <vulkan/vulkan_xlib.h>
+#include <X11/Xlib.h>
 #endif
 
 #include <stdlib.h>
@@ -349,14 +349,14 @@ SPUDRESULT spudgpu_create_surface(
 	ci.hinstance = GetModuleHandle(NULL);
 	r = vkCreateWin32SurfaceKHR(instance->_instance_vk, &ci, NULL, &result._surface_vk);
 
-#elif defined(SPUDLIB_PLATFORM_WAYLAND)
+#elif defined(SPUDGPU_PLATFORM_WAYLAND)
 	VkWaylandSurfaceCreateInfoKHR ci = {0};
 	ci.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
 	ci.display = (struct wl_display *) display_handle;
 	ci.surface = (struct wl_surface *) window_handle;
 	r = vkCreateWaylandSurfaceKHR(instance->_instance_vk, &ci, NULL, &result._surface_vk);
 
-#elif defined(SPUDLIB_PLATFORM_XLIB)
+#elif defined(SPUDGPU_PLATFORM_XLIB)
 	VkXlibSurfaceCreateInfoKHR ci = {0};
 	ci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
 	ci.dpy = (Display *) display_handle;

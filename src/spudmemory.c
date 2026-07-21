@@ -50,7 +50,7 @@ SPUDRESULT smem_arena_push(smem_arena arena, uint64_t size, bool non_zero, void 
 		uint64_t new_commit_pos = new_pos;
 		new_commit_pos += arena->commit_size - 1;
 		new_commit_pos -= new_commit_pos % arena->commit_size;
-		new_commit_pos = min(new_commit_pos, arena->reserve_size);
+		new_commit_pos = new_commit_pos < arena->reserve_size ? new_commit_pos : arena->reserve_size;
 		uint8_t *mem         = (uint8_t *)arena + arena->commit_pos;
 		uint64_t commit_size = new_commit_pos - arena->commit_pos;
 		if (!smem_plat_commit(mem, commit_size)) {
@@ -70,7 +70,8 @@ SPUDRESULT smem_arena_pop(smem_arena arena, uint64_t size) {
 		return SPUDRESULT_SMEM_INVALID_ARENA;
 	if (size == 0)
 		return SPUD_SUCCESS;
-	size = min(size, arena->pos - SMEM_ARENA_BASE_POS);
+	uint64_t max_size = arena->pos - SMEM_ARENA_BASE_POS;
+	size = size < max_size ? size : max_size;
 	arena->pos -= size;
 	return SPUD_SUCCESS;
 }
