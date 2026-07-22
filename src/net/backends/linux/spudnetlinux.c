@@ -24,8 +24,7 @@ struct spudnet_socket_t {
 };
 
 static struct spudnet_socket_t *spudnet_wrap(int fd) {
-	struct spudnet_socket_t *sock =
-	    (struct spudnet_socket_t *)malloc(sizeof(struct spudnet_socket_t));
+	struct spudnet_socket_t *sock = (struct spudnet_socket_t *)malloc(sizeof(struct spudnet_socket_t));
 	if (!sock) {
 		close(fd);
 		return NULL;
@@ -40,18 +39,17 @@ static struct spudnet_socket_t *spudnet_wrap(int fd) {
 
 /* BSD sockets need no global init/teardown — these exist purely so callers
  * can write one code path across platforms (Winsock2 needs WSAStartup). */
-SPUDRESULT spudnet_startup(void) {
-	return SPUD_SUCCESS;
-}
+SPUDRESULT spudnet_startup(void) { return SPUD_SUCCESS; }
 
-void spudnet_shutdown(void) {
-}
+void spudnet_shutdown(void) {}
 
 // --------------------------------------------------------------------------
 // Server side
 // --------------------------------------------------------------------------
 
-SPUDRESULT spudnet_listen_create(uint16_t port, spudnet_socket *out_socket) {
+SPUDRESULT spudnet_listen_create(
+    uint16_t port,
+    spudnet_socket *out_socket) {
 	if (!out_socket)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
@@ -88,7 +86,8 @@ SPUDRESULT spudnet_listen_create(uint16_t port, spudnet_socket *out_socket) {
 }
 
 SPUDRESULT spudnet_accept(
-    spudnet_socket listen_socket, spudnet_socket *out_client_socket) {
+    spudnet_socket listen_socket,
+    spudnet_socket *out_client_socket) {
 	if (!listen_socket)
 		return SPUDRESULT_SNET_INVALID_SOCKET;
 	if (!out_client_socket)
@@ -114,7 +113,9 @@ SPUDRESULT spudnet_accept(
 // --------------------------------------------------------------------------
 
 SPUDRESULT spudnet_connect(
-    const char *host, uint16_t port, spudnet_socket *out_socket) {
+    const char *host,
+    uint16_t port,
+    spudnet_socket *out_socket) {
 	if (!host || host[0] == '\0')
 		return SPUDRESULT_DESC_INVALID_PARAMETERS;
 	if (!out_socket)
@@ -133,7 +134,7 @@ SPUDRESULT spudnet_connect(
 	if (getaddrinfo(host, port_str, &hints, &result) != 0 || !result)
 		return SPUDRESULT_SNET_RESOLVE_FAILED;
 
-	int fd             = -1;
+	int fd            = -1;
 	SPUDRESULT status = SPUDRESULT_SNET_CONNECT_FAILED;
 
 	for (struct addrinfo *addr = result; addr != NULL; addr = addr->ai_next) {
@@ -168,7 +169,10 @@ SPUDRESULT spudnet_connect(
 // --------------------------------------------------------------------------
 
 SPUDRESULT spudnet_send(
-    spudnet_socket socket, const void *data, uint64_t size, uint64_t *out_sent) {
+    spudnet_socket socket,
+    const void *data,
+    uint64_t size,
+    uint64_t *out_sent) {
 	if (!socket)
 		return SPUDRESULT_SNET_INVALID_SOCKET;
 	if (!data)
@@ -193,7 +197,10 @@ SPUDRESULT spudnet_send(
 }
 
 SPUDRESULT spudnet_recv(
-    spudnet_socket socket, void *data, uint64_t size, uint64_t *out_received) {
+    spudnet_socket socket,
+    void *data,
+    uint64_t size,
+    uint64_t *out_received) {
 	if (!socket)
 		return SPUDRESULT_SNET_INVALID_SOCKET;
 	if (!data)
@@ -215,7 +222,9 @@ SPUDRESULT spudnet_recv(
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudnet_set_blocking(spudnet_socket socket, bool blocking) {
+SPUDRESULT spudnet_set_blocking(
+    spudnet_socket socket,
+    bool blocking) {
 	if (!socket)
 		return SPUDRESULT_SNET_INVALID_SOCKET;
 

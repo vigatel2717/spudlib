@@ -27,15 +27,26 @@ extern "C" {
 
 typedef struct smem_arena_t *smem_arena;
 
-SPUDRESULT smem_arena_create(uint64_t reserve_size, uint64_t commit_size, smem_arena *out_arena);
+SPUDRESULT smem_arena_create(
+    uint64_t reserve_size,
+    uint64_t commit_size,
+    smem_arena *out_arena);
 
 void smem_arena_destroy(smem_arena arena);
 uint64_t smem_arena_get_reserve_size(smem_arena arena);
 uint64_t smem_arena_get_commit_size(smem_arena arena);
 
-SPUDRESULT smem_arena_push(smem_arena arena, uint64_t size, bool non_zero, void **out_ptr);
-SPUDRESULT smem_arena_pop(smem_arena arena, uint64_t size);
-SPUDRESULT smem_arena_pop_to(smem_arena arena, uint64_t pos);
+SPUDRESULT smem_arena_push(
+    smem_arena arena,
+    uint64_t size,
+    bool non_zero,
+    void **out_ptr);
+SPUDRESULT smem_arena_pop(
+    smem_arena arena,
+    uint64_t size);
+SPUDRESULT smem_arena_pop_to(
+    smem_arena arena,
+    uint64_t pos);
 void smem_arena_clear(smem_arena arena);
 
 #define SMEM_PUSH_STRUCT(arena, ptr) smem_arena_push(arena, sizeof(*ptr), false, ptr)
@@ -46,10 +57,15 @@ void smem_arena_clear(smem_arena arena);
 uint32_t smem_plat_get_pagesize(void);
 
 void *smem_plat_reserve(uint64_t size);
-bool smem_plat_commit(void *ptr, uint64_t size);
-bool smem_plat_decommit(void *ptr, uint64_t size);
-bool smem_plat_release(void *ptr, uint64_t size);
-
+bool smem_plat_commit(
+    void *ptr,
+    uint64_t size);
+bool smem_plat_decommit(
+    void *ptr,
+    uint64_t size);
+bool smem_plat_release(
+    void *ptr,
+    uint64_t size);
 
 #ifdef __cplusplus
 }

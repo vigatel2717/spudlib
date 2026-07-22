@@ -15,19 +15,23 @@ uint32_t smem_plat_get_pagesize(void) {
 	return (uint32_t)info.dwPageSize;
 }
 
-void *smem_plat_reserve(uint64_t size) {
-	return VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS);
-}
+void *smem_plat_reserve(uint64_t size) { return VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS); }
 
-bool smem_plat_commit(void *ptr, uint64_t size) {
+bool smem_plat_commit(
+    void *ptr,
+    uint64_t size) {
 	return VirtualAlloc(ptr, (SIZE_T)size, MEM_COMMIT, PAGE_READWRITE) != NULL;
 }
 
-bool smem_plat_decommit(void *ptr, uint64_t size) {
+bool smem_plat_decommit(
+    void *ptr,
+    uint64_t size) {
 	return VirtualFree(ptr, (SIZE_T)size, MEM_DECOMMIT) != 0;
 }
 
-bool smem_plat_release(void *ptr, uint64_t size) {
+bool smem_plat_release(
+    void *ptr,
+    uint64_t size) {
 	(void)size; // MEM_RELEASE requires the original base pointer and a size of 0.
 	return VirtualFree(ptr, 0, MEM_RELEASE) != 0;
 }

@@ -38,13 +38,16 @@ void spudnet_shutdown(void);
  */
 
 /* Opens a listening TCP socket bound to all interfaces on `port`. */
-SPUDRESULT spudnet_listen_create(uint16_t port, spudnet_socket *out_socket);
+SPUDRESULT spudnet_listen_create(
+    uint16_t port,
+    spudnet_socket *out_socket);
 
 /* Blocks until an incoming connection arrives (unless `listen_socket` is
  * non-blocking — see spudnet_set_blocking), then hands back a new socket
  * for that peer. `listen_socket` itself keeps listening for more. */
 SPUDRESULT spudnet_accept(
-    spudnet_socket listen_socket, spudnet_socket *out_client_socket);
+    spudnet_socket listen_socket,
+    spudnet_socket *out_client_socket);
 
 /*
  * Client side — the devices joining an already-running scene.
@@ -52,7 +55,9 @@ SPUDRESULT spudnet_accept(
 
 /* Resolves `host` (hostname or dotted IPv4) and connects to it on `port`. */
 SPUDRESULT spudnet_connect(
-    const char *host, uint16_t port, spudnet_socket *out_socket);
+    const char *host,
+    uint16_t port,
+    spudnet_socket *out_socket);
 
 /*
  * I/O — both sides use the same socket handle once connected.
@@ -60,19 +65,27 @@ SPUDRESULT spudnet_connect(
 
 /* `out_sent` may be less than `size` — a short write, same as a raw send(). */
 SPUDRESULT spudnet_send(
-    spudnet_socket socket, const void *data, uint64_t size, uint64_t *out_sent);
+    spudnet_socket socket,
+    const void *data,
+    uint64_t size,
+    uint64_t *out_sent);
 
 /* `out_received` may be less than `size`. 0 bytes with SPUD_SUCCESS means
  * the peer closed the connection cleanly (same as recv() returning 0). */
 SPUDRESULT spudnet_recv(
-    spudnet_socket socket, void *data, uint64_t size, uint64_t *out_received);
+    spudnet_socket socket,
+    void *data,
+    uint64_t size,
+    uint64_t *out_received);
 
 /* Non-blocking sockets return SPUDRESULT_SNET_WOULD_BLOCK from
  * send/recv/accept instead of blocking — needed so Erethal's render loop
  * can poll the network each frame without stalling on data that hasn't
  * arrived yet. Blocking (the default after connect/accept) is fine for a
  * dedicated network thread. */
-SPUDRESULT spudnet_set_blocking(spudnet_socket socket, bool blocking);
+SPUDRESULT spudnet_set_blocking(
+    spudnet_socket socket,
+    bool blocking);
 
 void spudnet_close(spudnet_socket socket);
 
