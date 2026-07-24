@@ -23,7 +23,8 @@ uint64_t spudperf_catch_current_clock_cycle() {
 }
 
 void spudperf_get_ram_usage(
-    uint64_t *current_ram_usage, uint64_t *peak_ram_usage) {
+    uint64_t *current_ram_usage,
+    uint64_t *peak_ram_usage) {
 #if SPUDLIB_PLATFORM_WIN32
 	PROCESS_MEMORY_COUNTERS pmc = {0};
 	pmc.cb                      = sizeof(pmc);

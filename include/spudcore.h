@@ -120,6 +120,8 @@ typedef enum SPUDRESULT {
 
 } SPUDRESULT;
 
+#define SPUDFAIL(sr) sr != SPUD_SUCCESS
+
 const char *spudresult_str(SPUDRESULT r);
 
 #if __cplusplus
