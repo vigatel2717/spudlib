@@ -415,7 +415,7 @@ inline SPUDGPU_FORMAT spudgpu_format_from_string(const char *fmt_str) {
 		return SPUDGPU_FORMAT_BC5_TYPELESS;
 	if (strcmp(fmt_str, "BC5_UNORM") == 0)
 		return SPUDGPU_FORMAT_BC5_UNORM;
-	if (strcmp(fmt_str, "BC5_UNORM_SRGB") == 0)
+	if (strcmp(fmt_str, "BC5_SNORM") == 0)
 		return SPUDGPU_FORMAT_BC5_SNORM;
 
 	if (strcmp(fmt_str, "BC6H_TYPELESS") == 0)
@@ -525,8 +525,8 @@ SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance);
  * the host machine.
  * @param[in] instance The SpudGPU instance of which to enumerate devices
  * through.
- * @param ppOutputDevices[out]
- * @param pOutputDevicesCount[out]
+ * @param[out] out_devices Array of enumerated device handles.
+ * @param[out] out_devices_count Number of devices written to out_devices.
  * @return SPUD_SUCCESS or SPUDRESULT_GPU_DEVICE_ENUMERATION_FAILURE
  */
 SPUDRESULT spudgpu_enumerate_devices(
@@ -1346,13 +1346,9 @@ void spudgpu_set_vertex_buffers(
     spudgpu_buffer_view *buffer_views);
 
 /**
- * @brief Binds a contiguous array of index buffers to drive lookups for indexed
- * draw calls.
- * * @param[in] cmd          The active recording command context.
- * @param[in] view_count   Total number of index buffers to assign (typically
- * `1`).
- * @param[in] buffer_views Pointer to (0, 1, or an array of) active GPU buffer
- * views containing index data.
+ * @brief Binds the index buffer used to drive lookups for indexed draw calls.
+ * * @param[in] cmd         The active recording command context.
+ * @param[in] buffer_view The active GPU buffer view containing index data.
  */
 void spudgpu_set_index_buffer(
     spudgpu_command_list cmd,
