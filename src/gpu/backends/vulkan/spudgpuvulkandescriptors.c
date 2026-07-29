@@ -180,9 +180,9 @@ void spudgpu_destroy_descriptor_pool(
     free(pool);
 }
 
-SPUDRESULT spudgpu_allocate_descriptor_sets(
+SPUDRESULT spudgpu_create_descriptor_sets(
     spudgpu_device device,
-    const spudgpu_descriptor_set_alloc_desc *desc,
+    const spudgpu_descriptor_set_desc *desc,
     spudgpu_descriptor_set *out_sets) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!desc) return SPUDRESULT_NULL_DESC;
@@ -197,9 +197,9 @@ SPUDRESULT spudgpu_allocate_descriptor_sets(
     // Gather the raw VkDescriptorSetLayout handles from the typed wrappers.
     VkDescriptorSetLayout vk_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS] = {0};
     for (uint32_t i = 0; i < desc->set_count; i++) {
-        if (!desc->layouts[i]) return SPUDRESULT_GPU_INVALID_DESCRIPTOR_SET_LAYOUT;
+        if (!desc->set_layouts[i]) return SPUDRESULT_GPU_INVALID_DESCRIPTOR_SET_LAYOUT;
         spudgpu_descriptor_set_layout_vulkan *vkLayout =
-                (spudgpu_descriptor_set_layout_vulkan *) desc->layouts[i];
+                (spudgpu_descriptor_set_layout_vulkan *) desc->set_layouts[i];
         vk_layouts[i] = vkLayout->_layout_vk;
     }
 

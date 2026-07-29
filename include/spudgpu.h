@@ -8,7 +8,6 @@
 #include "spudcore.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -154,286 +153,9 @@ enum {
 // @return Pixel bit size according to the format.
 uint32_t spudgpu_format_bit_count(SPUDGPU_FORMAT fmt);
 
-/*
-struct spudgpu_format_map {
-    const char *name;
-    SPUDGPU_FORMAT format;
-};
-
-static const struct spudgpu_format_map format_map[] = {
-    {(const char *)"R32G32B32A32_FLOAT", SPUDGPU_FORMAT_R32G32B32A32_FLOAT},
-};*/
-// @return SPUDGPU_FORMAT according to string.
-// TODO: Optimize this function. Perhaps make a FormatMap and have this 'static
-// const struct FormatMap FORMAT_TABLE[] = {'
-inline SPUDGPU_FORMAT spudgpu_format_from_string(const char *fmt_str) {
-	if (fmt_str == NULL)
-		return SPUDGPU_FORMAT_UNKNOWN;
-
-	if (strcmp(fmt_str, "R32G32B32A32_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R32G32B32A32_TYPELESS;
-	if (strcmp(fmt_str, "R32G32B32A32_FLOAT") == 0)
-		return SPUDGPU_FORMAT_R32G32B32A32_FLOAT;
-	if (strcmp(fmt_str, "R32G32B32A32_UINT") == 0)
-		return SPUDGPU_FORMAT_R32G32B32A32_UINT;
-	if (strcmp(fmt_str, "R32G32B32A32_SINT") == 0)
-		return SPUDGPU_FORMAT_R32G32B32A32_SINT;
-
-	if (strcmp(fmt_str, "R32G32B32_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R32G32B32_TYPELESS;
-	if (strcmp(fmt_str, "R32G32B32_FLOAT") == 0)
-		return SPUDGPU_FORMAT_R32G32B32_FLOAT;
-	if (strcmp(fmt_str, "R32G32B32_UINT") == 0)
-		return SPUDGPU_FORMAT_R32G32B32_UINT;
-	if (strcmp(fmt_str, "R32G32B32_SINT") == 0)
-		return SPUDGPU_FORMAT_R32G32B32_SINT;
-
-	if (strcmp(fmt_str, "R16G16B16A16_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R16G16B16A16_TYPELESS;
-	if (strcmp(fmt_str, "R16G16B16A16_FLOAT") == 0)
-		return SPUDGPU_FORMAT_R16G16B16A16_FLOAT;
-	if (strcmp(fmt_str, "R16G16B16A16_UNORM") == 0)
-		return SPUDGPU_FORMAT_R16G16B16A16_UNORM;
-	if (strcmp(fmt_str, "R16G16B16A16_UINT") == 0)
-		return SPUDGPU_FORMAT_R16G16B16A16_UINT;
-	if (strcmp(fmt_str, "R16G16B16A16_SNORM") == 0)
-		return SPUDGPU_FORMAT_R16G16B16A16_SNORM;
-	if (strcmp(fmt_str, "R16G16B16A16_SINT") == 0)
-		return SPUDGPU_FORMAT_R16G16B16A16_SINT;
-
-	if (strcmp(fmt_str, "R32G32_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R32G32_TYPELESS;
-	if (strcmp(fmt_str, "R32G32_FLOAT") == 0)
-		return SPUDGPU_FORMAT_R32G32_FLOAT;
-	if (strcmp(fmt_str, "R32G32_UINT") == 0)
-		return SPUDGPU_FORMAT_R32G32_UINT;
-	if (strcmp(fmt_str, "R32G32_SINT") == 0)
-		return SPUDGPU_FORMAT_R32G32_SINT;
-
-	if (strcmp(fmt_str, "R32G8X24_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R32G8X24_TYPELESS;
-	if (strcmp(fmt_str, "D32_FLOAT_S8X24_UINT") == 0)
-		return SPUDGPU_FORMAT_D32_FLOAT_S8X24_UINT;
-	if (strcmp(fmt_str, "R32_FLOAT_X8X24_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-	if (strcmp(fmt_str, "X32_TYPELESS_G8X24_UINT") == 0)
-		return SPUDGPU_FORMAT_X32_TYPELESS_G8X24_UINT;
-
-	if (strcmp(fmt_str, "Y416") == 0)
-		return SPUDGPU_FORMAT_Y416;
-	if (strcmp(fmt_str, "Y210") == 0)
-		return SPUDGPU_FORMAT_Y210;
-	if (strcmp(fmt_str, "Y216") == 0)
-		return SPUDGPU_FORMAT_Y216;
-
-	if (strcmp(fmt_str, "R10G10B10A2_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R10G10B10A2_TYPELESS;
-	if (strcmp(fmt_str, "R10G10B10A2_UNORM") == 0)
-		return SPUDGPU_FORMAT_R10G10B10A2_UNORM;
-	if (strcmp(fmt_str, "R10G10B10A2_UINT") == 0)
-		return SPUDGPU_FORMAT_R10G10B10A2_UINT;
-
-	if (strcmp(fmt_str, "R11G11B10_FLOAT") == 0)
-		return SPUDGPU_FORMAT_R11G11B10_FLOAT;
-
-	if (strcmp(fmt_str, "R8G8B8A8_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R8G8B8A8_TYPELESS;
-	if (strcmp(fmt_str, "R8G8B8A8_UNORM") == 0)
-		return SPUDGPU_FORMAT_R8G8B8A8_UNORM;
-	if (strcmp(fmt_str, "R8G8B8A8_UNORM_SRGB") == 0)
-		return SPUDGPU_FORMAT_R8G8B8A8_UNORM_SRGB;
-	if (strcmp(fmt_str, "R8G8B8A8_UINT") == 0)
-		return SPUDGPU_FORMAT_R8G8B8A8_UINT;
-	if (strcmp(fmt_str, "R8G8B8A8_SNORM") == 0)
-		return SPUDGPU_FORMAT_R8G8B8A8_SNORM;
-	if (strcmp(fmt_str, "R8G8B8A8_SINT") == 0)
-		return SPUDGPU_FORMAT_R8G8B8A8_SINT;
-
-	if (strcmp(fmt_str, "R16G16_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R16G16_TYPELESS;
-	if (strcmp(fmt_str, "R16G16_FLOAT") == 0)
-		return SPUDGPU_FORMAT_R16G16_FLOAT;
-	if (strcmp(fmt_str, "R16G16_UNORM") == 0)
-		return SPUDGPU_FORMAT_R16G16_UNORM;
-	if (strcmp(fmt_str, "R16G16_UINT") == 0)
-		return SPUDGPU_FORMAT_R16G16_UINT;
-	if (strcmp(fmt_str, "R16G16_SNORM") == 0)
-		return SPUDGPU_FORMAT_R16G16_SNORM;
-	if (strcmp(fmt_str, "R16G16_SINT") == 0)
-		return SPUDGPU_FORMAT_R16G16_SINT;
-
-	if (strcmp(fmt_str, "R32_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R32_TYPELESS;
-	if (strcmp(fmt_str, "D32_FLOAT") == 0)
-		return SPUDGPU_FORMAT_D32_FLOAT;
-	if (strcmp(fmt_str, "R32_FLOAT") == 0)
-		return SPUDGPU_FORMAT_R32_FLOAT;
-	if (strcmp(fmt_str, "R32_UINT") == 0)
-		return SPUDGPU_FORMAT_R32_UINT;
-	if (strcmp(fmt_str, "R32_SINT") == 0)
-		return SPUDGPU_FORMAT_R32_SINT;
-
-	if (strcmp(fmt_str, "R24G8_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R24G8_TYPELESS;
-	if (strcmp(fmt_str, "D24_UNORM_S8_UINT") == 0)
-		return SPUDGPU_FORMAT_D24_UNORM_S8_UINT;
-	if (strcmp(fmt_str, "R24_UNORM_X8_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R24_UNORM_X8_TYPELESS;
-	if (strcmp(fmt_str, "X24_TYPELESS_G8_UINT") == 0)
-		return SPUDGPU_FORMAT_X24_TYPELESS_G8_UINT;
-
-	if (strcmp(fmt_str, "R9G9B9E5_SHAREDEXP") == 0)
-		return SPUDGPU_FORMAT_R9G9B9E5_SHAREDEXP;
-
-	if (strcmp(fmt_str, "R8G8_B8G8_UNORM") == 0)
-		return SPUDGPU_FORMAT_R8G8_B8G8_UNORM;
-	if (strcmp(fmt_str, "G8R8_G8B8_UNORM") == 0)
-		return SPUDGPU_FORMAT_G8R8_G8B8_UNORM;
-
-	if (strcmp(fmt_str, "B8G8R8A8_UNORM") == 0)
-		return SPUDGPU_FORMAT_B8G8R8A8_UNORM;
-	if (strcmp(fmt_str, "B8G8R8X8_UNORM") == 0)
-		return SPUDGPU_FORMAT_B8G8R8X8_UNORM;
-
-	if (strcmp(fmt_str, "R10G10B10_XR_BIAS_A2_UNORM") == 0)
-		return SPUDGPU_FORMAT_R10G10B10_XR_BIAS_A2_UNORM;
-
-	if (strcmp(fmt_str, "B8G8R8A8_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_B8G8R8A8_TYPELESS;
-	if (strcmp(fmt_str, "B8G8R8A8_UNORM_SRGB") == 0)
-		return SPUDGPU_FORMAT_B8G8R8A8_UNORM_SRGB;
-	if (strcmp(fmt_str, "B8G8R8X8_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_B8G8R8X8_TYPELESS;
-	if (strcmp(fmt_str, "B8G8R8X8_UNORM_SRGB") == 0)
-		return SPUDGPU_FORMAT_B8G8R8X8_UNORM_SRGB;
-
-	if (strcmp(fmt_str, "AYUV") == 0)
-		return SPUDGPU_FORMAT_AYUV;
-	if (strcmp(fmt_str, "Y410") == 0)
-		return SPUDGPU_FORMAT_Y410;
-	if (strcmp(fmt_str, "YUY2") == 0)
-		return SPUDGPU_FORMAT_YUY2;
-
-	if (strcmp(fmt_str, "P010") == 0)
-		return SPUDGPU_FORMAT_P010;
-	if (strcmp(fmt_str, "P016") == 0)
-		return SPUDGPU_FORMAT_P016;
-
-	if (strcmp(fmt_str, "R8G8_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R8G8_TYPELESS;
-	if (strcmp(fmt_str, "R8G8_UNORM") == 0)
-		return SPUDGPU_FORMAT_R8G8_UNORM;
-	if (strcmp(fmt_str, "R8G8_UINT") == 0)
-		return SPUDGPU_FORMAT_R8G8_UINT;
-	if (strcmp(fmt_str, "R8G8_SNORM") == 0)
-		return SPUDGPU_FORMAT_R8G8_SNORM;
-	if (strcmp(fmt_str, "R8G8_SINT") == 0)
-		return SPUDGPU_FORMAT_R8G8_SINT;
-
-	if (strcmp(fmt_str, "R16_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R16_TYPELESS;
-	if (strcmp(fmt_str, "R16_FLOAT") == 0)
-		return SPUDGPU_FORMAT_R16_FLOAT;
-	if (strcmp(fmt_str, "D16_UNORM") == 0)
-		return SPUDGPU_FORMAT_D16_UNORM;
-	if (strcmp(fmt_str, "R16_UNORM") == 0)
-		return SPUDGPU_FORMAT_R16_UNORM;
-	if (strcmp(fmt_str, "R16_UINT") == 0)
-		return SPUDGPU_FORMAT_R16_UINT;
-	if (strcmp(fmt_str, "R16_SNORM") == 0)
-		return SPUDGPU_FORMAT_R16_SNORM;
-	if (strcmp(fmt_str, "R16_SINT") == 0)
-		return SPUDGPU_FORMAT_R16_SINT;
-
-	if (strcmp(fmt_str, "B5G6R5_UNORM") == 0)
-		return SPUDGPU_FORMAT_B5G6R5_UNORM;
-	if (strcmp(fmt_str, "B5G5R5A1_UNORM") == 0)
-		return SPUDGPU_FORMAT_B5G5R5A1_UNORM;
-
-	if (strcmp(fmt_str, "A8P8") == 0)
-		return SPUDGPU_FORMAT_A8P8;
-
-	if (strcmp(fmt_str, "B4G4R4A4_UNORM") == 0)
-		return SPUDGPU_FORMAT_B4G4R4A4_UNORM;
-
-	if (strcmp(fmt_str, "NV12") == 0)
-		return SPUDGPU_FORMAT_NV12;
-	if (strcmp(fmt_str, "420_OPAQUE") == 0)
-		return SPUDGPU_FORMAT_420_OPAQUE;
-	if (strcmp(fmt_str, "NV11") == 0)
-		return SPUDGPU_FORMAT_NV11;
-
-	if (strcmp(fmt_str, "R8_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_R8_TYPELESS;
-	if (strcmp(fmt_str, "R8_UNORM") == 0)
-		return SPUDGPU_FORMAT_R8_UNORM;
-	if (strcmp(fmt_str, "R8_UINT") == 0)
-		return SPUDGPU_FORMAT_R8_UINT;
-	if (strcmp(fmt_str, "R8_SNORM") == 0)
-		return SPUDGPU_FORMAT_R8_SNORM;
-	if (strcmp(fmt_str, "R8_SINT") == 0)
-		return SPUDGPU_FORMAT_R8_SINT;
-	if (strcmp(fmt_str, "A8_UNORM") == 0)
-		return SPUDGPU_FORMAT_A8_UNORM;
-
-	if (strcmp(fmt_str, "AI44") == 0)
-		return SPUDGPU_FORMAT_AI44;
-	if (strcmp(fmt_str, "IA44") == 0)
-		return SPUDGPU_FORMAT_IA44;
-	if (strcmp(fmt_str, "P8") == 0)
-		return SPUDGPU_FORMAT_P8;
-
-	if (strcmp(fmt_str, "R1_UNORM") == 0)
-		return SPUDGPU_FORMAT_R1_UNORM;
-
-	if (strcmp(fmt_str, "BC1_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_BC1_TYPELESS;
-	if (strcmp(fmt_str, "BC1_UNORM") == 0)
-		return SPUDGPU_FORMAT_BC1_UNORM;
-	if (strcmp(fmt_str, "BC1_UNORM_SRGB") == 0)
-		return SPUDGPU_FORMAT_BC1_UNORM_SRGB;
-	if (strcmp(fmt_str, "BC4_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_BC4_TYPELESS;
-	if (strcmp(fmt_str, "BC4_UNORM") == 0)
-		return SPUDGPU_FORMAT_BC4_UNORM;
-	if (strcmp(fmt_str, "BC4_SNORM") == 0)
-		return SPUDGPU_FORMAT_BC4_SNORM;
-
-	if (strcmp(fmt_str, "BC2_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_BC2_TYPELESS;
-	if (strcmp(fmt_str, "BC2_UNORM") == 0)
-		return SPUDGPU_FORMAT_BC2_UNORM;
-	if (strcmp(fmt_str, "BC2_UNORM_SRGB") == 0)
-		return SPUDGPU_FORMAT_BC2_UNORM_SRGB;
-	if (strcmp(fmt_str, "BC3_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_BC3_TYPELESS;
-	if (strcmp(fmt_str, "BC3_UNORM") == 0)
-		return SPUDGPU_FORMAT_BC3_UNORM;
-	if (strcmp(fmt_str, "BC3_UNORM_SRGB") == 0)
-		return SPUDGPU_FORMAT_BC3_UNORM_SRGB;
-	if (strcmp(fmt_str, "BC5_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_BC5_TYPELESS;
-	if (strcmp(fmt_str, "BC5_UNORM") == 0)
-		return SPUDGPU_FORMAT_BC5_UNORM;
-	if (strcmp(fmt_str, "BC5_UNORM_SRGB") == 0)
-		return SPUDGPU_FORMAT_BC5_SNORM;
-
-	if (strcmp(fmt_str, "BC6H_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_BC6H_TYPELESS;
-	if (strcmp(fmt_str, "BC6H_UF16") == 0)
-		return SPUDGPU_FORMAT_BC6H_UF16;
-	if (strcmp(fmt_str, "BC6H_SF16") == 0)
-		return SPUDGPU_FORMAT_BC6H_SF16;
-
-	if (strcmp(fmt_str, "BC7_TYPELESS") == 0)
-		return SPUDGPU_FORMAT_BC7_TYPELESS;
-	if (strcmp(fmt_str, "BC7_UNORM") == 0)
-		return SPUDGPU_FORMAT_BC7_UNORM;
-	if (strcmp(fmt_str, "BC7_UNORM_SRGB") == 0)
-		return SPUDGPU_FORMAT_BC7_UNORM_SRGB;
-
-	return SPUDGPU_FORMAT_UNKNOWN;
-}
+// @return SPUDGPU_FORMAT according to string, or SPUDGPU_FORMAT_UNKNOWN if
+// fmt_str is NULL or doesn't match a known format name.
+SPUDGPU_FORMAT spudgpu_format_from_string(const char *fmt_str);
 
 typedef struct spudgpu_instance_t *spudgpu_instance;
 typedef struct spudgpu_device_t *spudgpu_device;
@@ -474,11 +196,11 @@ enum {
 	SPUDGPU_NATIVE_API_VULKAN = 1,
 
 	/// Direct3D 12 graphics API used exclusively for Windows and Xbox.
-	SPUDGPU_NATIVE_API_D3D12 = 1,
+	SPUDGPU_NATIVE_API_D3D12 = 2,
 
 	/// Metal proprietary graphics API. Used exclusively for Apple Silicon
-	/// ecosystems (macOS, iOS, iPadOS).
-	SPUDGPU_NATIVE_API_METAL = 2
+	/// ecosystems (macOS, iOS, iPadOS, watchOS).
+	SPUDGPU_NATIVE_API_METAL = 3
 };
 
 ///@}
@@ -525,8 +247,8 @@ SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance);
  * the host machine.
  * @param[in] instance The SpudGPU instance of which to enumerate devices
  * through.
- * @param ppOutputDevices[out]
- * @param pOutputDevicesCount[out]
+ * @param[out] out_devices Array of enumerated device handles.
+ * @param[out] out_devices_count Number of devices written to out_devices.
  * @return SPUD_SUCCESS or SPUDRESULT_GPU_DEVICE_ENUMERATION_FAILURE
  */
 SPUDRESULT spudgpu_enumerate_devices(
@@ -1346,13 +1068,9 @@ void spudgpu_set_vertex_buffers(
     spudgpu_buffer_view *buffer_views);
 
 /**
- * @brief Binds a contiguous array of index buffers to drive lookups for indexed
- * draw calls.
- * * @param[in] cmd          The active recording command context.
- * @param[in] view_count   Total number of index buffers to assign (typically
- * `1`).
- * @param[in] buffer_views Pointer to (0, 1, or an array of) active GPU buffer
- * views containing index data.
+ * @brief Binds the index buffer used to drive lookups for indexed draw calls.
+ * * @param[in] cmd         The active recording command context.
+ * @param[in] buffer_view The active GPU buffer view containing index data.
  */
 void spudgpu_set_index_buffer(
     spudgpu_command_list cmd,
@@ -1630,6 +1348,341 @@ spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_
  */
 spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain);
 
+
+
+// ============================================================================
+//  Descriptor Set Layout
+//  Maps to: VkDescriptorSetLayout (Vulkan) / MTLArgumentEncoder schema (Metal)
+// ============================================================================
+
+
+// Capacity Limits
+#define SPUDGPU_MAX_VERTEX_ATTRIBUTES 16
+#define SPUDGPU_MAX_VERTEX_BINDINGS 8
+#define SPUDGPU_MAX_PUSH_CONSTANT_RANGES 4
+
+typedef struct spudgpu_descriptor_set_layout_t *spudgpu_descriptor_set_layout;
+
+/**
+ * @brief Enumerates the kinds of resources a shader binding slot can hold.
+ *
+ * Maps directly to VkDescriptorType on Vulkan and the corresponding
+ * MTLArgumentEncoder argument kinds on Metal.
+ */
+typedef uint32_t SPUDGPU_DESCRIPTOR_TYPE;
+
+enum {
+	/// Read-only structured constant block (UBO / constant buffer).
+	SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 0,
+
+	/// Read/write large data array (SSBO / structured buffer).
+	SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER = 1,
+
+	/// Combined image + sampler in a single binding (texture2D + sampler).
+	SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 2,
+
+	/// Sampled image without a sampler (use alongside SAMPLER binding).
+	SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE = 3,
+
+	/// Standalone sampler object.
+	SPUDGPU_DESCRIPTOR_TYPE_SAMPLER = 4,
+
+	/// Image the shader can both read and write (compute UAV / storage image).
+	SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE = 5,
+};
+
+/**
+ * @brief Describes a single binding slot within a descriptor set layout.
+ *
+ * Each entry corresponds to one `layout(set=N, binding=M)` declaration in GLSL.
+ */
+typedef struct spudgpu_descriptor_binding_desc {
+	/// Slot index matching `layout(binding = N)` in GLSL. Must be unique within
+	/// a layout.
+	uint32_t binding;
+
+	/// Resource type expected at this binding slot.
+	/// @see SPUDGPU_DESCRIPTOR_TYPE
+	SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
+
+	/// Number of resources in this binding. Use 1 for a single resource,
+	/// or N for a fixed-size array (e.g. `uniform sampler2D textures[8]`).
+	uint32_t count;
+
+	/// Bitmask of shader stages that can access this binding.
+	/// @see SPUDGPU_SHADER_STAGE
+	SPUDGPU_SHADER_STAGE stage_flags;
+} spudgpu_descriptor_binding_desc;
+
+#define SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET 16
+
+/**
+ * @brief Configuration descriptor for a descriptor set layout.
+ *
+ * Describes the binding slots that make up one set. Pass this to
+ * spudgpu_create_descriptor_set_layout(), then hand the resulting
+ * handle into spudgpu_shader_pipeline_desc::descriptor_set_layouts[].
+ */
+typedef struct spudgpu_descriptor_set_layout_desc {
+#if _DEBUG
+	const char *debug_name;
+#endif
+
+	spudgpu_descriptor_binding_desc bindings[SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET];
+	uint32_t binding_count;
+} spudgpu_descriptor_set_layout_desc;
+
+/**
+ * @brief Creates an immutable descriptor set layout (schema).
+ *
+ * On Vulkan this allocates a VkDescriptorSetLayout. On Metal it creates an
+ * MTLArgumentEncoder schema. The resulting handle is passed into the pipeline
+ * desc to declare the expected binding shape.
+ *
+ * @param[in] device The GPU device to create this layout on.
+ * @param[in] desc   Pointer to the binding slot configuration.
+ * @param[out] out_layout The new Descriptor Set Layout.
+ * @return SPUD_SUCCESS or another SPUDRESULT.
+ */
+SPUDRESULT spudgpu_create_descriptor_set_layout(
+    spudgpu_device device,
+    const spudgpu_descriptor_set_layout_desc *desc,
+    spudgpu_descriptor_set_layout *out_layout);
+
+/**
+ * @brief Destroys a descriptor set layout.
+ *
+ * @warning All descriptor sets allocated from this layout, and all pipelines
+ * referencing it, must be destroyed before calling this.
+ */
+void spudgpu_destroy_descriptor_set_layout(spudgpu_descriptor_set_layout layout);
+
+// ============================================================================
+//  Descriptor Pool
+//  Maps to: VkDescriptorPool (Vulkan) / heap of argument buffers (Metal)
+// ============================================================================
+
+typedef struct spudgpu_descriptor_pool_t *spudgpu_descriptor_pool;
+
+/**
+ * @brief Declares how many descriptors of each type a pool should pre-allocate.
+ *
+ * Vulkan requires knowing the total capacity up front. Size your pool to cover
+ * the worst-case count across all frames-in-flight.
+ */
+typedef struct spudgpu_descriptor_pool_size {
+	SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
+	uint32_t count;
+} spudgpu_descriptor_pool_size;
+
+#define SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES 8
+
+/**
+ * @brief Configuration descriptor for a descriptor pool.
+ */
+typedef struct spudgpu_descriptor_pool_desc {
+#if _DEBUG
+	const char *debug_name;
+#endif
+
+	/// Maximum number of descriptor sets that can be allocated from this pool.
+	uint32_t max_sets;
+
+	spudgpu_descriptor_pool_size pool_sizes[SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES];
+	uint32_t pool_size_count;
+} spudgpu_descriptor_pool_desc;
+
+/**
+ * @brief Allocates a descriptor pool — the backing memory for descriptor sets.
+ *
+ * Create one pool per frame-in-flight (or one large shared pool) and reset it
+ * each frame rather than allocating/freeing individual sets every frame.
+ *
+ * @param[in] device The GPU device to create this pool on.
+ * @param[in] desc   Pointer to the capacity configuration.
+ * @param[out] out_pool The new Descriptor Pool.
+ * @return SPUD_SUCCESS or another SPUDRESULT.
+ */
+SPUDRESULT spudgpu_create_descriptor_pool(
+    spudgpu_device device,
+    const spudgpu_descriptor_pool_desc *desc,
+    spudgpu_descriptor_pool *out_pool);
+
+/**
+ * @brief Resets the pool, freeing all sets allocated from it in bulk.
+ *
+ * Cheaper than freeing sets individually. Call once per frame before
+ * re-recording new descriptor writes.
+ *
+ * @param[in] pool   The pool to reset.
+ */
+void spudgpu_reset_descriptor_pool(spudgpu_descriptor_pool pool);
+
+/**
+ * @brief Destroys a descriptor pool and all sets allocated from it.
+ *
+ * @warning All command lists currently using sets from this pool must have
+ * finished GPU execution before calling this.
+ */
+void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool);
+
+// ============================================================================
+//  Descriptor Set
+//  Maps to: VkDescriptorSet (Vulkan) / MTLBuffer argument buffer (Metal)
+// ============================================================================
+
+typedef struct spudgpu_descriptor_set_t *spudgpu_descriptor_set;
+
+#define SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS 4
+
+/**
+ * @brief Allocation descriptor for one or more descriptor sets.
+ *
+ * All sets in a single call are allocated from the same pool in one
+ * driver round-trip (matches vkAllocateDescriptorSets semantics).
+ */
+typedef struct spudgpu_descriptor_set_desc {
+	spudgpu_descriptor_pool pool;
+
+	/// Each element describes the layout for one set being allocated.
+	spudgpu_descriptor_set_layout set_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
+	uint32_t set_count;
+} spudgpu_descriptor_set_desc;
+
+/**
+ * @brief Allocates descriptor sets from a pool.
+ *
+ * @param[in]  device    The GPU device that owns the pool.
+ * @param[in]  desc      Allocation configuration (pool + layouts).
+ * @param[out] out_sets  Caller-supplied array that receives the allocated
+ * handles. Must be at least desc->set_count elements wide.
+ * @return SPUD_SUCCESS; an error code if the pool is out of capacity.
+ */
+SPUDRESULT spudgpu_create_descriptor_sets(
+    spudgpu_device device,
+    const spudgpu_descriptor_set_desc *desc,
+    spudgpu_descriptor_set *out_sets);
+
+// ============================================================================
+//  Descriptor Writes
+//  Wires actual GPU resources into the allocated binding slots.
+// ============================================================================
+
+/**
+ * @brief Describes a buffer range to write into a binding slot.
+ */
+typedef struct spudgpu_descriptor_buffer_info {
+	spudgpu_buffer buffer;
+
+	/// Byte offset from the start of the buffer to begin the binding window.
+	uint64_t offset;
+
+	/// Byte size of the binding window. Pass 0 to bind the entire buffer.
+	uint64_t range;
+} spudgpu_descriptor_buffer_info;
+
+/**
+ * @brief Describes an image view + sampler to write into a binding slot.
+ */
+typedef struct spudgpu_descriptor_image_info {
+	spudgpu_image_view image_view;
+
+	/**
+	 * @brief The layout the image is expected to be in when shaders access it.
+	 *
+	 * On Vulkan this maps to VkImageLayout. Common values:
+	 *   - SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY for sampled textures.
+	 *   - SPUDGPU_IMAGE_LAYOUT_GENERAL for storage images (read/write).
+	 *
+	 * @see SPUDGPU_IMAGE_LAYOUT
+	 */
+	uint32_t image_layout;
+} spudgpu_descriptor_image_info;
+
+/**
+ * @brief A single write operation targeting one binding slot in a descriptor
+ * set.
+ *
+ * Fill either buffer_info or image_info depending on the descriptor_type.
+ * The unused field is ignored by the backend.
+ */
+typedef struct spudgpu_write_descriptor_set {
+	/// The descriptor set to write into.
+	spudgpu_descriptor_set dst_set;
+
+	/// The binding slot index to update (matches
+	/// spudgpu_descriptor_binding_desc::binding).
+	uint32_t dst_binding;
+
+	/// First array element to update. Use 0 for non-array bindings.
+	uint32_t dst_array_element;
+
+	/// Number of descriptors to update starting at dst_array_element.
+	uint32_t descriptor_count;
+
+	/// The type of descriptor being written. Must match the layout's declared
+	/// type.
+	SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
+
+	/// Set when writing UNIFORM_BUFFER or STORAGE_BUFFER descriptors.
+	const spudgpu_descriptor_buffer_info *buffer_info;
+
+	/// Set when writing SAMPLED_IMAGE, STORAGE_IMAGE, or COMBINED_IMAGE_SAMPLER
+	/// descriptors.
+	const spudgpu_descriptor_image_info *image_info;
+} spudgpu_write_descriptor_set;
+
+/**
+ * @brief Writes resource handles into one or more descriptor sets.
+ *
+ * This is the equivalent of vkUpdateDescriptorSets. Call this after allocating
+ * sets and before binding them to a command list.
+ *
+ * @param[in] device       The GPU device that owns the sets.
+ * @param[in] writes       Array of write operations.
+ * @param[in] write_count  Number of elements in the writes array.
+ */
+void spudgpu_update_descriptor_sets(
+    spudgpu_device device,
+    const spudgpu_write_descriptor_set *writes,
+    uint32_t write_count);
+
+// ============================================================================
+//  Command list binding
+// ============================================================================
+
+/**
+ * @brief Binds descriptor sets to the pipeline for subsequent draw or dispatch
+ * calls.
+ *
+ * Maps to vkCmdBindDescriptorSets. Call after binding the pipeline and before
+ * the draw/dispatch.
+ *
+ * @param[in] cmd          The active command list.
+ * @param[in] pipeline     The graphics pipeline whose layout defines the set
+ * slots.
+ * @param[in] first_set    The set index of the first element in sets[] (usually
+ * 0).
+ * @param[in] sets         Array of descriptor set handles to bind.
+ * @param[in] set_count    Number of sets to bind.
+ */
+void spudgpu_cmd_bind_descriptor_sets(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline,
+    uint32_t first_set,
+    const spudgpu_descriptor_set *sets,
+    uint32_t set_count);
+
+/**
+ * @brief Compute-pipeline variant of spudgpu_cmd_bind_descriptor_sets.
+ */
+void spudgpu_cmd_bind_descriptor_sets_compute(
+    spudgpu_command_list cmd,
+    spudgpu_compute_pipeline pipeline,
+    uint32_t first_set,
+    const spudgpu_descriptor_set *sets,
+    uint32_t set_count);
+
 typedef uint32_t SPUDGPU_SHADER_STAGE;
 
 enum {
@@ -1670,12 +1723,6 @@ enum {
 	SPUDGPU_COMPARE_OP_GREATER_OR_EQUAL = 6,
 	SPUDGPU_COMPARE_OP_ALWAYS           = 7
 };
-
-// Capacity Limits
-#define SPUDGPU_MAX_VERTEX_ATTRIBUTES 16
-#define SPUDGPU_MAX_VERTEX_BINDINGS 8
-#define SPUDGPU_MAX_PUSH_CONSTANT_RANGES 4
-#define SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS 4
 
 typedef struct spudgpu_vertex_attribute_desc {
 	/// Which shader location slot this attribute binds to (layout(location =
@@ -1779,6 +1826,10 @@ SPUDRESULT spudgpu_create_shader_module(
     spudgpu_shader_module *out_module);
 
 void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module);
+
+typedef struct spudgpu_pipeline_layout_t *spudgpu_pipeline_layout;
+
+
 
 /**
  * @brief Complete configuration descriptor for creating a graphics shader
@@ -2004,330 +2055,6 @@ SPUDRESULT spudgpu_get_compute_pipeline_desc(
     spudgpu_compute_pipeline pipeline,
     spudgpu_compute_pipeline_desc *out_desc);
 
-// ============================================================================
-//  Descriptor Set Layout
-//  Maps to: VkDescriptorSetLayout (Vulkan) / MTLArgumentEncoder schema (Metal)
-// ============================================================================
-
-typedef struct spudgpu_descriptor_set_layout_t *spudgpu_descriptor_set_layout;
-
-/**
- * @brief Enumerates the kinds of resources a shader binding slot can hold.
- *
- * Maps directly to VkDescriptorType on Vulkan and the corresponding
- * MTLArgumentEncoder argument kinds on Metal.
- */
-typedef uint32_t SPUDGPU_DESCRIPTOR_TYPE;
-
-enum {
-	/// Read-only structured constant block (UBO / constant buffer).
-	SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 0,
-
-	/// Read/write large data array (SSBO / structured buffer).
-	SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER = 1,
-
-	/// Combined image + sampler in a single binding (texture2D + sampler).
-	SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 2,
-
-	/// Sampled image without a sampler (use alongside SAMPLER binding).
-	SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE = 3,
-
-	/// Standalone sampler object.
-	SPUDGPU_DESCRIPTOR_TYPE_SAMPLER = 4,
-
-	/// Image the shader can both read and write (compute UAV / storage image).
-	SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE = 5,
-};
-
-/**
- * @brief Describes a single binding slot within a descriptor set layout.
- *
- * Each entry corresponds to one `layout(set=N, binding=M)` declaration in GLSL.
- */
-typedef struct spudgpu_descriptor_binding_desc {
-	/// Slot index matching `layout(binding = N)` in GLSL. Must be unique within
-	/// a layout.
-	uint32_t binding;
-
-	/// Resource type expected at this binding slot.
-	/// @see SPUDGPU_DESCRIPTOR_TYPE
-	SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
-
-	/// Number of resources in this binding. Use 1 for a single resource,
-	/// or N for a fixed-size array (e.g. `uniform sampler2D textures[8]`).
-	uint32_t count;
-
-	/// Bitmask of shader stages that can access this binding.
-	/// @see SPUDGPU_SHADER_STAGE
-	SPUDGPU_SHADER_STAGE stage_flags;
-} spudgpu_descriptor_binding_desc;
-
-#define SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET 16
-
-/**
- * @brief Configuration descriptor for a descriptor set layout.
- *
- * Describes the binding slots that make up one set. Pass this to
- * spudgpu_create_descriptor_set_layout(), then hand the resulting
- * handle into spudgpu_shader_pipeline_desc::descriptor_set_layouts[].
- */
-typedef struct spudgpu_descriptor_set_layout_desc {
-	spudgpu_descriptor_binding_desc bindings[SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET];
-	uint32_t binding_count;
-
-#if _DEBUG
-	const char *debug_name;
-#endif
-} spudgpu_descriptor_set_layout_desc;
-
-/**
- * @brief Creates an immutable descriptor set layout (schema).
- *
- * On Vulkan this allocates a VkDescriptorSetLayout. On Metal it creates an
- * MTLArgumentEncoder schema. The resulting handle is passed into the pipeline
- * desc to declare the expected binding shape.
- *
- * @param[in] device The GPU device to create this layout on.
- * @param[in] desc   Pointer to the binding slot configuration.
- * @param[out] out_layout The new Descriptor Set Layout.
- * @return SPUD_SUCCESS or another SPUDRESULT.
- */
-SPUDRESULT spudgpu_create_descriptor_set_layout(
-    spudgpu_device device,
-    const spudgpu_descriptor_set_layout_desc *desc,
-    spudgpu_descriptor_set_layout *out_layout);
-
-/**
- * @brief Destroys a descriptor set layout.
- *
- * @warning All descriptor sets allocated from this layout, and all pipelines
- * referencing it, must be destroyed before calling this.
- */
-void spudgpu_destroy_descriptor_set_layout(spudgpu_descriptor_set_layout layout);
-
-// ============================================================================
-//  Descriptor Pool
-//  Maps to: VkDescriptorPool (Vulkan) / heap of argument buffers (Metal)
-// ============================================================================
-
-typedef struct spudgpu_descriptor_pool_t *spudgpu_descriptor_pool;
-
-/**
- * @brief Declares how many descriptors of each type a pool should pre-allocate.
- *
- * Vulkan requires knowing the total capacity up front. Size your pool to cover
- * the worst-case count across all frames-in-flight.
- */
-typedef struct spudgpu_descriptor_pool_size {
-	SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
-	uint32_t count;
-} spudgpu_descriptor_pool_size;
-
-#define SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES 8
-
-/**
- * @brief Configuration descriptor for a descriptor pool.
- */
-typedef struct spudgpu_descriptor_pool_desc {
-#if _DEBUG
-	const char *debug_name;
-#endif
-
-	/// Maximum number of descriptor sets that can be allocated from this pool.
-	uint32_t max_sets;
-
-	spudgpu_descriptor_pool_size pool_sizes[SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES];
-	uint32_t pool_size_count;
-} spudgpu_descriptor_pool_desc;
-
-/**
- * @brief Allocates a descriptor pool — the backing memory for descriptor sets.
- *
- * Create one pool per frame-in-flight (or one large shared pool) and reset it
- * each frame rather than allocating/freeing individual sets every frame.
- *
- * @param[in] device The GPU device to create this pool on.
- * @param[in] desc   Pointer to the capacity configuration.
- * @param[out] out_pool The new Descriptor Pool.
- * @return SPUD_SUCCESS or another SPUDRESULT.
- */
-SPUDRESULT spudgpu_create_descriptor_pool(
-    spudgpu_device device,
-    const spudgpu_descriptor_pool_desc *desc,
-    spudgpu_descriptor_pool *out_pool);
-
-/**
- * @brief Resets the pool, freeing all sets allocated from it in bulk.
- *
- * Cheaper than freeing sets individually. Call once per frame before
- * re-recording new descriptor writes.
- *
- * @param[in] pool   The pool to reset.
- */
-void spudgpu_reset_descriptor_pool(spudgpu_descriptor_pool pool);
-
-/**
- * @brief Destroys a descriptor pool and all sets allocated from it.
- *
- * @warning All command lists currently using sets from this pool must have
- * finished GPU execution before calling this.
- */
-void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool);
-
-// ============================================================================
-//  Descriptor Set
-//  Maps to: VkDescriptorSet (Vulkan) / MTLBuffer argument buffer (Metal)
-// ============================================================================
-
-typedef struct spudgpu_descriptor_set_t *spudgpu_descriptor_set;
-
-/**
- * @brief Allocation descriptor for one or more descriptor sets.
- *
- * All sets in a single call are allocated from the same pool in one
- * driver round-trip (matches vkAllocateDescriptorSets semantics).
- */
-typedef struct spudgpu_descriptor_set_alloc_desc {
-	spudgpu_descriptor_pool pool;
-
-	/// Each element describes the layout for one set being allocated.
-	spudgpu_descriptor_set_layout layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
-	uint32_t set_count;
-} spudgpu_descriptor_set_alloc_desc;
-
-/**
- * @brief Allocates descriptor sets from a pool.
- *
- * @param[in]  device    The GPU device that owns the pool.
- * @param[in]  desc      Allocation configuration (pool + layouts).
- * @param[out] out_sets  Caller-supplied array that receives the allocated
- * handles. Must be at least desc->set_count elements wide.
- * @return SPUD_SUCCESS; an error code if the pool is out of capacity.
- */
-SPUDRESULT spudgpu_allocate_descriptor_sets(
-    spudgpu_device device,
-    const spudgpu_descriptor_set_alloc_desc *desc,
-    spudgpu_descriptor_set *out_sets);
-
-// ============================================================================
-//  Descriptor Writes
-//  Wires actual GPU resources into the allocated binding slots.
-// ============================================================================
-
-/**
- * @brief Describes a buffer range to write into a binding slot.
- */
-typedef struct spudgpu_descriptor_buffer_info {
-	spudgpu_buffer buffer;
-
-	/// Byte offset from the start of the buffer to begin the binding window.
-	uint64_t offset;
-
-	/// Byte size of the binding window. Pass 0 to bind the entire buffer.
-	uint64_t range;
-} spudgpu_descriptor_buffer_info;
-
-/**
- * @brief Describes an image view + sampler to write into a binding slot.
- */
-typedef struct spudgpu_descriptor_image_info {
-	spudgpu_image_view image_view;
-
-	/**
-	 * @brief The layout the image is expected to be in when shaders access it.
-	 *
-	 * On Vulkan this maps to VkImageLayout. Common values:
-	 *   - SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY for sampled textures.
-	 *   - SPUDGPU_IMAGE_LAYOUT_GENERAL for storage images (read/write).
-	 *
-	 * @see SPUDGPU_IMAGE_LAYOUT
-	 */
-	uint32_t image_layout;
-} spudgpu_descriptor_image_info;
-
-/**
- * @brief A single write operation targeting one binding slot in a descriptor
- * set.
- *
- * Fill either buffer_info or image_info depending on the descriptor_type.
- * The unused field is ignored by the backend.
- */
-typedef struct spudgpu_write_descriptor_set {
-	/// The descriptor set to write into.
-	spudgpu_descriptor_set dst_set;
-
-	/// The binding slot index to update (matches
-	/// spudgpu_descriptor_binding_desc::binding).
-	uint32_t dst_binding;
-
-	/// First array element to update. Use 0 for non-array bindings.
-	uint32_t dst_array_element;
-
-	/// Number of descriptors to update starting at dst_array_element.
-	uint32_t descriptor_count;
-
-	/// The type of descriptor being written. Must match the layout's declared
-	/// type.
-	SPUDGPU_DESCRIPTOR_TYPE descriptor_type;
-
-	/// Set when writing UNIFORM_BUFFER or STORAGE_BUFFER descriptors.
-	const spudgpu_descriptor_buffer_info *buffer_info;
-
-	/// Set when writing SAMPLED_IMAGE, STORAGE_IMAGE, or COMBINED_IMAGE_SAMPLER
-	/// descriptors.
-	const spudgpu_descriptor_image_info *image_info;
-} spudgpu_write_descriptor_set;
-
-/**
- * @brief Writes resource handles into one or more descriptor sets.
- *
- * This is the equivalent of vkUpdateDescriptorSets. Call this after allocating
- * sets and before binding them to a command list.
- *
- * @param[in] device       The GPU device that owns the sets.
- * @param[in] writes       Array of write operations.
- * @param[in] write_count  Number of elements in the writes array.
- */
-void spudgpu_update_descriptor_sets(
-    spudgpu_device device,
-    const spudgpu_write_descriptor_set *writes,
-    uint32_t write_count);
-
-// ============================================================================
-//  Command list binding
-// ============================================================================
-
-/**
- * @brief Binds descriptor sets to the pipeline for subsequent draw or dispatch
- * calls.
- *
- * Maps to vkCmdBindDescriptorSets. Call after binding the pipeline and before
- * the draw/dispatch.
- *
- * @param[in] cmd          The active command list.
- * @param[in] pipeline     The graphics pipeline whose layout defines the set
- * slots.
- * @param[in] first_set    The set index of the first element in sets[] (usually
- * 0).
- * @param[in] sets         Array of descriptor set handles to bind.
- * @param[in] set_count    Number of sets to bind.
- */
-void spudgpu_cmd_bind_descriptor_sets(
-    spudgpu_command_list cmd,
-    spudgpu_shader_pipeline pipeline,
-    uint32_t first_set,
-    const spudgpu_descriptor_set *sets,
-    uint32_t set_count);
-
-/**
- * @brief Compute-pipeline variant of spudgpu_cmd_bind_descriptor_sets.
- */
-void spudgpu_cmd_bind_descriptor_sets_compute(
-    spudgpu_command_list cmd,
-    spudgpu_compute_pipeline pipeline,
-    uint32_t first_set,
-    const spudgpu_descriptor_set *sets,
-    uint32_t set_count);
 
 // ============================================================================
 //  Image Layout
@@ -2671,12 +2398,14 @@ typedef struct spudgpu_depth_attachment_desc {
  * specific render pass object.
  */
 typedef struct spudgpu_rendering_begin_desc {
-	/// @see SPUDGPU_MAX_COLOR_ATTACHMENTS
-	const spudgpu_color_attachment_desc *color_attachments;
+	spudgpu_color_attachment_desc color_attachments[SPUDGPU_MAX_COLOR_ATTACHMENTS];
 	uint32_t color_attachment_count;
 
 	/// depth_attachment.image_view == NULL means no depth/stencil attachment.
 	spudgpu_depth_attachment_desc depth_attachment;
+
+	int32_t x;
+	int32_t y;
 
 	/// Render area width in pixels. Usually the attachments' width.
 	uint32_t width;

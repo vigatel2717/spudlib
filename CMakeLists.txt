@@ -98,7 +98,25 @@ if(NOT TARGET spudlib)
     elseif(APPLE)
         # Append Metal sources if Metal API is selected for compile.
         if (GRAPHICS_BACKEND STREQUAL "Metal")
-            # I don't have a MacBook yet for this stuff.
+            # Metal backend is plain Objective-C (.m), not Objective-C++ -
+            # chosen for lowest compile overhead (matches the Vulkan
+            # backend's plain-C compile speed rather than D3D12's C++
+            # backend). Must enable OBJC before add_library() below.
+            enable_language(OBJC)
+
+            list(APPEND SPUDLIB_SOURCES
+                include/spudgpu_metal_natives.h
+                src/gpu/backends/metal/spudgpumetalcontext.m
+                src/gpu/backends/metal/spudgpumetalbuffer.m
+                src/gpu/backends/metal/spudgpumetalshader.m
+                src/gpu/backends/metal/spudgpumetalswapchain.m
+                src/gpu/backends/metal/spudgpumetalimage.m
+                src/gpu/backends/metal/spudgpumetaldescriptors.m
+                src/gpu/backends/metal/spudgpumetalcommand.m
+                src/gpu/backends/metal/spudgpumetalrenderpass.m
+                src/gpu/backends/metal/spudgpumetalnative.m
+                src/gpu/backends/metal/spudgpumetalsync.m
+            )
         endif()
     endif()
 
@@ -221,9 +239,21 @@ if(NOT TARGET spudlib)
     elseif(APPLE)
         # Set the Metal compile-time packages and macros.
         if(GRAPHICS_BACKEND STREQUAL "Metal")
-            set(CMAKE_CXX_STANDARD 26)
             target_compile_definitions(spudlib PUBLIC SPUDGPU_COMPILE_METAL_API=1)
-            # I don't have a MacBook yet so this is empty
+
+            # Required to link against id<MTLDevice>/id<MTLCommandQueue>/etc.
+            # QuartzCore is needed for CAMetalLayer (surface/swapchain
+            # creation); Foundation for NSObject-family types Metal.h pulls in.
+            target_link_libraries(spudlib PRIVATE
+                "-framework Metal"
+                "-framework QuartzCore"
+                "-framework Foundation"
+            )
+
+            # Backend implementation itself is still pending real Apple
+            # hardware - see src/gpu/backends/metal/*.m (currently empty
+            # placeholders) and include/spudgpu_metal_natives.h (drafted,
+            # not yet implemented).
         endif()
     endif()
 
