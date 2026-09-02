@@ -5,6 +5,7 @@
 #include "spudgpu.h"
 #include "spudgpuvulkan.h"
 #include <stdlib.h>
+#include <string.h>
 
 #if __cplusplus
 extern "C" {

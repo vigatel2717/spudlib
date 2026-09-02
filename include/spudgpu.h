@@ -1391,6 +1391,18 @@ enum {
 	SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE = 5,
 };
 
+typedef uint32_t SPUDGPU_SHADER_STAGE;
+
+enum {
+	SPUDGPU_SHADER_STAGE_NONE                    = 0,
+	SPUDGPU_SHADER_STAGE_VERTEX                  = 1 << 0,
+	SPUDGPU_SHADER_STAGE_FRAGMENT                = 1 << 1,
+	SPUDGPU_SHADER_STAGE_COMPUTE                 = 1 << 2,
+	SPUDGPU_SHADER_STAGE_GEOMETRY                = 1 << 3,
+	SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL    = 1 << 4,
+	SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION = 1 << 5
+};
+
 /**
  * @brief Describes a single binding slot within a descriptor set layout.
  *
@@ -1683,18 +1695,6 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
     const spudgpu_descriptor_set *sets,
     uint32_t set_count);
 
-typedef uint32_t SPUDGPU_SHADER_STAGE;
-
-enum {
-	SPUDGPU_SHADER_STAGE_NONE                    = 0,
-	SPUDGPU_SHADER_STAGE_VERTEX                  = 1 << 0,
-	SPUDGPU_SHADER_STAGE_FRAGMENT                = 1 << 1,
-	SPUDGPU_SHADER_STAGE_COMPUTE                 = 1 << 2,
-	SPUDGPU_SHADER_STAGE_GEOMETRY                = 1 << 3,
-	SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL    = 1 << 4,
-	SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION = 1 << 5
-};
-
 typedef uint32_t SPUDGPU_PRIMITIVE_TOPOLOGY;
 
 enum {
@@ -1812,7 +1812,7 @@ typedef struct spudgpu_shader_module_desc {
 	const void *spirv_code;
 
 	/// Byte size of the SPIR-V blob. Must be a multiple of 4.
-	size_t spirv_size;
+	uint64_t spirv_size;
 
 #if _DEBUG
 	/// @brief A string identifier used for diagnostic tracking.

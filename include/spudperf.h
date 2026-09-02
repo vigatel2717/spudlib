@@ -13,6 +13,8 @@ void spudperf_get_ram_usage(
     uint64_t *current_ram_usage,
     uint64_t *peak_ram_usage);
 
+uint64_t spudperf_get_current_time_milliseconds();
+
 #if __cplusplus
 }
 #endif

@@ -21,6 +21,7 @@
 #endif
 
 #include <stdlib.h>
+#include <string.h>
 
 
 #if __cplusplus

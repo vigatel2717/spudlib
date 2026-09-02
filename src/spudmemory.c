@@ -3,6 +3,7 @@
 #include "spudcore.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct smem_arena_t {
 	uint64_t reserve_size;

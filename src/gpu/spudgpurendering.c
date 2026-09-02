@@ -29,10 +29,10 @@ void spudgpu_cmd_clear_color_attachment(
 	color.clear_color[3] = a;
 
 	spudgpu_rendering_begin_desc desc = {0};
-	desc.color_attachments      = &color;
-	desc.color_attachment_count = 1;
-	desc.width                  = width;
-	desc.height                 = height;
+	desc.color_attachments[0]         = color;
+	desc.color_attachment_count       = 1;
+	desc.width                        = width;
+	desc.height                       = height;
 
 	spudgpu_cmd_begin_rendering(cmd, &desc);
 	spudgpu_cmd_end_rendering(cmd);
