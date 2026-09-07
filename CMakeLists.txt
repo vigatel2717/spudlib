@@ -50,6 +50,7 @@ if(NOT TARGET spudlib)
     endif()
     if(UNIX AND NOT APPLE)
         list(APPEND SPUDLIB_SOURCES
+            src/files/backends/linux/spudfileslinux.c
             src/net/backends/linux/spudnetlinux.c
             src/memory/backends/linux/spudmemorylinux.c
         )

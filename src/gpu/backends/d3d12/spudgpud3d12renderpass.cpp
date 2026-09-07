@@ -306,7 +306,10 @@ static D3D12_RENDER_PASS_ENDING_ACCESS_TYPE spudgpu_d3d12_store_op_to_ending_acc
 // precompiled render-pass object or pipeline-compatibility contract to begin
 // with (unlike classic Vulkan render passes), so this maps onto it directly:
 // per-attachment beginning/ending access is passed inline, and the pipeline
-// is bound separately at draw time via spudgpu_cmd_bind_pipeline.
+// is bound separately at draw time via spudgpu_cmd_bind_pipeline. Viewport/
+// scissor are not touched here — like Vulkan (VK_DYNAMIC_STATE_VIEWPORT/
+// SCISSOR), that's the caller's job via spudgpu_set_viewports/
+// spudgpu_set_scissor_rects, called after begin_rendering.
 void spudgpu_cmd_begin_rendering(
     spudgpu_command_list cmd,
     const spudgpu_rendering_begin_desc *desc) {
@@ -326,20 +329,22 @@ void spudgpu_cmd_begin_rendering(
 	ID3D12Device *device = firstColorView->_image->_device->_d3d_device.Get();
 	ID3D12GraphicsCommandList4 *cmdList = cmd->_d3d_cmd_list.Get();
 
-	// Create a transient non-shader-visible RTV heap for this pass. CPU
-	// descriptors are recorded by value into the command list, so the heap
-	// may be released immediately after BeginRenderPass returns.
-	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
-	{
+	// Reuse this command list's persistent RTV heap, growing (recreating)
+	// it only if this pass needs more color attachments than it currently
+	// holds. CPU descriptor handles are cheap to overwrite in place every
+	// call; it's the heap object itself that's expensive to keep
+	// recreating every render pass.
+	if (colorCount > cmd->_rtv_heap_capacity) {
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
 		heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 		heapDesc.NumDescriptors = colorCount;
 		heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-		if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap))))
+		if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&cmd->_rtv_heap))))
 			return;
+		cmd->_rtv_heap_capacity = colorCount;
 	}
 	UINT rtvInc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-	D3D12_CPU_DESCRIPTOR_HANDLE rtvStart = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_CPU_DESCRIPTOR_HANDLE rtvStart = cmd->_rtv_heap->GetCPUDescriptorHandleForHeapStart();
 
 	D3D12_RENDER_PASS_RENDER_TARGET_DESC rtDescs[SPUDGPU_MAX_COLOR_ATTACHMENTS] = {};
 	for (UINT i = 0; i < colorCount; ++i) {
@@ -363,24 +368,26 @@ void spudgpu_cmd_begin_rendering(
 		rtDescs[i].EndingAccess.Type                          = spudgpu_d3d12_store_op_to_ending_access(src.store_op);
 	}
 
-	// Optional depth/stencil attachment.
+	// Optional depth/stencil attachment. cmd->_dsv_heap only ever needs one
+	// descriptor, so it's created once on first use and reused thereafter.
 	D3D12_RENDER_PASS_DEPTH_STENCIL_DESC dsDesc = {};
-	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsvHeap;
 	bool hasDepth = (desc->depth_attachment.image_view != nullptr);
 
 	if (hasDepth) {
 		spudgpu_image_view_d3d12 *depthView =
 		    (spudgpu_image_view_d3d12 *)desc->depth_attachment.image_view;
 
-		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-		heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-		heapDesc.NumDescriptors = 1;
-		heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-		if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&dsvHeap))))
-			return;
+		if (!cmd->_dsv_heap) {
+			D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+			heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+			heapDesc.NumDescriptors = 1;
+			heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+			if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&cmd->_dsv_heap))))
+				return;
+		}
 
 		D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle =
-		    dsvHeap->GetCPUDescriptorHandleForHeapStart();
+		    cmd->_dsv_heap->GetCPUDescriptorHandleForHeapStart();
 		device->CreateDepthStencilView(
 		    depthView->_image->_d3d_resource.Get(),
 		    &depthView->_d3d_view_desc._dsv,
@@ -404,30 +411,10 @@ void spudgpu_cmd_begin_rendering(
 		    spudgpu_d3d12_store_op_to_ending_access(desc->depth_attachment.stencil_store_op);
 	}
 
-	// Set the viewport and scissor to the full render area.
-	D3D12_VIEWPORT viewport = {};
-	viewport.TopLeftX = 0.0f;
-	viewport.TopLeftY = 0.0f;
-	viewport.Width    = (float)desc->width;
-	viewport.Height   = (float)desc->height;
-	viewport.MinDepth = 0.0f;
-	viewport.MaxDepth = 1.0f;
-	cmdList->RSSetViewports(1, &viewport);
-
-	D3D12_RECT scissor = {};
-	scissor.left   = 0;
-	scissor.top    = 0;
-	scissor.right  = (LONG)desc->width;
-	scissor.bottom = (LONG)desc->height;
-	cmdList->RSSetScissorRects(1, &scissor);
-
 	cmdList->BeginRenderPass(
 	    colorCount, rtDescs,
 	    hasDepth ? &dsDesc : nullptr,
 	    D3D12_RENDER_PASS_FLAG_NONE);
-
-	// rtvHeap and dsvHeap are released here — safe because D3D12 records CPU
-	// descriptor handles by value into the command list at BeginRenderPass time.
 }
 
 void spudgpu_cmd_end_rendering(spudgpu_command_list cmd) {

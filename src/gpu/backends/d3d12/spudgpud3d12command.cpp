@@ -122,6 +122,8 @@ SPUDRESULT spudgpu_create_command_list(
 }
 void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
     if (!cmd) return;
+    cmd->_rtv_heap.Reset();
+    cmd->_dsv_heap.Reset();
     cmd->_d3d_cmd_list.Reset();
     free(cmd);
 }

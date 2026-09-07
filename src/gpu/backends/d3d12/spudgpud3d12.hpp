@@ -197,6 +197,15 @@ typedef struct spudgpu_command_list_t {
 #endif
 	spudgpu_command_allocator_d3d12 *_allocator;
 	Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList10> _d3d_cmd_list;
+
+	// Persistent RTV/DSV heaps reused across spudgpu_cmd_begin_rendering
+	// calls instead of allocating a new descriptor heap every render pass.
+	// _rtv_heap grows (and is recreated) if a pass needs more color
+	// attachments than it currently holds; _dsv_heap only ever needs one
+	// descriptor and is created once on first use.
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> _rtv_heap;
+	UINT _rtv_heap_capacity;
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> _dsv_heap;
 } spudgpu_command_list_d3d12;
 
 typedef struct spudgpu_buffer_t {

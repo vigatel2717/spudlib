@@ -5,6 +5,7 @@
 #include "spudgpu.h"
 #include "spudgpuvulkan.h"
 #include <stdlib.h>
+#include <string.h>
 
 uint32_t spudgpuvulkan___find_memory_type_internal(
     VkPhysicalDevice physicalDevice,

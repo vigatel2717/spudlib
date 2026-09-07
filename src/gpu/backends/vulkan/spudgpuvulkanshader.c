@@ -4,6 +4,7 @@
 #include "spudgpu.h"
 #include "spudgpuvulkan.h"
 #include <stdlib.h>
+#include <string.h>
 
 VkPrimitiveTopology
 spudgpuvulkan___primitive_topology(SPUDGPU_PRIMITIVE_TOPOLOGY topology) {

@@ -2,7 +2,11 @@
   "version": 6,
   "configurePresets": [
     {
+<<<<<<< HEAD
       "name": "spudlib-windows-d3d12",
+=======
+      "name": "windows-d3d12",
+>>>>>>> 5a737da092100dd1797b106187fded965744c1f2
       "displayName": "SpudLib Windows D3D12",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
@@ -12,7 +16,11 @@
       }
     },
     {
+<<<<<<< HEAD
       "name": "spudlib-windows-vulkan",
+=======
+      "name": "windows-vulkan",
+>>>>>>> 5a737da092100dd1797b106187fded965744c1f2
       "displayName": "SpudLib Windows Vulkan",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
@@ -22,6 +30,7 @@
       }
     },
     {
+<<<<<<< HEAD
       "name": "spudlib-macos-metal",
       "displayName": "SpudLib macOS Metal",
       "generator": "Ninja",
@@ -38,6 +47,14 @@
       "binaryDir": "${sourceDir}/build-xcode-macos-metal",
       "cacheVariables": {
         "GRAPHICS_BACKEND": "Metal"
+=======
+      "name": "linux-vulkan",
+      "displayName": "SpudLib Linux Vulkan",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux-vulkan",
+      "cacheVariables": {
+        "GRAPHICS_BACKEND": "Vulkan"
+>>>>>>> 5a737da092100dd1797b106187fded965744c1f2
       }
     }
   ]

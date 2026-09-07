@@ -7,6 +7,8 @@
 #define SPUDLIB_SPUDFILES_H
 
 #include "spudcore.h"
+#include "stdbool.h"
+#include "stdint.h"
 
 #ifdef __cplusplus
 extern "C" {

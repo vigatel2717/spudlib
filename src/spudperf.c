@@ -6,6 +6,8 @@
 #include <Psapi.h>
 #elif SPUDLIB_PLATFORM_LINUX
 #include <stdio.h>
+#include <time.h>
+#include <stdint.h>
 #endif
 
 #if __cplusplus
@@ -67,6 +69,24 @@ void spudperf_get_ram_usage(
 		*current_ram_usage = rss;
 	if (peak_ram_usage)
 		*peak_ram_usage = hwm;
+#endif
+}
+
+uint64_t spudperf_get_current_time_milliseconds() {
+#if SPUDLIB_PLATFORM_WIN32
+	static LARGE_INTEGER frequency;
+	if (frequency.QuadPart == 0)
+		QueryPerformanceFrequency(&frequency);
+	LARGE_INTEGER counter;
+	QueryPerformanceCounter(&counter);
+	return (uint64_t)((counter.QuadPart * 1000) / frequency.QuadPart);
+#elif SPUDLIB_PLATFORM_LINUX
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+#else
+#error "Unsupported platform"
+	return 0;
 #endif
 }
 
