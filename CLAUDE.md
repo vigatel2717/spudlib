@@ -53,20 +53,32 @@ allocator, not a general allocator library.
   `spudgpu_buffer`, `spudgpu_command_list`, ...) is a forward-declared pointer with no
   caller-visible fields. Backend-private struct layout lives in an internal header per
   backend (`spudgpuvulkan.h`, `spudgpud3d12.hpp`) — never in the public `spudgpu.h`.
-- **Dynamic rendering, not render-pass objects.** The renderpass concept was removed
-  in favor of `spudgpu_cmd_begin_rendering`/`cmd_end_rendering` (commit `e90f921`).
-  Don't reintroduce a `VkRenderPass`/`VkFramebuffer`-style object into the public API —
-  D3D12's backend already emulates this begin/end shape on top of its native
-  render-target-view binding, not the other way around. If/when SpudLib targets
-  hardware that lacks Vulkan 1.3/`VK_KHR_dynamic_rendering` (older/low-end Android,
-  Wear OS smartwatches), the classic `VkRenderPass`/`VkFramebuffer` fallback this
-  implies stays gated behind `SPUDGPU_LEGACY_*` (see below) and entirely internal to
-  the Vulkan backend — `spudgpu_cmd_begin_rendering`/`spudgpu_rendering_begin_desc`
-  keep the identical public signature on both paths; this is a legacy-hardware
-  implementation swap, never a second caller-visible API.
-- **Optional/uneven capabilities are gated with `SPUDGPU_EXT_*`; legacy/constrained-
-  hardware fallbacks with `SPUDGPU_LEGACY_*`.** Both are compile-time macros in
-  `spudgpu.h`, but they answer different questions and must not be conflated:
+- **Dynamic rendering, not render-pass objects, as the default path.** The renderpass
+  concept was removed in favor of `spudgpu_cmd_begin_rendering`/`cmd_end_rendering`
+  (commit `e90f921`). Don't reintroduce a `VkRenderPass`/`VkFramebuffer`-style object
+  into the public API as the default — D3D12's backend already emulates this begin/end
+  shape on top of its native render-target-view binding, not the other way around.
+  If/when SpudLib targets hardware that lacks Vulkan 1.3/`VK_KHR_dynamic_rendering`
+  (older/low-end Android, Wear OS smartwatches), the classic `VkRenderPass`/
+  `VkFramebuffer` fallback this implies is reached only through `SPUDGPU_LEGACY_*`
+  (see below) — `spudgpu_cmd_begin_rendering`/`spudgpu_rendering_begin_desc` keep an
+  identical calling convention on both paths, but the fallback itself is exposed as a
+  small opaque `spudgpu_framebuffer` handle (`SPUDGPU_LEGACY_FRAMEBUFFER`-gated,
+  paired with `spudgpu_cmd_begin_rendering_legacy`) rather than hidden entirely
+  inside the Vulkan backend. That object needs a real owner for its lifetime
+  (creation, caching, invalidation on resize) — a private SpudLib-side cache keyed on
+  attachment sets would be exactly the hidden global state/hidden decision the
+  zero-policy rule above forbids. The owner is ApricotFields: an
+  `aprend_framebuffer`-shaped wrapper that holds raw image views on modern hardware
+  or a cached `spudgpu_framebuffer` on legacy hardware, presenting one uniform
+  begin/end call to the rest of Aprend's rendering code either way.
+- **`SPUDGPU_EXT_*` gates a capability gap between backends; `SPUDGPU_LEGACY_*`
+  gates one extra caller-owned object for constrained hardware within a backend.**
+  Both are compile-time macros in `spudgpu.h`, computed once and gated on everywhere
+  else — never scatter a raw `#if !SPUDGPU_COMPILE_<BACKEND>` check across call
+  sites; if a second backend later lacks the same thing, that should be a one-line
+  edit to the macro's own definition, not an audit of every use site. They answer
+  different questions and must not be conflated:
   - `SPUDGPU_EXT_<NAME>` gates a capability that some `GRAPHICS_BACKEND` choices
     don't implement at all (bindless/descriptor indexing is the reference example —
     Metal needs a `MTLHeap`-backed allocator it doesn't have yet). Define it `1` only
@@ -78,8 +90,14 @@ allocator, not a general allocator library.
     `SPUDGPU_EXT_<NAME>` with a `SPUDRESULT_GPU_EXT_<NAME>_NOT_SUPPORTED` in
     `spudcore.h`, returned when the backend compiles the extension in but the
     specific device/driver still doesn't support it — a distinct, later-discovered
-    case from the macro itself being `0`. Ray tracing and mesh shading are the next
-    likely candidates whenever their real API surface gets built.
+    case from the macro itself being `0`. Ray tracing, mesh shading, and
+    `SPUDGPU_EXT_DESCRIPTOR_SETS`/`SPUDGPU_EXT_SUBPASS_MERGING` (see the OpenGL note
+    below) are the next likely candidates whenever their real API surface gets
+    built. An `EXT` has to stay a narrow, self-contained island (a handful of
+    types/functions) — if gating a capability would mean wrapping most of
+    `spudgpu_cmd_*` or another load-bearing chunk of the header, that's a sign the
+    backend needs its own `GRAPHICS_BACKEND` entry instead of an `EXT` flag draped
+    over nearly everything.
   - `SPUDGPU_LEGACY_<NAME>` gates a fallback for hardware that some devices *within*
     a single backend's target range lack, even though every *currently* targeted
     device of that backend has it (dynamic rendering on old/low-end Vulkan hardware
@@ -87,17 +105,27 @@ allocator, not a general allocator library.
     choice — the same compiled Vulkan backend has to run on both old and new
     hardware — so `SPUDGPU_LEGACY_<NAME>` must gate an opt-in build configuration for
     targeting that constrained hardware profile (e.g. a dedicated CMake option),
-    never `GRAPHICS_BACKEND` itself, and the fallback it enables stays behind the
-    unchanged public API, selected internally via a real runtime feature query
-    (`vkGetPhysicalDeviceFeatures2` et al.) — not a second public code path.
-    The same `SPUDGPU_LEGACY_*` umbrella also covers the harder case one step
-    further down: a device where Vulkan itself isn't available at all, not just
-    missing one feature. If that's ever real (pre-Vulkan Wear OS or similarly
-    constrained embedded targets), the accommodation is a future OpenGL/OpenGL ES
-    backend — still reached only through `SPUDGPU_LEGACY_*`'s opt-in constrained-
-    hardware build configuration, not treated as a fourth coequal `GRAPHICS_BACKEND`
-    alongside Vulkan/D3D12/Metal, since it exists solely to catch devices those three
-    can't run on at all, not as a target anyone would choose otherwise.
+    never `GRAPHICS_BACKEND` itself. Which path a given device actually needs is
+    surfaced to the caller as a capability query (mirroring
+    `spudgpu_bindless_capabilities::supported`), never resolved silently inside
+    SpudLib — the caller decides which path to take per-device; SpudLib only reports
+    the fact and does the mechanical object construction for whichever path is
+    chosen. `SPUDGPU_LEGACY_<NAME>` may grow the public surface by exactly one
+    narrow, opaque resource type when the fallback needs a persistent object with
+    real lifetime (`SPUDGPU_LEGACY_FRAMEBUFFER` above) — that's still fundamentally
+    different from `EXT`: the caller isn't adapting its behavior, it's just holding
+    the handle SpudLib needs to do the identical job on older hardware.
+- **OpenGL/OpenGL ES, if ever needed, is a fourth `GRAPHICS_BACKEND`
+  (`SPUDGPU_COMPILE_OPENGL_API`), not reached through `SPUDGPU_LEGACY_*`.** Its gap
+  from Vulkan/D3D12/Metal isn't one narrow fallback object — no true deferred
+  command-list recording, no descriptor-set object, different synchronization
+  primitives — which is a structural, broad difference, not a hardware-SKU fact
+  within an existing backend. Express it the same way Metal's missing bindless is
+  expressed today: a pile of `SPUDGPU_EXT_<NAME>` macros going to `0` for it
+  (`SPUDGPU_EXT_DESCRIPTOR_SETS` is the clearest candidate), computed alongside
+  Vulkan/D3D12/Metal as a genuine fourth backend choice — never squeezed under
+  `SPUDGPU_LEGACY_*`'s opt-in constrained-hardware path, which exists for one small
+  caller-owned object, not a structurally different API.
 - **Backend file split mirrors the header, not guessed.** Each backend (Vulkan, D3D12,
   Metal) uses the same ten-file-per-concern layout: `context`, `buffer`, `image`,
   `shader`, `swapchain`, `descriptors`, `command`, `renderpass`, `native`, `sync`. If
