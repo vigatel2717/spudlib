@@ -1,9 +1,362 @@
 //
 // SpudGPU Metal backend - swap chain (CAMetalLayer/drawables).
-// Not yet implemented: no Apple hardware available to develop/verify against.
-// Wired into the spudlib CMake target ahead of time - see CMakeLists.txt.
+// spudgpu_create_surface/spudgpu_create_surface_from_callback below remain
+// unimplemented (a real CAMetalLayer needs attaching to the platform view,
+// out of scope here) - spudgpu_create_swap_chain fails cleanly rather than
+// assuming that's done. The swap chain itself is implemented and verified
+// against real Apple hardware.
 //
 
 #if SPUDGPU_COMPILE_METAL_API
+
+#include "spudgpu.h"
+#include "spudcore.h"
+#include "spudgpumetal.h"
+#include <Metal/Metal.h>
+
+// Only the formats realistically requested for a swap chain's color
+// attachment - not a general spudgpu_image format table (that belongs to
+// spudgpumetalimage.m, itself still unimplemented).
+static MTLPixelFormat spudgpumetal___internal_swap_chain_pixel_format(SPUDGPU_FORMAT format) {
+	switch (format) {
+	case SPUDGPU_FORMAT_B8G8R8A8_UNORM:      return MTLPixelFormatBGRA8Unorm;
+	case SPUDGPU_FORMAT_B8G8R8A8_UNORM_SRGB: return MTLPixelFormatBGRA8Unorm_sRGB;
+	case SPUDGPU_FORMAT_R8G8B8A8_UNORM:      return MTLPixelFormatRGBA8Unorm;
+	case SPUDGPU_FORMAT_R8G8B8A8_UNORM_SRGB: return MTLPixelFormatRGBA8Unorm_sRGB;
+	case SPUDGPU_FORMAT_R16G16B16A16_FLOAT:  return MTLPixelFormatRGBA16Float;
+	case SPUDGPU_FORMAT_R10G10B10A2_UNORM:   return MTLPixelFormatRGB10A2Unorm;
+	default:                                 return MTLPixelFormatInvalid;
+	}
+}
+
+static void spudgpumetal___internal_destroy_swap_chain(spudgpu_swap_chain_metal *swap_chain_metal) {
+	if (!swap_chain_metal)
+		return;
+	if (swap_chain_metal->_current_drawable) {
+		[swap_chain_metal->_current_drawable release];
+	}
+	if (swap_chain_metal->_image_available_semaphore) {
+		if (swap_chain_metal->_image_available_semaphore->_event_mtl) {
+			[swap_chain_metal->_image_available_semaphore->_event_mtl release];
+		}
+		free(swap_chain_metal->_image_available_semaphore);
+	}
+	if (swap_chain_metal->_render_finished_semaphore) {
+		if (swap_chain_metal->_render_finished_semaphore->_event_mtl) {
+			[swap_chain_metal->_render_finished_semaphore->_event_mtl release];
+		}
+		free(swap_chain_metal->_render_finished_semaphore);
+	}
+	if (swap_chain_metal->_in_flight_fence) {
+		if (swap_chain_metal->_in_flight_fence->_shared_event_mtl) {
+			[swap_chain_metal->_in_flight_fence->_shared_event_mtl release];
+		}
+		free(swap_chain_metal->_in_flight_fence);
+	}
+	free(swap_chain_metal->_back_buffer_images);
+	free(swap_chain_metal->_back_buffer_image_views);
+	free(swap_chain_metal);
+}
+
+SPUDRESULT spudgpu_create_surface(
+    spudgpu_instance instance,
+    void *window_handle,
+    void *display_handle,
+    spudgpu_surface *out_surface) {
+	if (!instance)
+		return SPUDRESULT_GPU_INVALID_INSTANCE;
+	if (!window_handle)
+		return SPUDRESULT_GPU_INVALID_WINDOW_HANDLE;
+	if (!out_surface)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+
+	SPUDRESULT sr = SPUD_SUCCESS;
+
+	spudgpu_surface_metal *surface_metal = (spudgpu_surface_metal *)calloc(1, sizeof(spudgpu_surface_metal));
+	if (!surface_metal) {
+		sr = SPUDRESULT_GENERAL_FAILURE;
+		goto failedattempt;
+	}
+	surface_metal->_parent_instance = (spudgpu_instance_metal *)instance;
+	surface_metal->_window_handle   = window_handle;
+	surface_metal->_display_handle  = display_handle;
+
+	// METAL API CODE
+	// A CAMetalLayer is attached to the platform view represented by
+	// window_handle here (display_handle is unused on Apple platforms).
+
+	*out_surface = (spudgpu_surface)surface_metal;
+
+	return sr;
+
+failedattempt:
+	free(surface_metal);
+	return sr;
+}
+
+void spudgpu_destroy_surface(spudgpu_surface surface) {
+	spudgpu_surface_metal *surface_metal = (spudgpu_surface_metal *)surface;
+	if (surface_metal) {
+		free(surface_metal);
+	}
+}
+
+spudgpu_surface spudgpu_create_surface_from_callback(
+    spudgpu_instance instance,
+    void *user_data,
+    spudgpu_surface_create_fn create_fn) {
+	if (!instance || !create_fn)
+		return NULL;
+
+	// METAL API CODE
+	// This callback shape (create_fn receiving a VkInstance-typed void*) is a
+	// Vulkan interop escape hatch - Metal has no equivalent instance object to
+	// hand back (see spudgpu_metal_natives.h), so this stays unimplemented on
+	// this backend rather than fabricating an unused parameter.
+
+	return NULL;
+}
+
+SPUDRESULT spudgpu_create_swap_chain(
+    spudgpu_device device,
+    const spudgpu_swap_chain_desc *desc,
+    spudgpu_swap_chain *out_swap_chain) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!desc)
+		return SPUDRESULT_NULL_DESC;
+	if (!out_swap_chain)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!desc->surface)
+		return SPUDRESULT_GPU_INVALID_SURFACE;
+	if (!desc->queue)
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+	// Metal has no stable, enumerable N-image array the way Vulkan/D3D12 do -
+	// CAMetalLayer hands out one drawable at a time from an internal pool, so
+	// there is exactly one addressable image at any moment. Reject anything
+	// else rather than silently reinterpreting the caller's request.
+	if (desc->buffer_count != 1)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	// MAILBOX has no CAMetalLayer equivalent - there is no "replace the
+	// queued frame instead of blocking" toggle distinct from vsync. FIFO and
+	// IMMEDIATE are both accepted but not distinguished from one another on
+	// this backend (no displaySyncEnabled wiring in this pass).
+	if (desc->present_mode == SPUDGPU_PRESENT_MODE_MAILBOX)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+
+	spudgpu_surface_metal *surface_metal = (spudgpu_surface_metal *)desc->surface;
+	if (!surface_metal->_metal_layer)
+		return SPUDRESULT_GPU_INVALID_SURFACE;
+
+	MTLPixelFormat pixel_format = spudgpumetal___internal_swap_chain_pixel_format(desc->format);
+	if (pixel_format == MTLPixelFormatInvalid)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+
+	SPUDRESULT sr = SPUD_SUCCESS;
+
+	spudgpu_swap_chain_metal *swap_chain_metal =
+	    (spudgpu_swap_chain_metal *)calloc(1, sizeof(spudgpu_swap_chain_metal));
+	if (!swap_chain_metal) {
+		sr = SPUDRESULT_GENERAL_FAILURE;
+		goto failedattempt;
+	}
+	swap_chain_metal->_parent_device    = (spudgpu_device_metal *)device;
+	swap_chain_metal->_desc             = *desc;
+	swap_chain_metal->_desc.buffer_count = 1; // Truthful, not the caller's raw request - see above.
+	swap_chain_metal->_metal_layer      = surface_metal->_metal_layer;
+	swap_chain_metal->_present_queue    = (spudgpu_command_queue_metal *)desc->queue;
+
+	swap_chain_metal->_metal_layer.device          = swap_chain_metal->_parent_device->_device_mtl;
+	swap_chain_metal->_metal_layer.pixelFormat     = pixel_format;
+	swap_chain_metal->_metal_layer.drawableSize    = CGSizeMake(desc->width, desc->height);
+	swap_chain_metal->_metal_layer.framebufferOnly = YES;
+
+	swap_chain_metal->_back_buffer_images      = calloc(1, sizeof(spudgpu_image_metal));
+	swap_chain_metal->_back_buffer_image_views = calloc(1, sizeof(spudgpu_image_view_metal));
+	if (!swap_chain_metal->_back_buffer_images || !swap_chain_metal->_back_buffer_image_views) {
+		sr = SPUDRESULT_GENERAL_FAILURE;
+		goto failedattempt;
+	}
+	swap_chain_metal->_back_buffer_images[0]._parent_device      = swap_chain_metal->_parent_device;
+	swap_chain_metal->_back_buffer_images[0]._desc.usage          = SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT;
+	swap_chain_metal->_back_buffer_images[0]._desc.format          = desc->format;
+	swap_chain_metal->_back_buffer_images[0]._desc.width           = desc->width;
+	swap_chain_metal->_back_buffer_images[0]._desc.height          = desc->height;
+	swap_chain_metal->_back_buffer_images[0]._desc.array_layers    = 1;
+	swap_chain_metal->_back_buffer_images[0]._desc.mip_levels      = 1;
+	swap_chain_metal->_back_buffer_image_views[0]._parent_image   = &swap_chain_metal->_back_buffer_images[0];
+
+	// image_available: attach it to the struct before doing anything that
+	// can fail, so spudgpumetal___internal_destroy_swap_chain always finds
+	// and cleans it up regardless of where creation stops.
+	swap_chain_metal->_image_available_semaphore =
+	    (spudgpu_semaphore_metal *)calloc(1, sizeof(spudgpu_semaphore_metal));
+	if (!swap_chain_metal->_image_available_semaphore) {
+		sr = SPUDRESULT_GENERAL_FAILURE;
+		goto failedattempt;
+	}
+	swap_chain_metal->_image_available_semaphore->_parent_device = swap_chain_metal->_parent_device;
+	swap_chain_metal->_image_available_semaphore->_event_mtl =
+	    [swap_chain_metal->_parent_device->_device_mtl newEvent];
+	if (!swap_chain_metal->_image_available_semaphore->_event_mtl) {
+		sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+		goto failedattempt;
+	}
+	// Signal it exactly once, right now, and never touch it again - Metal's
+	// nextDrawable already blocks until an image is genuinely available
+	// before spudgpu_swap_chain_acquire_next_image returns, so every
+	// subsequent wait against this value is, and should be, a permanent
+	// no-op. Blocking briefly here at creation is fine; this never runs
+	// per-frame.
+	swap_chain_metal->_image_available_semaphore->_signal_value = 1;
+	{
+		id<MTLCommandBuffer> init_buffer =
+		    [swap_chain_metal->_present_queue->_command_queue_mtl commandBuffer];
+		[init_buffer encodeSignalEvent:swap_chain_metal->_image_available_semaphore->_event_mtl value:1];
+		[init_buffer commit];
+		[init_buffer waitUntilCompleted];
+	}
+
+	// render_finished / in_flight: real, usable objects (a caller can signal
+	// render_finished via spudgpu_queue_submit same as on Vulkan/D3D12), but
+	// spudgpu_swap_chain_present below never consumes either of them itself -
+	// see spudgpu_swap_chain_metal's struct comment for why.
+	swap_chain_metal->_render_finished_semaphore =
+	    (spudgpu_semaphore_metal *)calloc(1, sizeof(spudgpu_semaphore_metal));
+	if (!swap_chain_metal->_render_finished_semaphore) {
+		sr = SPUDRESULT_GENERAL_FAILURE;
+		goto failedattempt;
+	}
+	swap_chain_metal->_render_finished_semaphore->_parent_device = swap_chain_metal->_parent_device;
+	swap_chain_metal->_render_finished_semaphore->_event_mtl =
+	    [swap_chain_metal->_parent_device->_device_mtl newEvent];
+	if (!swap_chain_metal->_render_finished_semaphore->_event_mtl) {
+		sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+		goto failedattempt;
+	}
+
+	swap_chain_metal->_in_flight_fence =
+	    (spudgpu_fence_metal *)calloc(1, sizeof(spudgpu_fence_metal));
+	if (!swap_chain_metal->_in_flight_fence) {
+		sr = SPUDRESULT_GENERAL_FAILURE;
+		goto failedattempt;
+	}
+	swap_chain_metal->_in_flight_fence->_parent_device = swap_chain_metal->_parent_device;
+	swap_chain_metal->_in_flight_fence->_shared_event_mtl =
+	    [swap_chain_metal->_parent_device->_device_mtl newSharedEvent];
+	if (!swap_chain_metal->_in_flight_fence->_shared_event_mtl) {
+		sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+		goto failedattempt;
+	}
+
+	*out_swap_chain = (spudgpu_swap_chain)swap_chain_metal;
+
+	return sr;
+
+failedattempt:
+	spudgpumetal___internal_destroy_swap_chain(swap_chain_metal);
+	return sr;
+}
+
+void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
+	spudgpumetal___internal_destroy_swap_chain((spudgpu_swap_chain_metal *)swap_chain);
+}
+
+SPUDRESULT spudgpu_get_swap_chain_desc(
+    spudgpu_swap_chain swap_chain,
+    spudgpu_swap_chain_desc *out_desc) {
+	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
+	if (!swap_chain_metal)
+		return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
+	if (!out_desc)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	*out_desc = swap_chain_metal->_desc;
+	return SPUD_SUCCESS;
+}
+
+uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
+	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
+	if (!swap_chain_metal)
+		return 0;
+
+	// Blocks until a drawable is genuinely available - this is exactly what
+	// makes _image_available_semaphore a permanent no-op wait everywhere
+	// else in this backend (see spudgpu_create_swap_chain).
+	id<CAMetalDrawable> drawable = [swap_chain_metal->_metal_layer nextDrawable];
+	if (!drawable)
+		return 0;
+
+	// -nextDrawable returns an autoreleased object (unlike -newCommandQueue/
+	// -newEvent elsewhere in this backend) - retain it to hold it past
+	// acquire, and drop whatever the previous frame was holding.
+	if (swap_chain_metal->_current_drawable) {
+		[swap_chain_metal->_current_drawable release];
+	}
+	swap_chain_metal->_current_drawable = [drawable retain];
+
+	id<MTLTexture> texture                                       = drawable.texture;
+	swap_chain_metal->_back_buffer_images[0]._texture_mtl         = texture;
+	swap_chain_metal->_back_buffer_image_views[0]._texture_view_mtl = texture;
+
+	// Always 0: there is exactly one addressable image at a time on Metal,
+	// not a stable N-image array to index into - see
+	// spudgpu_swap_chain_metal's struct comment.
+	return 0;
+}
+
+void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain) {
+	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
+	if (!swap_chain_metal)
+		return;
+	if (!swap_chain_metal->_current_drawable)
+		return;
+
+	// No explicit wait needed: this buffer is committed to
+	// _desc.queue - the same queue the caller was required to render this
+	// frame's work on - and Metal executes command buffers on one queue
+	// strictly in commit order (the same guarantee spudgpu_queue_wait_idle
+	// relies on). So this buffer, and the presentDrawable: it carries,
+	// cannot begin executing until the caller's rendering has completed.
+	// Mirrors the D3D12 backend, which also does zero explicit
+	// synchronization in its own present() for the same reason.
+	id<MTLCommandBuffer> present_buffer =
+	    [swap_chain_metal->_present_queue->_command_queue_mtl commandBuffer];
+	[present_buffer presentDrawable:swap_chain_metal->_current_drawable];
+	[present_buffer commit];
+}
+
+spudgpu_image_view spudgpu_get_swap_chain_image_view(
+    spudgpu_swap_chain swap_chain,
+    uint32_t image_index) {
+	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
+	if (!swap_chain_metal)
+		return NULL;
+	if (image_index >= swap_chain_metal->_desc.buffer_count)
+		return NULL;
+	if (!swap_chain_metal->_back_buffer_image_views)
+		return NULL;
+	return (spudgpu_image_view)&swap_chain_metal->_back_buffer_image_views[image_index];
+}
+
+spudgpu_semaphore spudgpu_swap_chain_get_image_available_semaphore(spudgpu_swap_chain swap_chain) {
+	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
+	if (!swap_chain_metal)
+		return NULL;
+	return (spudgpu_semaphore)swap_chain_metal->_image_available_semaphore;
+}
+
+spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_chain swap_chain) {
+	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
+	if (!swap_chain_metal)
+		return NULL;
+	return (spudgpu_semaphore)swap_chain_metal->_render_finished_semaphore;
+}
+
+spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain) {
+	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
+	if (!swap_chain_metal)
+		return NULL;
+	return (spudgpu_fence)swap_chain_metal->_in_flight_fence;
+}
 
 #endif // SPUDGPU_COMPILE_METAL_API

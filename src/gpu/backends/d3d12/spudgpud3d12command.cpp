@@ -136,7 +136,7 @@ void spudgpu_end_command_list(spudgpu_command_list cmd)
 	if (!cmd) return;
 	cmd->_d3d_cmd_list->Close();
 }
-void spudgpu_set_viewports(
+void spudgpu_cmd_set_viewports(
     spudgpu_command_list cmd,
     uint32_t first_viewport,
     uint32_t viewport_count,
@@ -149,7 +149,7 @@ void spudgpu_set_viewports(
 	    reinterpret_cast<D3D12_VIEWPORT *>(
 	        const_cast<SPUDGPU_VIEWPORT *>(viewports)));
 }
-void spudgpu_set_scissor_rects(
+void spudgpu_cmd_set_scissor_rects(
     spudgpu_command_list cmd,
     uint32_t first_scissor_rect,
     uint32_t scissor_rect_count,
@@ -162,7 +162,7 @@ void spudgpu_set_scissor_rects(
 	    reinterpret_cast<D3D12_RECT *>(
 	        const_cast<SPUDGPU_SCISSOR_RECT *>(scissor_rects)));
 }
-void spudgpu_set_vertex_buffers(
+void spudgpu_cmd_set_vertex_buffers(
     spudgpu_command_list cmd,
     uint32_t start_slot,
     uint32_t view_count,
@@ -180,14 +180,14 @@ void spudgpu_set_vertex_buffers(
 	);
 	free(d3dVbViews);
 }
-void spudgpu_set_index_buffer(
+void spudgpu_cmd_set_index_buffer(
     spudgpu_command_list cmd,
     spudgpu_buffer_view buffer_view) {
 	if (!(cmd && buffer_view))
 		return;
 	cmd->_d3d_cmd_list->IASetIndexBuffer(&buffer_view->_d3d_view._ib);
 }
-void spudgpu_draw(
+void spudgpu_cmd_draw(
     spudgpu_command_list cmd,
     uint32_t vertex_count,
     uint32_t start_vertex_location) {
@@ -196,7 +196,7 @@ void spudgpu_draw(
 	cmd->_d3d_cmd_list->DrawInstanced(
 	    vertex_count, 1, start_vertex_location, 0);
 }
-void spudgpu_draw_indexed(
+void spudgpu_cmd_draw_indexed(
     spudgpu_command_list cmd,
     uint32_t index_count,
     uint32_t start_index_location,
@@ -206,7 +206,7 @@ void spudgpu_draw_indexed(
 	cmd->_d3d_cmd_list->DrawIndexedInstanced(
 		index_count, 1, start_index_location, base_vertex_location, 0);
 }
-void spudgpu_draw_instanced(
+void spudgpu_cmd_draw_instanced(
     spudgpu_command_list cmd,
     uint32_t vertex_count_per_instance,
     uint32_t instance_count,
@@ -220,7 +220,7 @@ void spudgpu_draw_instanced(
 		start_vertex_location,
 		start_instance_location);
 }
-void spudgpu_draw_indexed_instanced(
+void spudgpu_cmd_draw_indexed_instanced(
     spudgpu_command_list cmd,
     uint32_t index_count_per_instance,
     uint32_t instance_count,

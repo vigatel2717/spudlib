@@ -522,11 +522,18 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 		push_constant_ranges[i].size   = desc->push_constant_ranges[i].size;
 	}
 
+	VkDescriptorSetLayout vk_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
+	for (uint32_t i = 0; i < desc->descriptor_set_layout_count; i++) {
+		spudgpu_descriptor_set_layout_vulkan *vk_layout =
+		    (spudgpu_descriptor_set_layout_vulkan *)
+		        desc->descriptor_set_layouts[i];
+		vk_layouts[i] = vk_layout->_layout_vk;
+	}
+
 	VkPipelineLayoutCreateInfo layoutInfo = {0};
 	layoutInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	layoutInfo.setLayoutCount = desc->descriptor_set_layout_count;
-	layoutInfo.pSetLayouts =
-	    (const VkDescriptorSetLayout *)desc->descriptor_set_layouts;
+	layoutInfo.pSetLayouts    = vk_layouts;
 	layoutInfo.pushConstantRangeCount = desc->push_constant_range_count;
 	layoutInfo.pPushConstantRanges    = push_constant_ranges;
 

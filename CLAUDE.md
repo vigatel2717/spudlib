@@ -57,7 +57,47 @@ allocator, not a general allocator library.
   in favor of `spudgpu_cmd_begin_rendering`/`cmd_end_rendering` (commit `e90f921`).
   Don't reintroduce a `VkRenderPass`/`VkFramebuffer`-style object into the public API —
   D3D12's backend already emulates this begin/end shape on top of its native
-  render-target-view binding, not the other way around.
+  render-target-view binding, not the other way around. If/when SpudLib targets
+  hardware that lacks Vulkan 1.3/`VK_KHR_dynamic_rendering` (older/low-end Android,
+  Wear OS smartwatches), the classic `VkRenderPass`/`VkFramebuffer` fallback this
+  implies stays gated behind `SPUDGPU_LEGACY_*` (see below) and entirely internal to
+  the Vulkan backend — `spudgpu_cmd_begin_rendering`/`spudgpu_rendering_begin_desc`
+  keep the identical public signature on both paths; this is a legacy-hardware
+  implementation swap, never a second caller-visible API.
+- **Optional/uneven capabilities are gated with `SPUDGPU_EXT_*`; legacy/constrained-
+  hardware fallbacks with `SPUDGPU_LEGACY_*`.** Both are compile-time macros in
+  `spudgpu.h`, but they answer different questions and must not be conflated:
+  - `SPUDGPU_EXT_<NAME>` gates a capability that some `GRAPHICS_BACKEND` choices
+    don't implement at all (bindless/descriptor indexing is the reference example —
+    Metal needs a `MTLHeap`-backed allocator it doesn't have yet). Define it `1` only
+    when a backend that implements it is the one compiled in
+    (`SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API`-style), `0` otherwise,
+    and wrap the entire public function/type group in `#if SPUDGPU_EXT_<NAME>` so
+    calling it against a build that lacks it is a compile/link error, not a silent
+    no-op or a runtime NULL surprise discovered on the wrong platform. Pair every
+    `SPUDGPU_EXT_<NAME>` with a `SPUDRESULT_GPU_EXT_<NAME>_NOT_SUPPORTED` in
+    `spudcore.h`, returned when the backend compiles the extension in but the
+    specific device/driver still doesn't support it — a distinct, later-discovered
+    case from the macro itself being `0`. Ray tracing and mesh shading are the next
+    likely candidates whenever their real API surface gets built.
+  - `SPUDGPU_LEGACY_<NAME>` gates a fallback for hardware that some devices *within*
+    a single backend's target range lack, even though every *currently* targeted
+    device of that backend has it (dynamic rendering on old/low-end Vulkan hardware
+    is the motivating case). This is a runtime device fact, not a `GRAPHICS_BACKEND`
+    choice — the same compiled Vulkan backend has to run on both old and new
+    hardware — so `SPUDGPU_LEGACY_<NAME>` must gate an opt-in build configuration for
+    targeting that constrained hardware profile (e.g. a dedicated CMake option),
+    never `GRAPHICS_BACKEND` itself, and the fallback it enables stays behind the
+    unchanged public API, selected internally via a real runtime feature query
+    (`vkGetPhysicalDeviceFeatures2` et al.) — not a second public code path.
+    The same `SPUDGPU_LEGACY_*` umbrella also covers the harder case one step
+    further down: a device where Vulkan itself isn't available at all, not just
+    missing one feature. If that's ever real (pre-Vulkan Wear OS or similarly
+    constrained embedded targets), the accommodation is a future OpenGL/OpenGL ES
+    backend — still reached only through `SPUDGPU_LEGACY_*`'s opt-in constrained-
+    hardware build configuration, not treated as a fourth coequal `GRAPHICS_BACKEND`
+    alongside Vulkan/D3D12/Metal, since it exists solely to catch devices those three
+    can't run on at all, not as a target anyone would choose otherwise.
 - **Backend file split mirrors the header, not guessed.** Each backend (Vulkan, D3D12,
   Metal) uses the same ten-file-per-concern layout: `context`, `buffer`, `image`,
   `shader`, `swapchain`, `descriptors`, `command`, `renderpass`, `native`, `sync`. If
@@ -79,9 +119,12 @@ allocator, not a general allocator library.
     texture view is just another `id<MTLTexture>`)
   - No root-signature accessor (binding indices come from `[[buffer(n)]]`/
     `[[texture(n)]]` shader attributes)
-  - Fences and semaphores both map to `id<MTLSharedEvent>`, deliberately not
-    `MTLFence` (a plain fence can't be waited on from the CPU or across command
-    buffers)
+  - Fences map to `id<MTLSharedEvent>` (needs CPU wait/signal/read plus
+    cross-process sharing); semaphores map to plain `id<MTLEvent>` (GPU-only
+    wait/signal across queues, which is all `spudgpu_semaphore`'s public API
+    ever asks for). Neither uses `MTLFence` — it can't be waited on from the
+    CPU or across command queues, and belongs in `spudgpu_cmd_pipeline_barrier`'s
+    implementation instead, not in fence/semaphore.
 
 ## Backend status
 

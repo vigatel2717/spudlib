@@ -6,7 +6,7 @@
 static CD3DX12_RESOURCE_DESC spudgpu_d3d12_create_resource_desc_from_buffer(
     const spudgpu_buffer_desc *desc) {
 	D3D12_RESOURCE_FLAGS d3dResourceFlags =
-	    spudgpu_d3d12_get_resource_flags_from_buffer_flags(desc->buffer_flags);
+	    spudgpu_d3d12_get_buffer_resource_flags(desc->usage, desc->buffer_flags);
 	CD3DX12_RESOURCE_DESC result =
 	    CD3DX12_RESOURCE_DESC::Buffer(desc->size, d3dResourceFlags);
 	return result;

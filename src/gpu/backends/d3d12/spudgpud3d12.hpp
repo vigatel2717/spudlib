@@ -6,6 +6,7 @@
 #include "spudgpu_d3d12_natives.h"
 #include <array>
 #include <dxgi1_6.h>
+#include <vector>
 #include <wrl/client.h>
 
 #define D3D12_GPU_VIRTUAL_ADDRESS_NULL ((D3D12_GPU_VIRTUAL_ADDRESS)0)
@@ -33,8 +34,6 @@ inline D3D12_HEAP_FLAGS spudgpu_d3d12_get_heap_flags(SPUDGPU_HEAP_FLAGS flags) {
 	D3D12_HEAP_FLAGS result = D3D12_HEAP_FLAG_NONE;
 	if (flags & SPUDGPU_HEAP_FLAG_SHARED)
 		result |= D3D12_HEAP_FLAG_SHARED;
-	if (flags & SPUDGPU_HEAP_FLAG_ALLOW_DISPLAY)
-		result |= D3D12_HEAP_FLAG_ALLOW_DISPLAY;
 	if (flags & SPUDGPU_HEAP_FLAG_ALLOW_SHADER_ATOMICS)
 		result |= D3D12_HEAP_FLAG_ALLOW_SHADER_ATOMICS;
 	if (flags & SPUDGPU_HEAP_FLAG_NOT_ZEROED)
@@ -43,28 +42,28 @@ inline D3D12_HEAP_FLAGS spudgpu_d3d12_get_heap_flags(SPUDGPU_HEAP_FLAGS flags) {
 		result |= D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT;
 	return result;
 }
-inline D3D12_RESOURCE_FLAGS
-spudgpu_d3d12_get_resource_flags_from_buffer_flags(SPUDGPU_BUFFER_FLAGS flags) {
+inline D3D12_RESOURCE_FLAGS spudgpu_d3d12_get_buffer_resource_flags(
+    SPUDGPU_BUFFER_USAGE usage, SPUDGPU_RESOURCE_FLAGS flags) {
 	D3D12_RESOURCE_FLAGS result = D3D12_RESOURCE_FLAG_NONE;
-	if (flags & SPUDGPU_BUFFER_FLAG_ALLOW_UNORDERED_ACCESS)
+	if (usage & SPUDGPU_BUFFER_USAGE_STORAGE)
 		result |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-	if (flags & SPUDGPU_BUFFER_FLAG_ALLOW_SIMULTANEOUS_ACCESS)
-		result |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-	if (flags & SPUDGPU_BUFFER_FLAG_RAYTRACING_ACCELERATION_STRUCTURE)
+	if (usage & SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE)
 		result |= D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE;
+	if (flags & SPUDGPU_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS)
+		result |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 	return result;
 }
-inline D3D12_RESOURCE_FLAGS
-spudgpu_d3d12_get_resource_flags_from_image_flags(SPUDGPU_IMAGE_FLAGS flags) {
+inline D3D12_RESOURCE_FLAGS spudgpu_d3d12_get_image_resource_flags(
+    SPUDGPU_IMAGE_USAGE usage, SPUDGPU_RESOURCE_FLAGS flags) {
 	D3D12_RESOURCE_FLAGS result = D3D12_RESOURCE_FLAG_NONE;
-	if (flags & SPUDGPU_IMAGE_FLAG_ALLOW_UNORDERED_ACCESS)
-		result |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-	if (flags & SPUDGPU_IMAGE_FLAG_ALLOW_SIMULTANEOUS_ACCESS)
-		result |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-	if (flags & SPUDGPU_IMAGE_FLAG_ALLOW_RENDER_TARGET)
+	if (usage & SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT)
 		result |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-	if (flags & SPUDGPU_IMAGE_FLAG_ALLOW_DEPTH_STENCIL)
+	if (usage & SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)
 		result |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+	if (usage & SPUDGPU_IMAGE_USAGE_STORAGE)
+		result |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	if (flags & SPUDGPU_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS)
+		result |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 	return result;
 }
 inline DXGI_FORMAT spudgpu_d3d12_get_dxgi_format(SPUDGPU_FORMAT fmt) {
@@ -119,6 +118,40 @@ typedef struct spudgpu_instance_t {
 	bool _gpu_devices_enumerated;
 } spudgpu_instance_d3d12;
 
+#define SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS 4096
+
+// Lazily created the first time bindless capabilities/registration is used on
+// a device. Safe to lazy-init here (unlike the Vulkan backend): every D3D12
+// struct above stores spudgpu_device_d3d12* by pointer, never by value, so
+// there is no stale-snapshot risk from initializing this after other objects
+// already exist.
+typedef struct spudgpu_bindless_state_d3d12 {
+	// One shader-visible CBV_SRV_UAV heap, 3 fixed-size ranges back-to-back:
+	// [0, MAX) sampled images, [MAX, 2*MAX) storage images,
+	// [2*MAX, 3*MAX) storage buffers. spudgpu_d3d12_build_root_signature
+	// (spudgpud3d12shader.cpp) already builds exactly this shape from
+	// layout->_desc.bindings[] with no changes needed — see `layout` below.
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+	uint32_t increment = 0;
+
+	// Sentinel spudgpu_descriptor_set_layout_d3d12 carrying only the 3
+	// bindings' shape (binding_count/bindings[]) needed to generate the
+	// matching root-signature ranges when a caller includes this handle in
+	// their own descriptor_set_layouts[]. Its _slots[]/_cbv_srv_uav_count
+	// bookkeeping (used by the classic pool/set allocator) is left zeroed —
+	// bindless never goes through spudgpu_create_descriptor_sets.
+	spudgpu_descriptor_set_layout_d3d12 *layout = nullptr;
+
+	uint32_t sampled_image_next_unused  = 0;
+	uint32_t storage_image_next_unused  = 0;
+	uint32_t storage_buffer_next_unused = 0;
+
+	// Stacks of freed indices, reused before drawing from *_next_unused.
+	std::vector<uint32_t> sampled_image_free_stack;
+	std::vector<uint32_t> storage_image_free_stack;
+	std::vector<uint32_t> storage_buffer_free_stack;
+} spudgpu_bindless_state_d3d12;
+
 typedef struct spudgpu_device_t {
 #if _DEBUG
 	const char *_debug_name;
@@ -133,6 +166,12 @@ typedef struct spudgpu_device_t {
 	    _cmd_queues_copy;
 	std::array<spudgpu_command_queue, SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY>
 	    _cmd_queues_compute;
+
+	// Lazily allocated by the first spudgpu_get_bindless_capabilities /
+	// spudgpu_bindless_register_* / spudgpu_get_bindless_descriptor_set_layout
+	// call. nullptr until then; this device struct is calloc'd (see
+	// spudgpud3d12context.cpp), so it starts nullptr for free.
+	spudgpu_bindless_state_d3d12 *_bindless;
 } spudgpu_device_d3d12;
 
 typedef struct spudgpu_command_queue_t {

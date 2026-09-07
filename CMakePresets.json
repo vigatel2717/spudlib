@@ -2,8 +2,8 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "windows-d3d12",
-      "displayName": "Windows D3D12",
+      "name": "spudlib-windows-d3d12",
+      "displayName": "SpudLib Windows D3D12",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build-windows-d3d12",
@@ -12,13 +12,32 @@
       }
     },
     {
-      "name": "windows-vulkan",
-      "displayName": "Windows Vulkan",
+      "name": "spudlib-windows-vulkan",
+      "displayName": "SpudLib Windows Vulkan",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build-windows-vulkan",
       "cacheVariables": {
         "GRAPHICS_BACKEND": "Vulkan"
+      }
+    },
+    {
+      "name": "spudlib-macos-metal",
+      "displayName": "SpudLib macOS Metal",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-macos-metal",
+      "cacheVariables": {
+        "GRAPHICS_BACKEND": "Metal",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "spudlib-macos-metal-xcode",
+      "displayName": "SpudLib macOS Metal (Xcode)",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build-xcode-macos-metal",
+      "cacheVariables": {
+        "GRAPHICS_BACKEND": "Metal"
       }
     }
   ]

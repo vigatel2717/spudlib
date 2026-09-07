@@ -96,6 +96,7 @@ SPUDRESULT
 sfs_file_open(SFS_FILE_OPEN_ATTRIBUTES open_attribs, sfs_file *out_file);
 SPUDRESULT sfs_file_release(sfs_file file);
 bool sfs_file_exists(const char *file_path);
+bool sfs_directory_exists(const char *dir_path);
 SPUDRESULT sfs_set_working_directory(const char *dir);
 const char *sfs_get_working_directory();
 bool sfs_is_slash(char c);

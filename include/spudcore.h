@@ -2,6 +2,8 @@
 #ifndef SPUDCORE_H
 #define SPUDCORE_H
 
+#include <stdint.h>
+
 #if __cplusplus
 extern "C" {
 #endif
@@ -93,6 +95,17 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_SET_LAYOUTS             = 321,
 	SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL     = 322,
 	SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE = 323,
+	SPUDRESULT_GPU_BINDLESS_OUT_OF_SLOTS                       = 324,
+
+	// One SPUDRESULT_GPU_EXT_<NAME>_NOT_SUPPORTED per SPUDGPU_EXT_<NAME>
+	// compile-time capability macro in spudgpu.h — returned by that
+	// extension's runtime entry points when the active backend compiles the
+	// extension in (the macro is 1) but the specific device/driver still
+	// doesn't support it. Never returned when the macro is 0: the extension's
+	// functions aren't declared at all in that case, so calling one is a
+	// compile/link error, not a runtime result.
+	SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED = 325,
+
 	SPUDRESULT_GPU_INVALID_RESOURCE_STATE                      = 350,
 	SPUDRESULT_GPU_INVALID_IMAGE_LAYOUT                        = 351,
 	SPUDRESULT_GPU_INVALID_PIPELINE_STAGE                      = 352,

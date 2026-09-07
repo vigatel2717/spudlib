@@ -5,6 +5,7 @@
 #include "spudgpu.h"
 #include "spudgpuvulkan.h"
 #include <stdlib.h>
+#include <string.h>
 
 #if __cplusplus
 extern "C" {
@@ -354,6 +355,297 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
         NULL);
 }
 
+
+// ============================================================================
+//  Bindless / Descriptor Indexing
+// ============================================================================
+
+#define SPUDGPU_BINDLESS_SAMPLED_IMAGE_BINDING 0
+#define SPUDGPU_BINDLESS_STORAGE_IMAGE_BINDING 1
+#define SPUDGPU_BINDLESS_STORAGE_BUFFER_BINDING 2
+
+// Called once, eagerly, from spudgpuvulkan___initialize_vk_logical_device_internal
+// right after device creation — every other struct in this backend embeds
+// spudgpu_device_vulkan BY VALUE (a snapshot copy taken at creation time), so
+// _bindless must already be populated before anything can copy the device,
+// or later snapshots would carry a stale NULL forever.
+SPUDRESULT spudgpuvulkan___ensure_bindless_state(spudgpu_device device) {
+    if (device->_bindless) return SPUD_SUCCESS;
+
+    spudgpu_bindless_state_vulkan *state = calloc(1, sizeof(spudgpu_bindless_state_vulkan));
+    if (!state) return SPUDRESULT_API_SPECIFIC_FAILURE;
+
+    VkDescriptorSetLayoutBinding bindings[3] = {0};
+    bindings[SPUDGPU_BINDLESS_SAMPLED_IMAGE_BINDING].binding = SPUDGPU_BINDLESS_SAMPLED_IMAGE_BINDING;
+    bindings[SPUDGPU_BINDLESS_SAMPLED_IMAGE_BINDING].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[SPUDGPU_BINDLESS_SAMPLED_IMAGE_BINDING].descriptorCount = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+    bindings[SPUDGPU_BINDLESS_SAMPLED_IMAGE_BINDING].stageFlags = VK_SHADER_STAGE_ALL;
+
+    bindings[SPUDGPU_BINDLESS_STORAGE_IMAGE_BINDING].binding = SPUDGPU_BINDLESS_STORAGE_IMAGE_BINDING;
+    bindings[SPUDGPU_BINDLESS_STORAGE_IMAGE_BINDING].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[SPUDGPU_BINDLESS_STORAGE_IMAGE_BINDING].descriptorCount = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+    bindings[SPUDGPU_BINDLESS_STORAGE_IMAGE_BINDING].stageFlags = VK_SHADER_STAGE_ALL;
+
+    bindings[SPUDGPU_BINDLESS_STORAGE_BUFFER_BINDING].binding = SPUDGPU_BINDLESS_STORAGE_BUFFER_BINDING;
+    bindings[SPUDGPU_BINDLESS_STORAGE_BUFFER_BINDING].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[SPUDGPU_BINDLESS_STORAGE_BUFFER_BINDING].descriptorCount = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+    bindings[SPUDGPU_BINDLESS_STORAGE_BUFFER_BINDING].stageFlags = VK_SHADER_STAGE_ALL;
+
+    VkDescriptorBindingFlags bindingFlags[3];
+    for (uint32_t i = 0; i < 3; i++)
+        bindingFlags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+                           VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+
+    VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {0};
+    bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    bindingFlagsInfo.bindingCount = 3;
+    bindingFlagsInfo.pBindingFlags = bindingFlags;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {0};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.pNext = &bindingFlagsInfo;
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    layoutInfo.bindingCount = 3;
+    layoutInfo.pBindings = bindings;
+
+    spudgpu_descriptor_set_layout_vulkan *layoutWrapper =
+            calloc(1, sizeof(spudgpu_descriptor_set_layout_vulkan));
+    if (!layoutWrapper) {
+        free(state);
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
+    }
+    layoutWrapper->_device = *device;
+
+    if (vkCreateDescriptorSetLayout(
+            device->_logical_device_vk, &layoutInfo, NULL,
+            &layoutWrapper->_layout_vk) != VK_SUCCESS) {
+        free(layoutWrapper);
+        free(state);
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
+    }
+
+    VkDescriptorPoolSize poolSizes[3] = {
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS},
+    };
+
+    VkDescriptorPoolCreateInfo poolInfo = {0};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+    poolInfo.maxSets = 1;
+    poolInfo.poolSizeCount = 3;
+    poolInfo.pPoolSizes = poolSizes;
+
+    if (vkCreateDescriptorPool(device->_logical_device_vk, &poolInfo, NULL, &state->pool_vk) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(device->_logical_device_vk, layoutWrapper->_layout_vk, NULL);
+        free(layoutWrapper);
+        free(state);
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = state->pool_vk;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &layoutWrapper->_layout_vk;
+
+    if (vkAllocateDescriptorSets(device->_logical_device_vk, &allocInfo, &state->set_vk) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(device->_logical_device_vk, state->pool_vk, NULL);
+        vkDestroyDescriptorSetLayout(device->_logical_device_vk, layoutWrapper->_layout_vk, NULL);
+        free(layoutWrapper);
+        free(state);
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
+    }
+
+    state->layout = (spudgpu_descriptor_set_layout) layoutWrapper;
+    device->_bindless = state;
+    return SPUD_SUCCESS;
+}
+
+static SPUDRESULT spudgpuvulkan___bindless_alloc_index(
+        uint32_t *next_unused,
+        uint32_t *free_stack,
+        uint32_t *free_count,
+        uint32_t *out_index) {
+    if (*free_count > 0) {
+        *out_index = free_stack[--(*free_count)];
+        return SPUD_SUCCESS;
+    }
+    if (*next_unused >= SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS)
+        return SPUDRESULT_GPU_BINDLESS_OUT_OF_SLOTS;
+    *out_index = (*next_unused)++;
+    return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudgpu_get_bindless_capabilities(
+        spudgpu_device device,
+        spudgpu_bindless_capabilities *out_caps) {
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!out_caps) return SPUD_SUCCESS;
+
+    memset(out_caps, 0, sizeof(*out_caps));
+    // Reflects whether the global layout/pool/set actually got created —
+    // eagerly attempted once at device creation (see
+    // spudgpuvulkancontext.c), so this is normally already known-good by the
+    // time any caller queries it, not a fresh attempt every call.
+    out_caps->supported = spudgpuvulkan___ensure_bindless_state(device) == SPUD_SUCCESS;
+    if (!out_caps->supported) return SPUD_SUCCESS;
+    out_caps->max_sampled_images = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+    out_caps->max_storage_images = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+    out_caps->max_storage_buffers = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+    return SPUD_SUCCESS;
+}
+
+spudgpu_descriptor_set_layout spudgpu_get_bindless_descriptor_set_layout(spudgpu_device device) {
+    if (!device) return NULL;
+    if (spudgpuvulkan___ensure_bindless_state(device) != SPUD_SUCCESS) return NULL;
+    return device->_bindless->layout;
+}
+
+SPUDRESULT spudgpu_bindless_register_sampled_image(
+        spudgpu_device device,
+        spudgpu_image_view view,
+        uint32_t *out_index) {
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!view) return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
+    if (!out_index) return SPUD_SUCCESS;
+
+    SPUDRESULT sr = spudgpuvulkan___ensure_bindless_state(device);
+    if (sr != SPUD_SUCCESS) return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
+
+    spudgpu_bindless_state_vulkan *state = device->_bindless;
+    sr = spudgpuvulkan___bindless_alloc_index(
+            &state->sampled_image_next_unused,
+            state->sampled_image_free_stack,
+            &state->sampled_image_free_count,
+            out_index);
+    if (sr != SPUD_SUCCESS) return sr;
+
+    spudgpu_image_view_vulkan *vkView = (spudgpu_image_view_vulkan *) view;
+    VkDescriptorImageInfo imageInfo = {0};
+    imageInfo.imageView = vkView->_image_view_vk;
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write = {0};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = state->set_vk;
+    write.dstBinding = SPUDGPU_BINDLESS_SAMPLED_IMAGE_BINDING;
+    write.dstArrayElement = *out_index;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &imageInfo;
+
+    vkUpdateDescriptorSets(device->_logical_device_vk, 1, &write, 0, NULL);
+    return SPUD_SUCCESS;
+}
+
+void spudgpu_bindless_unregister_sampled_image(spudgpu_device device, uint32_t index) {
+    if (!device || !device->_bindless) return;
+    if (index == SPUDGPU_BINDLESS_INVALID_INDEX) return;
+    spudgpu_bindless_state_vulkan *state = device->_bindless;
+    if (state->sampled_image_free_count < SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS)
+        state->sampled_image_free_stack[state->sampled_image_free_count++] = index;
+}
+
+SPUDRESULT spudgpu_bindless_register_storage_image(
+        spudgpu_device device,
+        spudgpu_image_view view,
+        uint32_t *out_index) {
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!view) return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
+    if (!out_index) return SPUD_SUCCESS;
+
+    SPUDRESULT sr = spudgpuvulkan___ensure_bindless_state(device);
+    if (sr != SPUD_SUCCESS) return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
+
+    spudgpu_bindless_state_vulkan *state = device->_bindless;
+    sr = spudgpuvulkan___bindless_alloc_index(
+            &state->storage_image_next_unused,
+            state->storage_image_free_stack,
+            &state->storage_image_free_count,
+            out_index);
+    if (sr != SPUD_SUCCESS) return sr;
+
+    spudgpu_image_view_vulkan *vkView = (spudgpu_image_view_vulkan *) view;
+    VkDescriptorImageInfo imageInfo = {0};
+    imageInfo.imageView = vkView->_image_view_vk;
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkWriteDescriptorSet write = {0};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = state->set_vk;
+    write.dstBinding = SPUDGPU_BINDLESS_STORAGE_IMAGE_BINDING;
+    write.dstArrayElement = *out_index;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.pImageInfo = &imageInfo;
+
+    vkUpdateDescriptorSets(device->_logical_device_vk, 1, &write, 0, NULL);
+    return SPUD_SUCCESS;
+}
+
+void spudgpu_bindless_unregister_storage_image(spudgpu_device device, uint32_t index) {
+    if (!device || !device->_bindless) return;
+    if (index == SPUDGPU_BINDLESS_INVALID_INDEX) return;
+    spudgpu_bindless_state_vulkan *state = device->_bindless;
+    if (state->storage_image_free_count < SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS)
+        state->storage_image_free_stack[state->storage_image_free_count++] = index;
+}
+
+SPUDRESULT spudgpu_bindless_register_storage_buffer(
+        spudgpu_device device,
+        spudgpu_buffer_view view,
+        uint32_t *out_index) {
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!view) return SPUDRESULT_GPU_INVALID_BUFFER_VIEW;
+    if (!out_index) return SPUD_SUCCESS;
+
+    SPUDRESULT sr = spudgpuvulkan___ensure_bindless_state(device);
+    if (sr != SPUD_SUCCESS) return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
+
+    spudgpu_bindless_state_vulkan *state = device->_bindless;
+    sr = spudgpuvulkan___bindless_alloc_index(
+            &state->storage_buffer_next_unused,
+            state->storage_buffer_free_stack,
+            &state->storage_buffer_free_count,
+            out_index);
+    if (sr != SPUD_SUCCESS) return sr;
+
+    spudgpu_buffer_view_vulkan *vkView = (spudgpu_buffer_view_vulkan *) view;
+
+    // spudgpu_buffer_view has no owning spudgpu_buffer handle on its own —
+    // it only wraps a VkBufferView, which typed/texel storage buffers need
+    // but raw byte-range SSBO bindings (the common bindless case) don't.
+    // Bind the raw buffer range this view describes via its VkBuffer parent.
+    spudgpu_buffer_vulkan *vkBuffer =
+            (spudgpu_buffer_vulkan *) vkView->_desc.parent_buffer;
+
+    VkDescriptorBufferInfo bufferInfo = {0};
+    bufferInfo.buffer = vkBuffer->_buffer_vk;
+    bufferInfo.offset = vkView->_desc.offset_from_parent_buffer;
+    bufferInfo.range = vkView->_desc.size ? vkView->_desc.size : VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet write = {0};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = state->set_vk;
+    write.dstBinding = SPUDGPU_BINDLESS_STORAGE_BUFFER_BINDING;
+    write.dstArrayElement = *out_index;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &bufferInfo;
+
+    vkUpdateDescriptorSets(device->_logical_device_vk, 1, &write, 0, NULL);
+    return SPUD_SUCCESS;
+}
+
+void spudgpu_bindless_unregister_storage_buffer(spudgpu_device device, uint32_t index) {
+    if (!device || !device->_bindless) return;
+    if (index == SPUDGPU_BINDLESS_INVALID_INDEX) return;
+    spudgpu_bindless_state_vulkan *state = device->_bindless;
+    if (state->storage_buffer_free_count < SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS)
+        state->storage_buffer_free_stack[state->storage_buffer_free_count++] = index;
+}
 
 #if __cplusplus
 }

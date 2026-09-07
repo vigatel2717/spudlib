@@ -204,6 +204,13 @@ bool sfs_file_exists(const char *file_path) {
            !(attribs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+bool sfs_directory_exists(const char *dir_path) {
+    if (!dir_path || dir_path[0] == '\0') return false;
+    DWORD attribs = GetFileAttributesA(dir_path);
+    return attribs != INVALID_FILE_ATTRIBUTES &&
+           (attribs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 SPUDRESULT sfs_set_working_directory(const char *dir) {
     if (!dir || dir[0] == '\0') return SPUDRESULT_SFS_NULL_PATH;
     if (!SetCurrentDirectoryA(dir)) return SPUDRESULT_GENERAL_FAILURE;

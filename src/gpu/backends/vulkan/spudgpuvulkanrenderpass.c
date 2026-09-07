@@ -459,12 +459,150 @@ void spudgpu_cmd_begin_rendering(
     rendering_info.pStencilAttachment = has_stencil ? &stencil_info : NULL;
 
     vkCmdBeginRendering(cmd->_command_buffer_vk, &rendering_info);
+
+    // Recorded so spudgpu_cmd_clear_color_attachment/depth_attachment can
+    // take the vkCmdClearAttachments fast path below instead of nesting a
+    // redundant (and invalid) begin/end pair.
+    cmd->_rendering_active = true;
+    cmd->_bound_color_attachment_count = color_count;
+    for (uint32_t i = 0; i < color_count; ++i)
+        cmd->_bound_color_attachments[i] = color_infos[i].imageView;
+    cmd->_bound_depth_attachment_view = has_depth ? depth_info.imageView : VK_NULL_HANDLE;
 }
 
 void spudgpu_cmd_end_rendering(spudgpu_command_list cmd) {
     if (!cmd)
         return;
     vkCmdEndRendering(cmd->_command_buffer_vk);
+    cmd->_rendering_active = false;
+    cmd->_bound_color_attachment_count = 0;
+    cmd->_bound_depth_attachment_view = VK_NULL_HANDLE;
+}
+
+// ---------------------------------------------------------------------------
+// Public API: spudgpu_cmd_clear_color_attachment / spudgpu_cmd_clear_depth_attachment
+// Vulkan's own implementation (every backend implements this pair natively;
+// there is no shared cross-backend fallback): when a rendering instance is
+// already active and the target view is one of
+// its bound attachments, clear it in place via vkCmdClearAttachments instead
+// of opening a nested rendering instance — which vkCmdBeginRendering forbids
+// outright while another is active on the same command buffer, so this
+// isn't just an optimization, it's the only way to support that case at all.
+// Falls back to opening a throwaway rendering instance just for the clear
+// when no rendering instance is currently open.
+// ---------------------------------------------------------------------------
+
+void spudgpu_cmd_clear_color_attachment(
+    spudgpu_command_list cmd,
+    spudgpu_image_view attachment,
+    float r,
+    float g,
+    float b,
+    float a,
+    uint32_t width,
+    uint32_t height) {
+    if (!cmd || !attachment)
+        return;
+
+    spudgpu_image_view_vulkan *view = (spudgpu_image_view_vulkan *) attachment;
+
+    if (cmd->_rendering_active) {
+        for (uint32_t i = 0; i < cmd->_bound_color_attachment_count; ++i) {
+            if (cmd->_bound_color_attachments[i] != view->_image_view_vk)
+                continue;
+
+            VkClearAttachment clear_attachment = {0};
+            clear_attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            clear_attachment.colorAttachment = i;
+            clear_attachment.clearValue.color.float32[0] = r;
+            clear_attachment.clearValue.color.float32[1] = g;
+            clear_attachment.clearValue.color.float32[2] = b;
+            clear_attachment.clearValue.color.float32[3] = a;
+
+            VkClearRect clear_rect = {0};
+            clear_rect.rect.extent.width = width;
+            clear_rect.rect.extent.height = height;
+            clear_rect.layerCount = 1;
+
+            vkCmdClearAttachments(cmd->_command_buffer_vk, 1, &clear_attachment, 1, &clear_rect);
+            return;
+        }
+        // Not one of the currently-bound attachments — this function has no
+        // way to end/resume the active rendering instance to reach it, and
+        // nesting a new one is invalid. No-op: callers should only clear
+        // this way against an attachment they are currently rendering into,
+        // or before any rendering instance is open at all (handled below).
+        return;
+    }
+
+    spudgpu_color_attachment_desc color = {0};
+    color.image_view = attachment;
+    color.load_op = SPUDGPU_LOAD_OP_CLEAR;
+    color.store_op = SPUDGPU_STORE_OP_STORE;
+    color.clear_color[0] = r;
+    color.clear_color[1] = g;
+    color.clear_color[2] = b;
+    color.clear_color[3] = a;
+
+    spudgpu_rendering_begin_desc desc = {0};
+    desc.color_attachments[0] = color;
+    desc.color_attachment_count = 1;
+    desc.width = width;
+    desc.height = height;
+
+    spudgpu_cmd_begin_rendering(cmd, &desc);
+    spudgpu_cmd_end_rendering(cmd);
+}
+
+void spudgpu_cmd_clear_depth_attachment(
+    spudgpu_command_list cmd,
+    spudgpu_image_view attachment,
+    bool clear_depth,
+    bool clear_stencil,
+    float depth,
+    uint32_t stencil,
+    uint32_t width,
+    uint32_t height) {
+    if (!cmd || !attachment)
+        return;
+    if (!clear_depth && !clear_stencil)
+        return;
+
+    spudgpu_image_view_vulkan *view = (spudgpu_image_view_vulkan *) attachment;
+
+    if (cmd->_rendering_active) {
+        if (cmd->_bound_depth_attachment_view == view->_image_view_vk) {
+            VkClearAttachment clear_attachment = {0};
+            clear_attachment.aspectMask =
+                (clear_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
+                (clear_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+            clear_attachment.clearValue.depthStencil.depth = depth;
+            clear_attachment.clearValue.depthStencil.stencil = stencil;
+
+            VkClearRect clear_rect = {0};
+            clear_rect.rect.extent.width = width;
+            clear_rect.rect.extent.height = height;
+            clear_rect.layerCount = 1;
+
+            vkCmdClearAttachments(cmd->_command_buffer_vk, 1, &clear_attachment, 1, &clear_rect);
+        }
+        // Bound depth view doesn't match — same no-op rationale as color above.
+        return;
+    }
+
+    spudgpu_rendering_begin_desc desc = {0};
+    desc.depth_attachment.image_view = attachment;
+    desc.depth_attachment.depth_load_op = clear_depth ? SPUDGPU_LOAD_OP_CLEAR : SPUDGPU_LOAD_OP_LOAD;
+    desc.depth_attachment.depth_store_op = SPUDGPU_STORE_OP_STORE;
+    desc.depth_attachment.stencil_load_op = clear_stencil ? SPUDGPU_LOAD_OP_CLEAR : SPUDGPU_LOAD_OP_LOAD;
+    desc.depth_attachment.stencil_store_op = SPUDGPU_STORE_OP_STORE;
+    desc.depth_attachment.clear_depth = depth;
+    desc.depth_attachment.clear_stencil = stencil;
+    desc.width = width;
+    desc.height = height;
+
+    spudgpu_cmd_begin_rendering(cmd, &desc);
+    spudgpu_cmd_end_rendering(cmd);
 }
 
 #if __cplusplus

@@ -9,6 +9,5 @@ IndentWidth: 4
 UseTab: ForIndentation
 
 BinPackParameters: AlwaysOnePerLine
-BreakAfterOpenBracketFunction: true
-BreakBeforeCloseBracketFunction: false
+AlignAfterOpenBracket: AlwaysBreak
 ColumnLimit: 160

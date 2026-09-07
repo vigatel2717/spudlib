@@ -61,3 +61,7 @@ lib/
 
 # Rust binding target folder
 target/
+
+# Swift binding build folder
+bindings/swift/.build/
+bindings/swift/.swiftpm/

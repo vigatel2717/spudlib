@@ -225,6 +225,19 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     vk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     vk12Features.bufferDeviceAddress = VK_TRUE;
 
+    // Bindless / descriptor indexing (see spudgpuvulkandescriptors.c's
+    // bindless section) — core in 1.2, no extension needed.
+    vk12Features.descriptorIndexing = VK_TRUE;
+    vk12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    vk12Features.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+    vk12Features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+    vk12Features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    vk12Features.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+    vk12Features.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    vk12Features.descriptorBindingPartiallyBound = VK_TRUE;
+    vk12Features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    vk12Features.runtimeDescriptorArray = VK_TRUE;
+
     VkPhysicalDeviceVulkan13Features vk13Features = {0};
     vk13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     vk13Features.pNext = &vk12Features;
@@ -441,6 +454,7 @@ SPUDRESULT spudgpu_enumerate_devices(
 
     for (size_t i = 0; i < deviceCount; i++) {
         spudgpu_device_vulkan *pDeviceVulkan = malloc(sizeof(spudgpu_device_vulkan));
+        pDeviceVulkan->_bindless = NULL;
         pDeviceVulkan->_instance = *instance;
         pDeviceVulkan->_physical_device_vk = physicalDevices[i];
         pDeviceVulkan->_logical_device_vk = spudgpuvulkan___initialize_vk_logical_device_internal(pDeviceVulkan);
@@ -449,6 +463,11 @@ SPUDRESULT spudgpu_enumerate_devices(
         vkGetPhysicalDeviceProperties(pDeviceVulkan->_physical_device_vk, &pDeviceVulkan->_properties_vk);
         vkGetPhysicalDeviceFeatures(pDeviceVulkan->_physical_device_vk, &pDeviceVulkan->_features_vk);
         spudgpuvulkan___internal_make_device_properties(pDeviceVulkan);
+
+        // Must happen before this device is ever copied by value (every
+        // other Vulkan-backend struct embeds spudgpu_device_vulkan as a
+        // snapshot) — see spudgpuvulkandescriptors.c's bindless section.
+        spudgpuvulkan___ensure_bindless_state(pDeviceVulkan);
 
         (*ppOutputDevices)[i] = (spudgpu_device) pDeviceVulkan;
 

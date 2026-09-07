@@ -4,7 +4,7 @@
   "configurePresets": [
     {
       "name": "my-spudlib-windows-vulkan",
-      "inherits": "windows-vulkan",
+      "inherits": "spudlib-windows-vulkan",
       "cacheVariables": {
         "Vulkan_INCLUDE_DIR": "C:/VulkanSDK/1.4.341.1/Include",
         "Vulkan_LIBRARY": "C:/VulkanSDK/1.4.341.1/Lib/vulkan-1.lib",
@@ -14,7 +14,7 @@
     },
     {
       "name": "my-spudlib-windows-d3d12",
-      "inherits": "windows-d3d12",
+      "inherits": "spudlib-windows-d3d12",
       "cacheVariables": {
         "Vulkan_INCLUDE_DIR": "C:/VulkanSDK/1.4.341.1/Include",
         "Vulkan_LIBRARY": "C:/VulkanSDK/1.4.341.1/Lib/vulkan-1.lib",

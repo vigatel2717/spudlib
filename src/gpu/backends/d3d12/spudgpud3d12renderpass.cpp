@@ -436,6 +436,92 @@ void spudgpu_cmd_end_rendering(spudgpu_command_list cmd) {
 	cmd->_d3d_cmd_list->EndRenderPass();
 }
 
+// spudgpu_cmd_clear_color_attachment / spudgpu_cmd_clear_depth_attachment —
+// D3D12's own implementation (every backend implements this pair natively;
+// there is no shared cross-backend fallback). ClearRenderTargetView/
+// ClearDepthStencilView need no active render pass at all, so a standalone
+// clear here skips BeginRenderPass/EndRenderPass entirely instead of paying
+// for a full (if transient) render-pass setup just to clear one view.
+void spudgpu_cmd_clear_color_attachment(
+    spudgpu_command_list cmd,
+    spudgpu_image_view attachment,
+    float r,
+    float g,
+    float b,
+    float a,
+    uint32_t width,
+    uint32_t height) {
+	(void)width;
+	(void)height; // ClearRenderTargetView clears the view's full extent.
+	if (!cmd || !attachment)
+		return;
+
+	spudgpu_image_view_d3d12 *view = (spudgpu_image_view_d3d12 *)attachment;
+	ID3D12Device *device = view->_image->_device->_d3d_device.Get();
+	ID3D12GraphicsCommandList *cmdList = cmd->_d3d_cmd_list.Get();
+
+	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+	heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+	heapDesc.NumDescriptors = 1;
+	heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
+	if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap))))
+		return;
+
+	D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	device->CreateRenderTargetView(
+	    view->_image->_d3d_resource.Get(), &view->_d3d_view_desc._rtv, rtvHandle);
+
+	float clearColor[4] = {r, g, b, a};
+	cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+	// rtvHeap released here — safe: ClearRenderTargetView records the CPU
+	// descriptor's contents by value, same as BeginRenderPass above.
+}
+
+void spudgpu_cmd_clear_depth_attachment(
+    spudgpu_command_list cmd,
+    spudgpu_image_view attachment,
+    bool clear_depth,
+    bool clear_stencil,
+    float depth,
+    uint32_t stencil,
+    uint32_t width,
+    uint32_t height) {
+	(void)width;
+	(void)height; // ClearDepthStencilView clears the view's full extent.
+	if (!cmd || !attachment)
+		return;
+	if (!clear_depth && !clear_stencil)
+		return;
+
+	spudgpu_image_view_d3d12 *view = (spudgpu_image_view_d3d12 *)attachment;
+	ID3D12Device *device = view->_image->_device->_d3d_device.Get();
+	ID3D12GraphicsCommandList *cmdList = cmd->_d3d_cmd_list.Get();
+
+	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+	heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+	heapDesc.NumDescriptors = 1;
+	heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsvHeap;
+	if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&dsvHeap))))
+		return;
+
+	D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = dsvHeap->GetCPUDescriptorHandleForHeapStart();
+	device->CreateDepthStencilView(
+	    view->_image->_d3d_resource.Get(), &view->_d3d_view_desc._dsv, dsvHandle);
+
+	UINT flags = 0;
+	if (clear_depth)
+		flags |= D3D12_CLEAR_FLAG_DEPTH;
+	if (clear_stencil)
+		flags |= D3D12_CLEAR_FLAG_STENCIL;
+
+	cmdList->ClearDepthStencilView(
+	    dsvHandle, (D3D12_CLEAR_FLAGS)flags, depth, (UINT8)stencil, 0, nullptr);
+}
+
 } // extern "C"
 
 #endif // SPUDGPU_COMPILE_D3D12_API

@@ -11,13 +11,7 @@ static SPUDRESULT spudgpu_d3d12_create_resource_desc_from_image(
 	if (!out_d3d_resource_desc)
 		return SPUD_SUCCESS;
 	D3D12_RESOURCE_FLAGS d3dResourceFlags =
-	    spudgpu_d3d12_get_resource_flags_from_image_flags(desc->image_flags);
-	if (desc->usage & SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT)
-		d3dResourceFlags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-	if (desc->usage & SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)
-		d3dResourceFlags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-	if (desc->usage & SPUDGPU_IMAGE_USAGE_STORAGE)
-		d3dResourceFlags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	    spudgpu_d3d12_get_image_resource_flags(desc->usage, desc->image_flags);
 	DXGI_FORMAT dxgiFmt = spudgpu_d3d12_get_dxgi_format(desc->format);
 	CD3DX12_RESOURCE_DESC result;
 	switch (desc->type) {
@@ -83,6 +77,8 @@ SPUDRESULT spudgpu_create_image(
 	D3D12_HEAP_PROPERTIES d3dHeapProperties =
 	    spudgpu_d3d12_get_heap_properties_from_memory_flags(desc->memory_flags);
 	D3D12_HEAP_FLAGS d3dHeapFlags = spudgpu_d3d12_get_heap_flags(desc->heap_flags);
+	if (desc->usage & SPUDGPU_IMAGE_USAGE_PRESENTABLE)
+		d3dHeapFlags |= D3D12_HEAP_FLAG_ALLOW_DISPLAY;
 	D3D12_RESOURCE_STATES d3dInitialState =
 	    spudgpu_d3d12_get_initial_image_state(desc->usage);
 

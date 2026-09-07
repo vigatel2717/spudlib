@@ -7,6 +7,7 @@
 
 #include "spudcore.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -170,6 +171,13 @@ typedef struct spudgpu_command_queue_t *spudgpu_command_queue;
 typedef struct spudgpu_swap_chain_t *spudgpu_swap_chain;
 typedef struct spudgpu_shader_module_t *spudgpu_shader_module;
 typedef struct spudgpu_compute_pipeline_t *spudgpu_compute_pipeline;
+typedef struct spudgpu_surface_t *spudgpu_surface;
+typedef struct spudgpu_semaphore_t *spudgpu_semaphore;
+typedef struct spudgpu_fence_t *spudgpu_fence;
+typedef struct spudgpu_descriptor_set_layout_t *spudgpu_descriptor_set_layout;
+typedef struct spudgpu_descriptor_pool_t *spudgpu_descriptor_pool;
+typedef struct spudgpu_descriptor_set_t *spudgpu_descriptor_set;
+typedef struct spudgpu_pipeline_layout_t *spudgpu_pipeline_layout;
 
 /**
  * @brief Handle representing the active graphics API backend.
@@ -323,6 +331,33 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
     spudgpu_command_list *cmd_lists,
     uint32_t cmd_list_count,
     spudgpu_swap_chain swap_chain);
+typedef struct spudgpu_submit_desc {
+	spudgpu_command_list *cmd_lists;
+	uint32_t cmd_list_count;
+
+	// GPU-GPU Sync
+	spudgpu_semaphore *wait_semaphores;
+	uint32_t wait_semaphore_count;
+	// One SPUDGPU_PIPELINE_STAGE mask per wait semaphore — required when
+	// wait_semaphore_count > 0.
+	uint32_t *wait_stage_masks;
+	spudgpu_semaphore *signal_semaphores;
+	uint32_t signal_semaphore_count;
+
+	// CPU-GPU Sync (Optional, can be NULL)
+	spudgpu_fence signal_fence;
+} spudgpu_submit_desc;
+
+void spudgpu_queue_submit(
+    spudgpu_command_queue queue,
+    const spudgpu_submit_desc *desc);
+
+/**
+ * @brief Blocks the calling CPU thread until all pending work on the queue has
+ * completed. Equivalent to vkQueueWaitIdle. Prefer fence-based synchronization
+ * in hot paths.
+ */
+void spudgpu_queue_wait_idle(spudgpu_command_queue queue);
 
 typedef struct spudgpu_command_allocator_desc {
 	SPUDGPU_COMMAND_LIST_TYPE type;
@@ -369,6 +404,81 @@ SPUDRESULT spudgpu_create_command_list(
  * @param[in] cmd The command list to destroy.
  */
 void spudgpu_destroy_command_list(spudgpu_command_list cmd);
+/**
+ * @brief Begins recording graphics or compute infrastructure commands.
+ * * Resets the command buffer's internal state tracking and sets it to a
+ * recording mode.
+ * @param[in] cmd Target command list instance to open.
+ * * @warning A command list must not be simultaneously recorded across multiple
+ * CPU threads.
+ */
+void spudgpu_begin_command_list(spudgpu_command_list cmd);
+
+/**
+ * @brief Finalizes recording for the specified command list.
+ * * Closes the command stream, compiling it into an immutable hardware
+ * execution package ready for queue submission.
+ * @param[in] cmd Target command list instance to close.
+ */
+void spudgpu_end_command_list(spudgpu_command_list cmd);
+
+typedef uint32_t SPUDGPU_FENCE_FLAGS;
+enum { SPUDGPU_FENCE_FLAG_NONE = 0, SPUDGPU_FENCE_FLAG_SHARED = 1 << 0 };
+
+/**
+ * @brief Creates a fence primitive used to synchronize the CPU with GPU
+ * progress.
+ * @param[in] device The GPU Device to own the fence.
+ * @param[in] signaled_on_creation If true, the fence starts in a signaled state.
+ * @param[out] out_fence The new GPU Fence to be created.
+ * @return SPUD_SUCCESS; or an error code.
+ */
+SPUDRESULT spudgpu_create_fence(
+    spudgpu_device device,
+    SPUDGPU_FENCE_FLAGS flags,
+    bool signaled_on_creation,
+    spudgpu_fence *out_fence);
+
+/**
+ * @brief Destroys a fence primitive.
+ */
+void spudgpu_destroy_fence(spudgpu_fence fence);
+
+uint64_t spudgpu_get_fence_value(spudgpu_fence fence);
+SPUDRESULT spudgpu_signal_fence(
+    spudgpu_device device,
+    spudgpu_fence fence,
+    uint64_t value);
+
+/**
+ * @brief Blocks the calling CPU thread until one or all specified fences are
+ * signaled.
+ * @param[in] timeout_ns Timeout duration in nanoseconds (use UINT64_MAX for
+ * infinite).
+ * @param[in] wait_all If true, waits for all fences; if false, waits for at
+ * least one.
+ */
+SPUDRESULT spudgpu_wait_for_fences(
+    spudgpu_device device,
+    spudgpu_fence *fences,
+    uint32_t fence_count,
+    bool wait_all,
+    uint64_t timeout_ns);
+
+/**
+ * @brief Creates a binary semaphore for GPU-GPU synchronization.
+ * @param[in] device The GPU Device to own the semaphore.
+ * @param[out] out_sem The new GPU semaphore.
+ * @return SPUD_SUCCESS; or an error code.
+ */
+SPUDRESULT spudgpu_create_semaphore(
+    spudgpu_device device,
+    spudgpu_semaphore *out_semaphore);
+
+/**
+ * @brief Destroys a semaphore primitive.
+ */
+void spudgpu_destroy_semaphore(spudgpu_semaphore semaphore);
 
 /*
  * Static GPU Data = DEVICE_LOCAL
@@ -483,34 +593,57 @@ enum {
 
 	/// Buffer can be used as the destination of a copy operation (e.g. a
 	/// readback buffer written by spudgpu_cmd_copy_image_to_buffer).
-	SPUDGPU_BUFFER_USAGE_TRANSFER_DST = 1 << 5
+	SPUDGPU_BUFFER_USAGE_TRANSFER_DST = 1 << 5,
+
+	/// Buffer holds a built raytracing acceleration structure (BLAS/TLAS).
+	/// This is a binding-compatibility fact like the other usage bits, not a
+	/// resource-creation flag.
+	SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE = 1 << 6
 };
 
+/**
+ * @brief Bitmask of heap-allocation behaviors, orthogonal to how the
+ * resource will be bound (@see SPUDGPU_BUFFER_USAGE / SPUDGPU_IMAGE_USAGE).
+ */
 typedef uint32_t SPUDGPU_HEAP_FLAGS;
 enum {
-	SPUDGPU_HEAP_FLAG_NONE                 = 0,
-	SPUDGPU_HEAP_FLAG_SHARED               = 0x1,
-	SPUDGPU_HEAP_FLAG_ALLOW_DISPLAY        = 0x4,
+	SPUDGPU_HEAP_FLAG_NONE   = 0,
+
+	/// Allocation can be shared across processes/APIs (cross-adapter/external
+	/// memory interop).
+	SPUDGPU_HEAP_FLAG_SHARED = 0x1,
+
+	/** * @brief Opts the heap into Shader Model 6.6 atomic operations.
+	 * * D3D12-specific: some D3D12 memory pools require this explicit opt-in
+	 * for SM6.6 atomics to be valid. Vulkan has no per-heap equivalent —
+	 * shader atomics on storage buffers/images are core functionality gated
+	 * only by shader capability, not resource creation — so this flag is a
+	 * no-op on the Vulkan and Metal backends.
+	 */
 	SPUDGPU_HEAP_FLAG_ALLOW_SHADER_ATOMICS = 0x400,
+
+	/// Skip zero-initializing the allocation (perf hint; contents are
+	/// undefined until written).
 	SPUDGPU_HEAP_FLAG_NOT_ZEROED           = 0x1000,
+
+	/// Allocate without making the heap resident; caller manages residency
+	/// explicitly.
 	SPUDGPU_HEAP_FLAG_CREATE_NOT_RESIDENT  = 0x800
 };
 
-typedef uint32_t SPUDGPU_BUFFER_FLAGS;
+/**
+ * @brief Bitmask of resource-level access flags orthogonal to both binding
+ * usage and heap-allocation behavior. Shared by spudgpu_buffer_desc and
+ * spudgpu_image_desc since the concepts it holds apply identically to both
+ * resource kinds.
+ */
+typedef uint32_t SPUDGPU_RESOURCE_FLAGS;
 enum {
-	SPUDGPU_BUFFER_FLAG_NONE                              = 0,
-	SPUDGPU_BUFFER_FLAG_ALLOW_UNORDERED_ACCESS            = 1 << 0,
-	SPUDGPU_BUFFER_FLAG_ALLOW_SIMULTANEOUS_ACCESS         = 1 << 1,
-	SPUDGPU_BUFFER_FLAG_RAYTRACING_ACCELERATION_STRUCTURE = 1 << 2,
-};
+	SPUDGPU_RESOURCE_FLAG_NONE = 0,
 
-typedef uint32_t SPUDGPU_IMAGE_FLAGS;
-enum {
-	SPUDGPU_IMAGE_FLAG_NONE                      = 0,
-	SPUDGPU_IMAGE_FLAG_ALLOW_UNORDERED_ACCESS    = 1 << 0,
-	SPUDGPU_IMAGE_FLAG_ALLOW_SIMULTANEOUS_ACCESS = 1 << 1,
-	SPUDGPU_IMAGE_FLAG_ALLOW_RENDER_TARGET       = 1 << 2,
-	SPUDGPU_IMAGE_FLAG_ALLOW_DEPTH_STENCIL       = 1 << 3,
+	/// Allows the resource to be accessed concurrently from multiple command
+	/// queues without an explicit ownership transfer/barrier.
+	SPUDGPU_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS = 1 << 0
 };
 
 ///@}
@@ -531,7 +664,9 @@ typedef struct spudgpu_buffer_desc {
 	SPUDGPU_MEMORY_FLAGS memory_flags;
 
 	SPUDGPU_HEAP_FLAGS heap_flags;
-	SPUDGPU_BUFFER_FLAGS buffer_flags;
+
+	/// @see SPUDGPU_RESOURCE_FLAGS
+	SPUDGPU_RESOURCE_FLAGS buffer_flags;
 
 	/** @brief Hardware memory address.
 	 * @note This will remain '0' until after the gpu_buffer is created.
@@ -632,7 +767,7 @@ SPUDRESULT spudgpu_create_buffer_view(
  * or data retention of the underlying parent GPU buffer.
  * @param[in] buffer The target GPU buffer view to destroy.
  */
-void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer);
+void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer_view);
 
 /**
  * @brief Retrieves the immutable configuration descriptor of an active buffer
@@ -738,12 +873,46 @@ enum {
 	SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT = 1 << 2,
 	SPUDGPU_IMAGE_USAGE_STORAGE                  = 1 << 3,
 	SPUDGPU_IMAGE_USAGE_TRANSFER_SRC             = 1 << 4,
-	SPUDGPU_IMAGE_USAGE_TRANSFER_DST             = 1 << 5
+	SPUDGPU_IMAGE_USAGE_TRANSFER_DST             = 1 << 5,
+
+	/// Image is compatible with being presented to a swap chain surface.
+	/// Reserved for future callers creating a presentable image outside of
+	/// spudgpu_swap_chain's own internally-owned backbuffers — no current
+	/// caller in this workspace sets it.
+	SPUDGPU_IMAGE_USAGE_PRESENTABLE               = 1 << 6,
+
+	/** * @brief Marks a render-pass attachment as transient: written and
+	 * read only within the render pass that produces it, never sampled,
+	 * read back, or persisted afterward.
+	 *
+	 * On tile-based GPUs (all Metal devices, and mobile Vulkan hardware such
+	 * as Mali/Adreno) this lets the implementation back the image with
+	 * on-chip tile memory instead of a real allocation, entirely skipping
+	 * device-memory traffic — the standard technique for a multisampled
+	 * render target that only exists to be resolved, or a deferred-shading
+	 * G-buffer read back via programmable blending within the same pass.
+	 * Maps to Metal's `MTLStorageModeMemoryless` and Vulkan's
+	 * `VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT` +
+	 * `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT`; D3D12 has no equivalent and
+	 * treats it as a no-op hint.
+	 *
+	 * Must be combined with `SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT` and/or
+	 * `SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT`, and must not be
+	 * combined with `SPUDGPU_IMAGE_USAGE_SAMPLED`, `_STORAGE`,
+	 * `_TRANSFER_SRC`, `_TRANSFER_DST`, or `_PRESENTABLE`, nor with
+	 * `SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE` — all of those require the image
+	 * to be readable/writable outside the render pass that produced it,
+	 * which a transient attachment structurally cannot be. Enforced at
+	 * creation on every backend, not just the ones that act on it, so a
+	 * desc that's invalid here doesn't silently behave differently
+	 * depending on which backend happens to be compiled in.
+	 */
+	SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT      = 1 << 7
 };
 
 typedef struct SPUDGPU_DEPTH_STENCIL_VALUE {
-	float Depth;
-	uint8_t Stencil;
+	float depth;
+	uint8_t stencil;
 } SPUDGPU_DEPTH_STENCIL_VALUE;
 
 typedef struct SPUDGPU_CLEAR_VALUE {
@@ -773,7 +942,9 @@ typedef struct spudgpu_image_desc {
 	SPUDGPU_MEMORY_FLAGS memory_flags;
 
 	SPUDGPU_HEAP_FLAGS heap_flags;
-	SPUDGPU_IMAGE_FLAGS image_flags;
+
+	/// @see SPUDGPU_RESOURCE_FLAGS
+	SPUDGPU_RESOURCE_FLAGS image_flags;
 
 	SPUDGPU_CLEAR_VALUE clear_value;
 
@@ -953,210 +1124,157 @@ SPUDRESULT spudgpu_get_image_view_desc(
     spudgpu_image_view image_view,
     spudgpu_image_view_desc *out_desc);
 
-/**
- * @brief Begins recording graphics or compute infrastructure commands.
- * * Resets the command buffer's internal state tracking and sets it to a
- * recording mode.
- * @param[in] cmd Target command list instance to open.
- * * @warning A command list must not be simultaneously recorded across multiple
- * CPU threads.
- */
-void spudgpu_begin_command_list(spudgpu_command_list cmd);
+// ============================================================================
+//  Image Layout
+//  Maps to: VkImageLayout (Vulkan)
+// ============================================================================
+
+typedef uint32_t SPUDGPU_IMAGE_LAYOUT;
+
+enum {
+	SPUDGPU_IMAGE_LAYOUT_UNDEFINED                        = 0,
+	SPUDGPU_IMAGE_LAYOUT_GENERAL                          = 1,
+	SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL         = 2,
+	SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL = 3,
+	SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY                 = 4,
+	SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC                     = 5,
+	SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST                     = 6,
+	SPUDGPU_IMAGE_LAYOUT_PRESENT_SRC                      = 7,
+};
+
+// ============================================================================
+//  Image Barrier
+//  Maps to: vkCmdPipelineBarrier (Vulkan)
+// ============================================================================
 
 /**
- * @brief Finalizes recording for the specified command list.
- * * Closes the command stream, compiling it into an immutable hardware
- * execution package ready for queue submission.
- * @param[in] cmd Target command list instance to close.
+ * @brief Transitions an image from one layout to another, inserting the
+ * necessary pipeline barrier so dependent stages wait correctly.
+ *
+ * Call before spudgpu_cmd_begin_rendering to move a swap chain image from
+ * UNDEFINED/PRESENT_SRC to COLOR_ATTACHMENT_OPTIMAL, and after
+ * spudgpu_cmd_end_rendering to move it back to PRESENT_SRC.
+ *
+ * @param[in] cmd          The active recording command list.
+ * @param[in] image        The image whose layout is being changed.
+ * @param[in] old_layout   The current layout of the image.
+ * @param[in] new_layout   The target layout to transition into.
  */
-void spudgpu_end_command_list(spudgpu_command_list cmd);
-
-/**
- * @brief Defines the normalized window transformation dimensions for rendering
- * output coordinates.
- * * Maps normalized device coordinates (NDC) ranging [-1, 1] horizontally and
- * vertically directly into a target render target screen pixel domain.
- */
-typedef struct SPUDGPU_VIEWPORT {
-	/// X-coordinate of the upper-left corner of the viewport region in pixels.
-	float x;
-
-	/// Y-coordinate of the upper-left corner of the viewport region in pixels.
-	float y;
-
-	/// Total width of the targeted viewport frame in pixels.
-	float width;
-
-	/// Total height of the targeted viewport frame in pixels.
-	float height;
-
-	/// Minimum depth boundary slice. Usually maps to `0.0f` (near clipping
-	/// plane).
-	float minDepth;
-
-	/// Maximum depth boundary slice. Usually maps to `1.0f` (far clipping
-	/// plane).
-	float maxDepth;
-} SPUDGPU_VIEWPORT;
-
-/**
- * @brief Binds an array of dynamic viewport transforms to the pipeline state.
- * * @param[in] cmd             The active recording command context.
- * @param[in] first_viewport  The zero-based index of the first viewport slot to
- * configure.
- * @param[in] viewport_count  Total number of structural viewports to bind from
- * the array.
- * @param[in] viewports       Pointer to a contiguous array of viewport layout
- * definitions.
- */
-void spudgpu_set_viewports(
+void spudgpu_cmd_image_barrier(
     spudgpu_command_list cmd,
-    uint32_t first_viewport,
-    uint32_t viewport_count,
-    const SPUDGPU_VIEWPORT *viewports);
+    spudgpu_image image,
+    SPUDGPU_IMAGE_LAYOUT old_layout,
+    SPUDGPU_IMAGE_LAYOUT new_layout);
 
 /**
- * @brief Defines a dynamic screen space bounding box for rasterization
- * discarding.
- * * Pixels falling outside the scissor rectangle bounds are completely dropped
- * by the rasterizer, optimizing rendering execution for partial UI elements or
- * UI windows.
+ * @brief Variant that takes a raw image view instead of a spudgpu_image.
+ *
+ * Useful for swap chain images, which are not created through
+ * spudgpu_create_image and so don't have a spudgpu_image handle. The image view
+ * must have been created from the target image (e.g. a swap chain image view).
+ *
+ * @param[in] cmd          The active recording command list.
+ * @param[in] image_view   An image view whose parent image will be
+ * transitioned.
+ * @param[in] old_layout   The current layout of the image.
+ * @param[in] new_layout   The target layout to transition into.
  */
-typedef struct SPUDGPU_SCISSOR_RECT {
-	/// Leftmost X coordinate of the scissor bounding box in pixels.
-	float x;
-
-	/// Topmost Y coordinate of the scissor bounding box in pixels.
-	float y;
-
-	/// Total horizontal layout width of the box in pixels.
-	float width;
-
-	/// Total vertical layout height of the box in pixels.
-	float height;
-} SPUDGPU_SCISSOR_RECT;
-
-/**
- * @brief Binds an array of dynamic scissor clip boundaries to the graphics
- * pipeline.
- * * @param[in] cmd                 The active recording command context.
- * @param[in] first_scissor_rect  The zero-based index of the first scissor slot
- * to configure.
- * @param[in] scissor_rect_count  Total number of scissor regions to update.
- * @param[in] scissor_rects       Pointer to an array of scissor box dimensions.
- */
-void spudgpu_set_scissor_rects(
+void spudgpu_cmd_image_barrier_view(
     spudgpu_command_list cmd,
-    uint32_t first_scissor_rect,
-    uint32_t scissor_rect_count,
-    const SPUDGPU_SCISSOR_RECT *scissor_rects);
+    spudgpu_image_view image_view,
+    SPUDGPU_IMAGE_LAYOUT old_layout,
+    SPUDGPU_IMAGE_LAYOUT new_layout);
 
 /**
- * @brief Binds a contiguous array of vertex buffers to target input assembler
- * slots.
- * * @param[in] cmd          The active recording command context.
- * @param[in] start_slot   The starting hardware vertex buffer input slot index
- * to update.
- * @param[in] view_count   Total number of vertex buffer views to map.
- * @param[in] buffer_views Pointer to (0, 1, or an array of) active GPU buffer
- * views containing vertex data.
+ * @brief Transitions only a specific mip/layer subresource range of an image,
+ * leaving the rest of the image's subresources in whatever layout they were
+ * already in.
+ *
+ * Required whenever different subresources of the same image must be in
+ * different layouts at once — most notably mip chain generation via
+ * spudgpu_cmd_blit_image, where mip level N must be SPUDGPU_IMAGE_LAYOUT_
+ * TRANSFER_SRC while mip level N+1 is simultaneously SPUDGPU_IMAGE_LAYOUT_
+ * TRANSFER_DST. spudgpu_cmd_image_barrier cannot express this since it
+ * transitions the whole image at once.
+ *
+ * @param[in] cmd        The active recording command list.
+ * @param[in] image      The image whose subresource range is being changed.
+ * @param[in] range      The mip levels and array layers to transition.
+ * @param[in] old_layout The current layout of the given subresource range.
+ * @param[in] new_layout The target layout to transition into.
  */
-void spudgpu_set_vertex_buffers(
+void spudgpu_cmd_image_barrier_subresource(
     spudgpu_command_list cmd,
-    uint32_t start_slot,
-    uint32_t view_count,
-    spudgpu_buffer_view *buffer_views);
+    spudgpu_image image,
+    const spudgpu_image_view_desc_subresource_range *range,
+    SPUDGPU_IMAGE_LAYOUT old_layout,
+    SPUDGPU_IMAGE_LAYOUT new_layout);
+/**
+ * @brief Defines the current state/layout of a resource (useful for pipeline
+ * barriers).
+ */
+typedef uint32_t SPUDGPU_RESOURCE_STATE;
+enum {
+	SPUDGPU_RESOURCE_STATE_COMMON = 0,
+	SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER,
+	SPUDGPU_RESOURCE_STATE_INDEX_BUFFER,
+	SPUDGPU_RESOURCE_STATE_RENDER_TARGET,
+	SPUDGPU_RESOURCE_STATE_DEPTH_WRITE,
+	SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE,  // Read-only in shader
+	SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, // Read/Write (SSBO/UAV)
+	SPUDGPU_RESOURCE_STATE_PRESENT
+};
 
 /**
- * @brief Binds the index buffer used to drive lookups for indexed draw calls.
- * * @param[in] cmd         The active recording command context.
- * @param[in] buffer_view The active GPU buffer view containing index data.
+ * @brief Pipeline stage flags used in semaphore wait masks on queue submission.
+ *
+ * Values are bit-compatible with VkPipelineStageFlagBits and may be OR'd
+ * together. One mask must be provided per wait semaphore in
+ * spudgpu_submit_desc.
  */
-void spudgpu_set_index_buffer(
-    spudgpu_command_list cmd,
-    spudgpu_buffer_view buffer_view);
+typedef uint32_t SPUDGPU_PIPELINE_STAGE;
+enum {
+	SPUDGPU_PIPELINE_STAGE_TOP_OF_PIPE             = 0x00000001,
+	SPUDGPU_PIPELINE_STAGE_DRAW_INDIRECT           = 0x00000002,
+	SPUDGPU_PIPELINE_STAGE_VERTEX_INPUT            = 0x00000004,
+	SPUDGPU_PIPELINE_STAGE_VERTEX_SHADER           = 0x00000008,
+	SPUDGPU_PIPELINE_STAGE_TESSELLATION_CONTROL    = 0x00000010,
+	SPUDGPU_PIPELINE_STAGE_TESSELLATION_EVALUATION = 0x00000020,
+	SPUDGPU_PIPELINE_STAGE_GEOMETRY_SHADER         = 0x00000040,
+	SPUDGPU_PIPELINE_STAGE_FRAGMENT_SHADER         = 0x00000080,
+	SPUDGPU_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS    = 0x00000100,
+	SPUDGPU_PIPELINE_STAGE_LATE_FRAGMENT_TESTS     = 0x00000200,
+	SPUDGPU_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT = 0x00000400,
+	SPUDGPU_PIPELINE_STAGE_COMPUTE_SHADER          = 0x00000800,
+	SPUDGPU_PIPELINE_STAGE_TRANSFER                = 0x00001000,
+	SPUDGPU_PIPELINE_STAGE_BOTTOM_OF_PIPE          = 0x00002000,
+	SPUDGPU_PIPELINE_STAGE_ALL_GRAPHICS            = 0x00008000,
+	SPUDGPU_PIPELINE_STAGE_ALL_COMMANDS            = 0x00010000,
+};
+
+typedef struct spudgpu_buffer_barrier {
+	spudgpu_buffer buffer;
+	SPUDGPU_RESOURCE_STATE state_before;
+	SPUDGPU_RESOURCE_STATE state_after;
+} spudgpu_buffer_barrier;
+
+typedef struct spudgpu_image_barrier {
+	spudgpu_image image;
+	SPUDGPU_RESOURCE_STATE state_before;
+	SPUDGPU_RESOURCE_STATE state_after;
+	// Optional: subresource ranges (mips/layers) if needed
+} spudgpu_image_barrier;
 
 /**
- * @brief Non-indexed non-instanced drawing invocation.
- * * Processes sequential vertex data streams bound to input channels directly.
- * * @param[in] cmd                   The active recording command context.
- * @param[in] vertex_count          Total vertices to process for the shape
- * primitive array.
- * @param[in] start_vertex_location Index offset representing the first vertex
- * entry to pull.
+ * @brief Injects an execution and memory barrier into the command list.
+ * Translates to vkCmdPipelineBarrier in Vulkan or MTLBarrier/MTLEvent in Metal.
  */
-void spudgpu_draw(
+void spudgpu_cmd_pipeline_barrier(
     spudgpu_command_list cmd,
-    uint32_t vertex_count,
-    uint32_t start_vertex_location);
-
-/**
- * @brief Indexed non-instanced drawing invocation.
- * * Utilizes an index buffer map to fetch vertices out-of-order, saving vertex
- * storage.
- * * @param[in] cmd                   The active recording command context.
- * @param[in] index_count           The number of indices to read from the
- * active index buffer.
- * @param[in] start_index_location  The element offset inside the index array to
- * begin fetching from.
- * @param[in] base_vertex_location   A value added to every individual index
- * value prior to pulling vertex payload parameters. Effectively handles
- * multi-mesh packaging offsets.
- */
-void spudgpu_draw_indexed(
-    spudgpu_command_list cmd,
-    uint32_t index_count,
-    uint32_t start_index_location,
-    int32_t base_vertex_location);
-
-/**
- * @brief Non-indexed instanced drawing invocation.
- * * Draws identical structural vertex topologies multiple times using hardware
- * instancing.
- * * @param[in] cmd                         The active recording command
- * context.
- * @param[in] vertex_count_per_instance   The number of sequential vertices to
- * draw for an instance item.
- * @param[in] instance_count              Total instances of the mesh layout to
- * render.
- * @param[in] start_vertex_location       The base index offset to look up
- * vertex attributes.
- * @param[in] start_instance_location     An index added to instance identifiers
- * prior to loading per-instance shader attributes.
- */
-void spudgpu_draw_instanced(
-    spudgpu_command_list cmd,
-    uint32_t vertex_count_per_instance,
-    uint32_t instance_count,
-    uint32_t start_vertex_location,
-    uint32_t start_instance_location);
-
-/**
- * @brief Full indexed instanced drawing invocation.
- * * The most optimal, high-throughput path for repeating geometric instances
- * (e.g., foliage, particles).
- * @param[in] cmd                         The active recording command
- * context.
- * @param[in] index_count_per_instance    The count of indices to process for
- * each item instance.
- * @param[in] instance_count              Total unique geometry clones to
- * invoke.
- * @param[in] start_index_location        Element offset index pointer inside
- * the active index buffer block.
- * @param[in] base_vertex_location        Signed value applied directly to index
- * stream integers before fetching.
- * @param[in] start_instance_location     The tracking offset applied directly
- * to your shader instance counts.
- */
-void spudgpu_draw_indexed_instanced(
-    spudgpu_command_list cmd,
-    uint32_t index_count_per_instance,
-    uint32_t instance_count,
-    uint32_t start_index_location,
-    int32_t base_vertex_location,
-    uint32_t start_instance_location);
-
-typedef struct spudgpu_surface_t *spudgpu_surface;
+    const spudgpu_buffer_barrier *buffer_barriers,
+    uint32_t buffer_barrier_count,
+    const spudgpu_image_barrier *image_barriers,
+    uint32_t image_barrier_count);
 
 /** window_handle Opaque generic pointer targeting the host operating system's
  * native window object.
@@ -1246,6 +1364,17 @@ enum {
 typedef struct spudgpu_swap_chain_desc {
 	spudgpu_surface surface;
 
+	/** * @brief The queue this swap chain's presentation is ordered against.
+	 * * Required on every backend, not just a hint: D3D12 must bind the
+	 * DXGI swap chain to a specific ID3D12CommandQueue at creation time and
+	 * cannot rebind it later, so this is where that queue comes from instead
+	 * of a backend silently assuming "the graphics queue." Render all work
+	 * destined for this swap chain's images on this same queue before
+	 * calling spudgpu_swap_chain_present - presentation is ordered relative
+	 * to it, not to whichever queue you happen to submit on.
+	 */
+	spudgpu_command_queue queue;
+
 	/// Requested back-buffer width in pixels. Usually matches the window client
 	/// area width.
 	uint32_t width;
@@ -1308,7 +1437,9 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain);
 /**
  * Presents the current back buffer to the screen.
  * Call this after you have finished recording and submitting commands for the
- * frame.
+ * frame to the queue given as spudgpu_swap_chain_desc::queue - presentation
+ * is ordered against that queue's work, not whichever queue you happened to
+ * submit on.
  * * @param swap_chain The swap chain holding the image to display.
  */
 void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain);
@@ -1320,9 +1451,6 @@ void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain);
 spudgpu_image_view spudgpu_get_swap_chain_image_view(
     spudgpu_swap_chain swap_chain,
     uint32_t image_index);
-
-typedef struct spudgpu_semaphore_t *spudgpu_semaphore;
-typedef struct spudgpu_fence_t *spudgpu_fence;
 
 /**
  * @brief Returns the image-available semaphore for the swap chain's current
@@ -1348,20 +1476,11 @@ spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_
  */
 spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain);
 
-
-
 // ============================================================================
 //  Descriptor Set Layout
 //  Maps to: VkDescriptorSetLayout (Vulkan) / MTLArgumentEncoder schema (Metal)
 // ============================================================================
 
-
-// Capacity Limits
-#define SPUDGPU_MAX_VERTEX_ATTRIBUTES 16
-#define SPUDGPU_MAX_VERTEX_BINDINGS 8
-#define SPUDGPU_MAX_PUSH_CONSTANT_RANGES 4
-
-typedef struct spudgpu_descriptor_set_layout_t *spudgpu_descriptor_set_layout;
 
 /**
  * @brief Enumerates the kinds of resources a shader binding slot can hold.
@@ -1389,6 +1508,18 @@ enum {
 
 	/// Image the shader can both read and write (compute UAV / storage image).
 	SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE = 5,
+};
+
+typedef uint32_t SPUDGPU_SHADER_STAGE;
+
+enum {
+	SPUDGPU_SHADER_STAGE_NONE                    = 0,
+	SPUDGPU_SHADER_STAGE_VERTEX                  = 1 << 0,
+	SPUDGPU_SHADER_STAGE_FRAGMENT                = 1 << 1,
+	SPUDGPU_SHADER_STAGE_COMPUTE                 = 1 << 2,
+	SPUDGPU_SHADER_STAGE_GEOMETRY                = 1 << 3,
+	SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL    = 1 << 4,
+	SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION = 1 << 5
 };
 
 /**
@@ -1431,7 +1562,6 @@ typedef struct spudgpu_descriptor_set_layout_desc {
 	spudgpu_descriptor_binding_desc bindings[SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET];
 	uint32_t binding_count;
 } spudgpu_descriptor_set_layout_desc;
-
 /**
  * @brief Creates an immutable descriptor set layout (schema).
  *
@@ -1456,13 +1586,10 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
  * referencing it, must be destroyed before calling this.
  */
 void spudgpu_destroy_descriptor_set_layout(spudgpu_descriptor_set_layout layout);
-
 // ============================================================================
 //  Descriptor Pool
 //  Maps to: VkDescriptorPool (Vulkan) / heap of argument buffers (Metal)
 // ============================================================================
-
-typedef struct spudgpu_descriptor_pool_t *spudgpu_descriptor_pool;
 
 /**
  * @brief Declares how many descriptors of each type a pool should pre-allocate.
@@ -1525,13 +1652,10 @@ void spudgpu_reset_descriptor_pool(spudgpu_descriptor_pool pool);
  * finished GPU execution before calling this.
  */
 void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool);
-
 // ============================================================================
 //  Descriptor Set
 //  Maps to: VkDescriptorSet (Vulkan) / MTLBuffer argument buffer (Metal)
 // ============================================================================
-
-typedef struct spudgpu_descriptor_set_t *spudgpu_descriptor_set;
 
 #define SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS 4
 
@@ -1562,7 +1686,6 @@ SPUDRESULT spudgpu_create_descriptor_sets(
     spudgpu_device device,
     const spudgpu_descriptor_set_desc *desc,
     spudgpu_descriptor_set *out_sets);
-
 // ============================================================================
 //  Descriptor Writes
 //  Wires actual GPU resources into the allocated binding slots.
@@ -1683,17 +1806,199 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
     const spudgpu_descriptor_set *sets,
     uint32_t set_count);
 
-typedef uint32_t SPUDGPU_SHADER_STAGE;
+// ============================================================================
+//  Bindless / Descriptor Indexing
+//  Maps to: VK_EXT_descriptor_indexing update-after-bind arrays, promoted
+//  core in Vulkan 1.2 (Vulkan) / large update-after-bind-style descriptor
+//  tables under Resource Binding Tier 2+ (D3D12 — see
+//  spudgpu_bindless_capabilities for why this targets tables rather than
+//  Shader Model 6.6 ResourceDescriptorHeap[]) / Argument Buffers Tier 2 +
+//  MTLResourceID (Metal).
+//
+//  Unlike the classic spudgpu_descriptor_set_layout/pool/set model above
+//  (one schema per shader, re-bound per draw), bindless exposes ONE global,
+//  per-device table per resource class that every pipeline can read from by
+//  a plain integer index — the model every modern renderer uses to avoid
+//  per-draw descriptor set churn.
+//
+//  Resource classes are kept separate (sampled image / storage image /
+//  storage buffer) rather than one shared flat index space: Vulkan's
+//  descriptor model is strongly typed per-binding and cannot mix types in
+//  one array, so a shared index space could not be implemented honestly on
+//  all three backends. Samplers are intentionally not part of this — SpudGPU
+//  has no sampler object yet (@see SPUDGPU_DESCRIPTOR_TYPE_SAMPLER), and real
+//  bindless renderers typically pair bindless textures with a small fixed
+//  set of samplers bound the ordinary way rather than indexing samplers too.
+//
+//  GRAPHICS_BACKEND is a single-choice CMake cache variable — a given build
+//  of spudlib only ever compiles one backend in (see ../CLAUDE.md), so
+//  whether this extension exists at all is a compile-time fact, not a
+//  runtime one. SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING gates the whole
+//  section accordingly: 0 and undeclared entirely on a backend that hasn't
+//  implemented it yet (currently Metal — it needs a MTLHeap-backed resource
+//  allocator to mark bindless resources resident in one useHeap: call
+//  instead of one useResource: call per registered resource, which SpudGPU
+//  doesn't have yet), so calling one of these functions against such a
+//  build is a compile/link error rather than a silent no-op or a runtime
+//  NULL surprise discovered on the wrong platform. This is independent of
+//  spudgpu_bindless_capabilities::supported below, which reports whether the
+//  actual GPU/driver supports it at runtime, given a backend that compiles
+//  this section in at all — that runtime case returns
+//  SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED (see
+//  spudcore.h; every SPUDGPU_EXT_<NAME> macro has a matching
+//  SPUDRESULT_GPU_EXT_<NAME>_NOT_SUPPORTED for exactly this case).
+// ============================================================================
 
-enum {
-	SPUDGPU_SHADER_STAGE_NONE                    = 0,
-	SPUDGPU_SHADER_STAGE_VERTEX                  = 1 << 0,
-	SPUDGPU_SHADER_STAGE_FRAGMENT                = 1 << 1,
-	SPUDGPU_SHADER_STAGE_COMPUTE                 = 1 << 2,
-	SPUDGPU_SHADER_STAGE_GEOMETRY                = 1 << 3,
-	SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL    = 1 << 4,
-	SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION = 1 << 5
-};
+#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API
+#define SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING 1
+#else
+#define SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING 0
+#endif
+
+#if SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING
+
+#define SPUDGPU_BINDLESS_INVALID_INDEX 0xFFFFFFFFu
+
+/**
+ * @brief Reports whether this device supports bindless resource indexing,
+ * and the addressable capacity of each resource class.
+ *
+ * Vulkan: reflects the shaderSampledImageArrayNonUniformIndexing /
+ * descriptorBindingPartiallyBound / descriptorBindingUpdateAfterBind* /
+ * runtimeDescriptorArray feature bits (core in 1.2) and the corresponding
+ * maxDescriptorSetUpdateAfterBind* device limits.
+ * D3D12: reflects Resource Binding Tier 2+ unbounded/update-after-bind-style
+ * descriptor tables — SpudGPU's D3D12 backend cross-compiles the same SPIR-V
+ * shaders used by Vulkan via SPIRV-Cross rather than hand-authoring HLSL, so
+ * bindless goes through a large descriptor table per resource class (what
+ * SPIRV-Cross emits for a GLSL runtime-sized binding array) rather than
+ * Shader Model 6.6's ResourceDescriptorHeap[] dynamic resources, which would
+ * require hand-written HLSL outside that pipeline.
+ * Metal: always supported — Argument Buffers Tier 2 is required on every
+ * Metal 3 device SpudGPU targets.
+ *
+ * Every class uses a plain 0-based index on all three backends — each
+ * resource class gets its own dedicated table/array/argument-buffer slot
+ * range, so unlike a single flat descriptor heap, no base offset is ever
+ * needed before indexing it from the shader.
+ */
+typedef struct spudgpu_bindless_capabilities {
+	bool supported;
+
+	uint32_t max_sampled_images;
+	uint32_t max_storage_images;
+	uint32_t max_storage_buffers;
+} spudgpu_bindless_capabilities;
+
+/**
+ * @return SPUD_SUCCESS with out_caps populated (out_caps->supported may
+ * still be false — that is not an error, it's the answer). Never returns
+ * SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED itself —
+ * that code is for the register/layout functions below, which are real
+ * operations that can fail for that reason; a query reporting "false" is
+ * not a failure.
+ */
+SPUDRESULT spudgpu_get_bindless_capabilities(
+    spudgpu_device device,
+    spudgpu_bindless_capabilities *out_caps);
+
+/**
+ * @brief Returns the device's single global bindless descriptor set layout.
+ *
+ * Include this handle in spudgpu_shader_pipeline_desc::descriptor_set_layouts[]
+ * (or spudgpu_compute_pipeline_desc's) at whichever set index your shaders
+ * declare the unbounded arrays at (binding 0 = sampled images, binding 1 =
+ * storage images, binding 2 = storage buffers), then pass that same index as
+ * set_index to spudgpu_cmd_bind_bindless_resources.
+ *
+ * D3D12: returns a handle describing three large descriptor-table ranges
+ * (one per resource class) rather than SM6.6 ResourceDescriptorHeap[]
+ * dynamic resources — see spudgpu_bindless_capabilities for why.
+ *
+ * @warning Do not pass the returned handle to
+ * spudgpu_destroy_descriptor_set_layout — the device owns it for its
+ * lifetime.
+ * @return NULL if the device/driver doesn't actually support this (see
+ * SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED) — check
+ * spudgpu_bindless_capabilities::supported first to distinguish that from a
+ * NULL device argument.
+ */
+spudgpu_descriptor_set_layout spudgpu_get_bindless_descriptor_set_layout(spudgpu_device device);
+
+/**
+ * @brief Registers a sampled-image view in the device's global bindless
+ * table and returns a stable index for it.
+ *
+ * The index — and the underlying image/view — must remain valid until
+ * spudgpu_bindless_unregister_sampled_image is called. Registration uses
+ * update-after-bind writes, so it is safe to call between frames, or even
+ * while command lists referencing *other* indices are in flight; do not
+ * rewrite an index a submitted-but-not-yet-completed command list is
+ * currently reading.
+ *
+ * @return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED if
+ * this device/driver doesn't actually support bindless (check
+ * spudgpu_bindless_capabilities::supported to avoid hitting this), or
+ * SPUDRESULT_GPU_BINDLESS_OUT_OF_SLOTS if every slot for this resource class
+ * is currently registered.
+ */
+SPUDRESULT spudgpu_bindless_register_sampled_image(
+    spudgpu_device device,
+    spudgpu_image_view view,
+    uint32_t *out_index);
+
+/// Frees a previously registered sampled-image slot for reuse.
+void spudgpu_bindless_unregister_sampled_image(
+    spudgpu_device device,
+    uint32_t index);
+
+/// @see spudgpu_bindless_register_sampled_image
+SPUDRESULT spudgpu_bindless_register_storage_image(
+    spudgpu_device device,
+    spudgpu_image_view view,
+    uint32_t *out_index);
+
+void spudgpu_bindless_unregister_storage_image(
+    spudgpu_device device,
+    uint32_t index);
+
+/// @see spudgpu_bindless_register_sampled_image
+SPUDRESULT spudgpu_bindless_register_storage_buffer(
+    spudgpu_device device,
+    spudgpu_buffer_view view,
+    uint32_t *out_index);
+
+void spudgpu_bindless_unregister_storage_buffer(
+    spudgpu_device device,
+    uint32_t index);
+
+/**
+ * @brief Makes the device's global bindless resource tables visible to
+ * subsequent draws on this command list.
+ *
+ * Vulkan: vkCmdBindDescriptorSets against the global set at set_index.
+ * D3D12: ID3D12GraphicsCommandList::SetDescriptorHeaps with the device's
+ * global CBV/SRV/UAV heap — set_index is ignored.
+ * Metal: marks every currently-registered resource resident on this command
+ * buffer (useResource:usage:) — set_index is ignored.
+ *
+ * Call once per command list before the first bindless-indexed draw.
+ *
+ * @param set_index The slot in the bound pipeline's descriptor_set_layouts[]
+ * that holds spudgpu_get_bindless_descriptor_set_layout()'s handle.
+ */
+void spudgpu_cmd_bind_bindless_resources(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline,
+    uint32_t set_index);
+
+/// Compute-pipeline variant of spudgpu_cmd_bind_bindless_resources.
+void spudgpu_cmd_bind_bindless_resources_compute(
+    spudgpu_command_list cmd,
+    spudgpu_compute_pipeline pipeline,
+    uint32_t set_index);
+
+#endif // SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING
 
 typedef uint32_t SPUDGPU_PRIMITIVE_TOPOLOGY;
 
@@ -1723,7 +2028,10 @@ enum {
 	SPUDGPU_COMPARE_OP_GREATER_OR_EQUAL = 6,
 	SPUDGPU_COMPARE_OP_ALWAYS           = 7
 };
-
+// Capacity Limits
+#define SPUDGPU_MAX_VERTEX_ATTRIBUTES 16
+#define SPUDGPU_MAX_VERTEX_BINDINGS 8
+#define SPUDGPU_MAX_PUSH_CONSTANT_RANGES 4
 typedef struct spudgpu_vertex_attribute_desc {
 	/// Which shader location slot this attribute binds to (layout(location =
 	/// N)).
@@ -1826,11 +2134,6 @@ SPUDRESULT spudgpu_create_shader_module(
     spudgpu_shader_module *out_module);
 
 void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module);
-
-typedef struct spudgpu_pipeline_layout_t *spudgpu_pipeline_layout;
-
-
-
 /**
  * @brief Complete configuration descriptor for creating a graphics shader
  * pipeline.
@@ -1947,8 +2250,12 @@ typedef struct spudgpu_shader_pipeline_desc {
 	// Pipeline layout
 	// -----------------------------------------------------------------------
 
-	/// Opaque descriptor set layout handles. Cast to VkDescriptorSetLayout*
-	/// internally.
+	/// Opaque spudgpu_descriptor_set_layout handles, from
+	/// spudgpu_create_descriptor_set_layout() - declared as void* here
+	/// rather than the proper typedef, but each backend casts entries back
+	/// to its own internal descriptor-set-layout type, the same as every
+	/// other opaque handle in this header. Not a raw native handle of any
+	/// specific backend's API.
 	void *descriptor_set_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
 	uint32_t descriptor_set_layout_count;
 
@@ -1995,7 +2302,190 @@ void spudgpu_cmd_push_constants(
     uint32_t offset,
     uint32_t size,
     const void *data);
+/**
+ * @brief Defines the normalized window transformation dimensions for rendering
+ * output coordinates.
+ * * Maps normalized device coordinates (NDC) ranging [-1, 1] horizontally and
+ * vertically directly into a target render target screen pixel domain.
+ */
+typedef struct SPUDGPU_VIEWPORT {
+	/// X-coordinate of the upper-left corner of the viewport region in pixels.
+	float x;
 
+	/// Y-coordinate of the upper-left corner of the viewport region in pixels.
+	float y;
+
+	/// Total width of the targeted viewport frame in pixels.
+	float width;
+
+	/// Total height of the targeted viewport frame in pixels.
+	float height;
+
+	/// Minimum depth boundary slice. Usually maps to `0.0f` (near clipping
+	/// plane).
+	float minDepth;
+
+	/// Maximum depth boundary slice. Usually maps to `1.0f` (far clipping
+	/// plane).
+	float maxDepth;
+} SPUDGPU_VIEWPORT;
+
+/**
+ * @brief Binds an array of dynamic viewport transforms to the pipeline state.
+ * * @param[in] cmd             The active recording command context.
+ * @param[in] first_viewport  The zero-based index of the first viewport slot to
+ * configure.
+ * @param[in] viewport_count  Total number of structural viewports to bind from
+ * the array.
+ * @param[in] viewports       Pointer to a contiguous array of viewport layout
+ * definitions.
+ */
+void spudgpu_cmd_set_viewports(
+    spudgpu_command_list cmd,
+    uint32_t first_viewport,
+    uint32_t viewport_count,
+    const SPUDGPU_VIEWPORT *viewports);
+
+/**
+ * @brief Defines a dynamic screen space bounding box for rasterization
+ * discarding.
+ * * Pixels falling outside the scissor rectangle bounds are completely dropped
+ * by the rasterizer, optimizing rendering execution for partial UI elements or
+ * UI windows.
+ */
+typedef struct SPUDGPU_SCISSOR_RECT {
+	/// Leftmost X coordinate of the scissor bounding box in pixels.
+	float x;
+
+	/// Topmost Y coordinate of the scissor bounding box in pixels.
+	float y;
+
+	/// Total horizontal layout width of the box in pixels.
+	float width;
+
+	/// Total vertical layout height of the box in pixels.
+	float height;
+} SPUDGPU_SCISSOR_RECT;
+
+/**
+ * @brief Binds an array of dynamic scissor clip boundaries to the graphics
+ * pipeline.
+ * * @param[in] cmd                 The active recording command context.
+ * @param[in] first_scissor_rect  The zero-based index of the first scissor slot
+ * to configure.
+ * @param[in] scissor_rect_count  Total number of scissor regions to update.
+ * @param[in] scissor_rects       Pointer to an array of scissor box dimensions.
+ */
+void spudgpu_cmd_set_scissor_rects(
+    spudgpu_command_list cmd,
+    uint32_t first_scissor_rect,
+    uint32_t scissor_rect_count,
+    const SPUDGPU_SCISSOR_RECT *scissor_rects);
+
+/**
+ * @brief Binds a contiguous array of vertex buffers to target input assembler
+ * slots.
+ * * @param[in] cmd          The active recording command context.
+ * @param[in] start_slot   The starting hardware vertex buffer input slot index
+ * to update.
+ * @param[in] view_count   Total number of vertex buffer views to map.
+ * @param[in] buffer_views Pointer to (0, 1, or an array of) active GPU buffer
+ * views containing vertex data.
+ */
+void spudgpu_cmd_set_vertex_buffers(
+    spudgpu_command_list cmd,
+    uint32_t start_slot,
+    uint32_t view_count,
+    spudgpu_buffer_view *buffer_views);
+
+/**
+ * @brief Binds the index buffer used to drive lookups for indexed draw calls.
+ * * @param[in] cmd         The active recording command context.
+ * @param[in] buffer_view The active GPU buffer view containing index data.
+ */
+void spudgpu_cmd_set_index_buffer(
+    spudgpu_command_list cmd,
+    spudgpu_buffer_view buffer_view);
+
+/**
+ * @brief Non-indexed non-instanced drawing invocation.
+ * * Processes sequential vertex data streams bound to input channels directly.
+ * * @param[in] cmd                   The active recording command context.
+ * @param[in] vertex_count          Total vertices to process for the shape
+ * primitive array.
+ * @param[in] start_vertex_location Index offset representing the first vertex
+ * entry to pull.
+ */
+void spudgpu_cmd_draw(
+    spudgpu_command_list cmd,
+    uint32_t vertex_count,
+    uint32_t start_vertex_location);
+
+/**
+ * @brief Indexed non-instanced drawing invocation.
+ * * Utilizes an index buffer map to fetch vertices out-of-order, saving vertex
+ * storage.
+ * * @param[in] cmd                   The active recording command context.
+ * @param[in] index_count           The number of indices to read from the
+ * active index buffer.
+ * @param[in] start_index_location  The element offset inside the index array to
+ * begin fetching from.
+ * @param[in] base_vertex_location   A value added to every individual index
+ * value prior to pulling vertex payload parameters. Effectively handles
+ * multi-mesh packaging offsets.
+ */
+void spudgpu_cmd_draw_indexed(
+    spudgpu_command_list cmd,
+    uint32_t index_count,
+    uint32_t start_index_location,
+    int32_t base_vertex_location);
+
+/**
+ * @brief Non-indexed instanced drawing invocation.
+ * * Draws identical structural vertex topologies multiple times using hardware
+ * instancing.
+ * * @param[in] cmd                         The active recording command
+ * context.
+ * @param[in] vertex_count_per_instance   The number of sequential vertices to
+ * draw for an instance item.
+ * @param[in] instance_count              Total instances of the mesh layout to
+ * render.
+ * @param[in] start_vertex_location       The base index offset to look up
+ * vertex attributes.
+ * @param[in] start_instance_location     An index added to instance identifiers
+ * prior to loading per-instance shader attributes.
+ */
+void spudgpu_cmd_draw_instanced(
+    spudgpu_command_list cmd,
+    uint32_t vertex_count_per_instance,
+    uint32_t instance_count,
+    uint32_t start_vertex_location,
+    uint32_t start_instance_location);
+
+/**
+ * @brief Full indexed instanced drawing invocation.
+ * * The most optimal, high-throughput path for repeating geometric instances
+ * (e.g., foliage, particles).
+ * @param[in] cmd                         The active recording command
+ * context.
+ * @param[in] index_count_per_instance    The count of indices to process for
+ * each item instance.
+ * @param[in] instance_count              Total unique geometry clones to
+ * invoke.
+ * @param[in] start_index_location        Element offset index pointer inside
+ * the active index buffer block.
+ * @param[in] base_vertex_location        Signed value applied directly to index
+ * stream integers before fetching.
+ * @param[in] start_instance_location     The tracking offset applied directly
+ * to your shader instance counts.
+ */
+void spudgpu_cmd_draw_indexed_instanced(
+    spudgpu_command_list cmd,
+    uint32_t index_count_per_instance,
+    uint32_t instance_count,
+    uint32_t start_index_location,
+    int32_t base_vertex_location,
+    uint32_t start_instance_location);
 /**
  * @brief Complete configuration descriptor for creating a compute shader
  * pipeline.
@@ -2014,8 +2504,12 @@ typedef struct spudgpu_compute_pipeline_desc {
 	// Pipeline layout
 	// -----------------------------------------------------------------------
 
-	/// Opaque descriptor set layout handles. Cast to VkDescriptorSetLayout*
-	/// internally.
+	/// Opaque spudgpu_descriptor_set_layout handles, from
+	/// spudgpu_create_descriptor_set_layout() - declared as void* here
+	/// rather than the proper typedef, but each backend casts entries back
+	/// to its own internal descriptor-set-layout type, the same as every
+	/// other opaque handle in this header. Not a raw native handle of any
+	/// specific backend's API.
 	void *descriptor_set_layouts[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS];
 	uint32_t descriptor_set_layout_count;
 
@@ -2054,93 +2548,6 @@ void spudgpu_destroy_compute_pipeline(spudgpu_compute_pipeline pipeline);
 SPUDRESULT spudgpu_get_compute_pipeline_desc(
     spudgpu_compute_pipeline pipeline,
     spudgpu_compute_pipeline_desc *out_desc);
-
-
-// ============================================================================
-//  Image Layout
-//  Maps to: VkImageLayout (Vulkan)
-// ============================================================================
-
-typedef uint32_t SPUDGPU_IMAGE_LAYOUT;
-
-enum {
-	SPUDGPU_IMAGE_LAYOUT_UNDEFINED                        = 0,
-	SPUDGPU_IMAGE_LAYOUT_GENERAL                          = 1,
-	SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL         = 2,
-	SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL = 3,
-	SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY                 = 4,
-	SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC                     = 5,
-	SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST                     = 6,
-	SPUDGPU_IMAGE_LAYOUT_PRESENT_SRC                      = 7,
-};
-
-// ============================================================================
-//  Image Barrier
-//  Maps to: vkCmdPipelineBarrier (Vulkan)
-// ============================================================================
-
-/**
- * @brief Transitions an image from one layout to another, inserting the
- * necessary pipeline barrier so dependent stages wait correctly.
- *
- * Call before spudgpu_cmd_begin_rendering to move a swap chain image from
- * UNDEFINED/PRESENT_SRC to COLOR_ATTACHMENT_OPTIMAL, and after
- * spudgpu_cmd_end_rendering to move it back to PRESENT_SRC.
- *
- * @param[in] cmd          The active recording command list.
- * @param[in] image        The image whose layout is being changed.
- * @param[in] old_layout   The current layout of the image.
- * @param[in] new_layout   The target layout to transition into.
- */
-void spudgpu_cmd_image_barrier(
-    spudgpu_command_list cmd,
-    spudgpu_image image,
-    SPUDGPU_IMAGE_LAYOUT old_layout,
-    SPUDGPU_IMAGE_LAYOUT new_layout);
-
-/**
- * @brief Variant that takes a raw image view instead of a spudgpu_image.
- *
- * Useful for swap chain images, which are not created through
- * spudgpu_create_image and so don't have a spudgpu_image handle. The image view
- * must have been created from the target image (e.g. a swap chain image view).
- *
- * @param[in] cmd          The active recording command list.
- * @param[in] image_view   An image view whose parent image will be
- * transitioned.
- * @param[in] old_layout   The current layout of the image.
- * @param[in] new_layout   The target layout to transition into.
- */
-void spudgpu_cmd_image_barrier_view(
-    spudgpu_command_list cmd,
-    spudgpu_image_view image_view,
-    SPUDGPU_IMAGE_LAYOUT old_layout,
-    SPUDGPU_IMAGE_LAYOUT new_layout);
-
-/**
- * @brief Transitions only a specific mip/layer subresource range of an image,
- * leaving the rest of the image's subresources in whatever layout they were
- * already in.
- *
- * Required whenever different subresources of the same image must be in
- * different layouts at once — most notably mip chain generation via
- * spudgpu_cmd_blit_image, where mip level N must be SPUDGPU_IMAGE_LAYOUT_
- * TRANSFER_SRC while mip level N+1 is simultaneously SPUDGPU_IMAGE_LAYOUT_
- * TRANSFER_DST. spudgpu_cmd_image_barrier cannot express this since it
- * transitions the whole image at once.
- *
- * @param[in] cmd        The active recording command list.
- * @param[in] image      The image whose subresource range is being changed.
- * @param[in] range      The mip levels and array layers to transition.
- * @param[in] old_layout The current layout of the given subresource range.
- * @param[in] new_layout The target layout to transition into.
- */
-void spudgpu_cmd_image_barrier_subresource(
-    spudgpu_command_list cmd,
-    spudgpu_image image,
-    const spudgpu_image_view_desc_subresource_range *range,
-    SPUDGPU_IMAGE_LAYOUT old_layout,
-    SPUDGPU_IMAGE_LAYOUT new_layout);
 
 // ============================================================================
 //  Image <-> Buffer Copies
@@ -2487,159 +2894,6 @@ void spudgpu_cmd_clear_depth_attachment(
     uint32_t stencil,
     uint32_t width,
     uint32_t height);
-
-typedef uint32_t SPUDGPU_FENCE_FLAGS;
-enum { SPUDGPU_FENCE_FLAG_NONE = 0, SPUDGPU_FENCE_FLAG_SHARED = 1 << 0 };
-
-/**
- * @brief Creates a fence primitive used to synchronize the CPU with GPU
- * progress.
- * @param[in] device The GPU Device to own the fence.
- * @param[in] signaled_on_creation If true, the fence starts in a signaled state.
- * @param[out] out_fence The new GPU Fence to be created.
- * @return SPUD_SUCCESS; or an error code.
- */
-SPUDRESULT spudgpu_create_fence(
-    spudgpu_device device,
-    SPUDGPU_FENCE_FLAGS flags,
-    bool signaled_on_creation,
-    spudgpu_fence *out_fence);
-
-/**
- * @brief Destroys a fence primitive.
- */
-void spudgpu_destroy_fence(spudgpu_fence fence);
-
-uint64_t spudgpu_get_fence_value(spudgpu_fence fence);
-SPUDRESULT spudgpu_signal_fence(
-    spudgpu_device device,
-    spudgpu_fence fence,
-    uint64_t value);
-
-/**
- * @brief Blocks the calling CPU thread until one or all specified fences are
- * signaled.
- * @param[in] timeout_ns Timeout duration in nanoseconds (use UINT64_MAX for
- * infinite).
- * @param[in] wait_all If true, waits for all fences; if false, waits for at
- * least one.
- */
-SPUDRESULT spudgpu_wait_for_fences(
-    spudgpu_device device,
-    spudgpu_fence *fences,
-    uint32_t fence_count,
-    bool wait_all,
-    uint64_t timeout_ns);
-
-/**
- * @brief Creates a binary semaphore for GPU-GPU synchronization.
- * @param[in] device The GPU Device to own the semaphore.
- * @param[out] out_sem The new GPU semaphore.
- * @return SPUD_SUCCESS; or an error code.
- */
-SPUDRESULT spudgpu_create_semaphore(
-    spudgpu_device device,
-    spudgpu_semaphore *out_semaphore);
-
-/**
- * @brief Destroys a semaphore primitive.
- */
-void spudgpu_destroy_semaphore(spudgpu_semaphore semaphore);
-
-/**
- * @brief Defines the current state/layout of a resource (useful for pipeline
- * barriers).
- */
-typedef uint32_t SPUDGPU_RESOURCE_STATE;
-enum {
-	SPUDGPU_RESOURCE_STATE_COMMON = 0,
-	SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER,
-	SPUDGPU_RESOURCE_STATE_INDEX_BUFFER,
-	SPUDGPU_RESOURCE_STATE_RENDER_TARGET,
-	SPUDGPU_RESOURCE_STATE_DEPTH_WRITE,
-	SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE,  // Read-only in shader
-	SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, // Read/Write (SSBO/UAV)
-	SPUDGPU_RESOURCE_STATE_PRESENT
-};
-
-/**
- * @brief Pipeline stage flags used in semaphore wait masks on queue submission.
- *
- * Values are bit-compatible with VkPipelineStageFlagBits and may be OR'd
- * together. One mask must be provided per wait semaphore in
- * spudgpu_submit_desc.
- */
-typedef uint32_t SPUDGPU_PIPELINE_STAGE;
-enum {
-	SPUDGPU_PIPELINE_STAGE_TOP_OF_PIPE             = 0x00000001,
-	SPUDGPU_PIPELINE_STAGE_DRAW_INDIRECT           = 0x00000002,
-	SPUDGPU_PIPELINE_STAGE_VERTEX_INPUT            = 0x00000004,
-	SPUDGPU_PIPELINE_STAGE_VERTEX_SHADER           = 0x00000008,
-	SPUDGPU_PIPELINE_STAGE_TESSELLATION_CONTROL    = 0x00000010,
-	SPUDGPU_PIPELINE_STAGE_TESSELLATION_EVALUATION = 0x00000020,
-	SPUDGPU_PIPELINE_STAGE_GEOMETRY_SHADER         = 0x00000040,
-	SPUDGPU_PIPELINE_STAGE_FRAGMENT_SHADER         = 0x00000080,
-	SPUDGPU_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS    = 0x00000100,
-	SPUDGPU_PIPELINE_STAGE_LATE_FRAGMENT_TESTS     = 0x00000200,
-	SPUDGPU_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT = 0x00000400,
-	SPUDGPU_PIPELINE_STAGE_COMPUTE_SHADER          = 0x00000800,
-	SPUDGPU_PIPELINE_STAGE_TRANSFER                = 0x00001000,
-	SPUDGPU_PIPELINE_STAGE_BOTTOM_OF_PIPE          = 0x00002000,
-	SPUDGPU_PIPELINE_STAGE_ALL_GRAPHICS            = 0x00008000,
-	SPUDGPU_PIPELINE_STAGE_ALL_COMMANDS            = 0x00010000,
-};
-
-typedef struct spudgpu_buffer_barrier {
-	spudgpu_buffer buffer;
-	SPUDGPU_RESOURCE_STATE state_before;
-	SPUDGPU_RESOURCE_STATE state_after;
-} spudgpu_buffer_barrier;
-
-typedef struct spudgpu_image_barrier {
-	spudgpu_image image;
-	SPUDGPU_RESOURCE_STATE state_before;
-	SPUDGPU_RESOURCE_STATE state_after;
-	// Optional: subresource ranges (mips/layers) if needed
-} spudgpu_image_barrier;
-
-/**
- * @brief Injects an execution and memory barrier into the command list.
- * Translates to vkCmdPipelineBarrier in Vulkan or MTLBarrier/MTLEvent in Metal.
- */
-void spudgpu_cmd_pipeline_barrier(
-    spudgpu_command_list cmd,
-    const spudgpu_buffer_barrier *buffer_barriers,
-    uint32_t buffer_barrier_count,
-    const spudgpu_image_barrier *image_barriers,
-    uint32_t image_barrier_count);
-
-typedef struct spudgpu_submit_desc {
-	spudgpu_command_list *cmd_lists;
-	uint32_t cmd_list_count;
-
-	// GPU-GPU Sync
-	spudgpu_semaphore *wait_semaphores;
-	uint32_t wait_semaphore_count;
-	// One SPUDGPU_PIPELINE_STAGE mask per wait semaphore — required when
-	// wait_semaphore_count > 0.
-	uint32_t *wait_stage_masks;
-	spudgpu_semaphore *signal_semaphores;
-	uint32_t signal_semaphore_count;
-
-	// CPU-GPU Sync (Optional, can be NULL)
-	spudgpu_fence signal_fence;
-} spudgpu_submit_desc;
-
-void spudgpu_queue_submit(
-    spudgpu_command_queue queue,
-    const spudgpu_submit_desc *desc);
-
-/**
- * @brief Blocks the calling CPU thread until all pending work on the queue has
- * completed. Equivalent to vkQueueWaitIdle. Prefer fence-based synchronization
- * in hot paths.
- */
-void spudgpu_queue_wait_idle(spudgpu_command_queue queue);
 
 #ifdef __cplusplus
 }

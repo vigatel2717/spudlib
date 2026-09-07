@@ -13,8 +13,17 @@ extern "C" {
 #endif
 
 uint64_t spudperf_catch_current_clock_cycle() {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(_M_ARM64)
 	return __rdtsc();
+#elif defined(__aarch64__) || defined(__arm64__)
+	// x86's TSC and ARM's generic timer are both just free-running,
+	// fixed-frequency hardware counters usable for relative timing (not
+	// literal core-clock cycles on either architecture) -- CNTVCT_EL0 is
+	// ARM's direct equivalent and, unlike PMCCNTR_EL0, is readable from
+	// userspace without special privileges.
+	uint64_t val;
+	__asm__ volatile("mrs %0, cntvct_el0" : "=r"(val));
+	return val;
 #else
 	uint32_t lo, hi;
 	__asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));

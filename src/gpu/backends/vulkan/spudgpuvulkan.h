@@ -21,6 +21,28 @@ typedef struct spudgpu_instance_t {
     uint32_t _devices_count;
 } spudgpu_instance_vulkan;
 
+#define SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS 4096
+
+// Lazily created the first time bindless capabilities/registration is used on
+// a device — most devices that never touch the bindless API pay nothing.
+typedef struct spudgpu_bindless_state_vulkan {
+    spudgpu_descriptor_set_layout layout; // Wraps the single global layout.
+    VkDescriptorPool pool_vk;
+    VkDescriptorSet set_vk;
+
+    uint32_t sampled_image_next_unused;
+    uint32_t storage_image_next_unused;
+    uint32_t storage_buffer_next_unused;
+
+    // Stack of freed indices, reused before drawing from *_next_unused.
+    uint32_t sampled_image_free_stack[SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS];
+    uint32_t sampled_image_free_count;
+    uint32_t storage_image_free_stack[SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS];
+    uint32_t storage_image_free_count;
+    uint32_t storage_buffer_free_stack[SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS];
+    uint32_t storage_buffer_free_count;
+} spudgpu_bindless_state_vulkan;
+
 typedef struct spudgpu_device_t {
 #if _DEBUG
     const char *_debug_name;
@@ -32,6 +54,14 @@ typedef struct spudgpu_device_t {
     VkPhysicalDeviceProperties _properties_vk;
     VkPhysicalDeviceFeatures _features_vk;
     uint32_t _graphics_queue_family_index;
+
+    // Lazily allocated by the first spudgpu_get_bindless_capabilities /
+    // spudgpu_bindless_register_* / spudgpu_get_bindless_descriptor_set_layout
+    // call. NULL until then. Owned by this device; never copied by value —
+    // every struct above embeds spudgpu_device_vulkan by value, so mutating
+    // bindless state must go through the live spudgpu_device pointer, not a
+    // snapshot copy.
+    spudgpu_bindless_state_vulkan *_bindless;
 } spudgpu_device_vulkan;
 
 typedef struct spudgpu_command_queue_t {
@@ -57,6 +87,20 @@ typedef struct spudgpu_command_list_t {
 #endif
     VkCommandBuffer _command_buffer_vk;
     spudgpu_command_allocator_vulkan _allocator;
+
+    // Set by spudgpu_cmd_begin_rendering, cleared by spudgpu_cmd_end_rendering
+    // (spudgpuvulkanrenderpass.c). Lets spudgpu_cmd_clear_color_attachment/
+    // depth_attachment take the cheap vkCmdClearAttachments fast path — valid
+    // only against attachments already bound in the currently-active
+    // rendering instance, addressed by index, not by view identity — instead
+    // of nesting a redundant begin/end pair, which would be an outright
+    // Vulkan validation error regardless of cost: vkCmdBeginRendering cannot
+    // be called while a rendering instance is already active on this command
+    // buffer.
+    bool _rendering_active;
+    VkImageView _bound_color_attachments[SPUDGPU_MAX_COLOR_ATTACHMENTS];
+    uint32_t _bound_color_attachment_count;
+    VkImageView _bound_depth_attachment_view; // VK_NULL_HANDLE if none bound
 } spudgpu_command_list_vulkan;
 
 typedef struct spudgpu_buffer_t {
@@ -127,6 +171,7 @@ typedef struct spudgpu_swap_chain_t {
     VkSwapchainKHR _swapchain_vk;
     spudgpu_swap_chain_desc _desc;
     spudgpu_device_vulkan _device;
+    VkQueue _present_queue_vk; // From desc.queue, set at creation - see spudgpu_swap_chain_desc::queue.
     VkSurfaceKHR _surface_vk;
     VkFormat _format_vk;
     VkExtent2D _extent_vk;
@@ -200,6 +245,13 @@ typedef struct spudgpu_descriptor_set_t {
 } spudgpu_descriptor_set_vulkan;
 
 VkFormat convert_spud_to_vulkan_format(SPUDGPU_FORMAT format);
+
+// Defined in spudgpuvulkandescriptors.c. Idempotent — safe to call more than
+// once, but must be called at least once before the device's first
+// by-value copy (command allocator/buffer/image/pipeline creation, ...) so
+// every later snapshot observes a populated _bindless pointer rather than a
+// stale NULL from before lazy initialization.
+SPUDRESULT spudgpuvulkan___ensure_bindless_state(spudgpu_device device);
 
 #endif //SPUDLIB_SPUDGPUVULKAN_H
 

@@ -75,15 +75,20 @@ spudgpu_get_mtl_render_pipeline_state(spudgpu_shader_pipeline pipeline);
  * / pipeline-layout object - binding indices come from [[buffer(n)]] /
  * [[texture(n)]] attributes baked into the shader source itself. */
 
-/* Fences and semaphores both come back as id<MTLSharedEvent>, not
- * MTLFence: plain MTLFence only tracks hazards between encoders within a
- * single command buffer and can't be waited on from the CPU or across
- * command buffers, so it can't stand in for either Vulkan/D3D12 concept.
- * MTLSharedEvent supports both CPU- and GPU-side signal/wait, which is
- * what spudgpu_fence/spudgpu_semaphore actually need. */
+/* Neither fence nor semaphore comes back as MTLFence: plain MTLFence only
+ * tracks hazards between encoders within a single command buffer/queue and
+ * can't be waited on from the CPU or across queues, so it can't stand in for
+ * either Vulkan/D3D12 concept - that role belongs to a pipeline barrier, not
+ * a fence or semaphore.
+ *
+ * spudgpu_fence needs CPU wait/signal/read (spudgpu_wait_for_fences,
+ * spudgpu_signal_fence, spudgpu_get_fence_value) plus cross-process sharing
+ * (SPUDGPU_FENCE_FLAG_SHARED), so it comes back as id<MTLSharedEvent>.
+ * spudgpu_semaphore's public API never exposes a CPU-side accessor - only
+ * GPU wait/signal across queue submissions - so it comes back as plain
+ * id<MTLEvent>, MTLSharedEvent's CPU-visibility-free base class, instead. */
 id<MTLSharedEvent> spudgpu_get_mtl_shared_event(spudgpu_fence fence);
-id<MTLSharedEvent>
-spudgpu_get_mtl_shared_event_from_semaphore(spudgpu_semaphore semaphore);
+id<MTLEvent> spudgpu_get_mtl_event_from_semaphore(spudgpu_semaphore semaphore);
 
 MTLPixelFormat spudgpu_get_mtl_swap_chain_format(spudgpu_swap_chain swap_chain);
 

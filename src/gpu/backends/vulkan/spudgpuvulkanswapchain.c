@@ -414,12 +414,14 @@ SPUDRESULT spudgpu_create_swap_chain(
 	spudgpu_swap_chain *out_swap_chain) {
 	if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc) return SPUDRESULT_NULL_DESC;
+	if (!desc->queue) return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
 	if (!out_swap_chain) return SPUD_SUCCESS;
 
 	spudgpu_swap_chain_vulkan result = {0};
 	result._device = *((spudgpu_device_vulkan *) device);
 	memcpy(&result._desc, desc, sizeof(spudgpu_swap_chain_desc));
 	result._swapchain_images_count = result._desc.buffer_count;
+	result._present_queue_vk = ((spudgpu_command_queue_vulkan *) desc->queue)->_queue_vk;
 
 	if (desc->surface) {
 		result._surface_vk = desc->surface->_surface_vk;
@@ -535,13 +537,6 @@ void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain) {
 		swap_chain->_render_finished_semaphores[swap_chain->_current_image_index]._semaphore_vk
 	};
 
-	// Retrieve the graphics queue at present-time.
-	// The graphics queue family index was selected during logical device creation
-	// (queueFamilyIndex = first family with VK_QUEUE_GRAPHICS_BIT).
-	// On the vast majority of hardware this family also supports presentation.
-	VkQueue presentQueue = VK_NULL_HANDLE;
-	vkGetDeviceQueue(swap_chain->_device._logical_device_vk, swap_chain->_device._graphics_queue_family_index, 0, &presentQueue);
-
 	VkPresentInfoKHR presentInfo = {0};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	presentInfo.waitSemaphoreCount = 1;
@@ -551,9 +546,10 @@ void spudgpu_swap_chain_present(spudgpu_swap_chain swap_chain) {
 	presentInfo.pImageIndices = &swap_chain->_current_image_index;
 	presentInfo.pResults = NULL; // Optional per-swapchain result
 
-	// Get the presentation queue — you'll need to store this on the struct
-	// (VkQueue _present_queue_vk) similar to how _device stores the logical device.
-	vkQueuePresentKHR(presentQueue, &presentInfo);
+	// Present against the queue given as spudgpu_swap_chain_desc::queue at
+	// creation, not a freshly re-derived "the graphics queue" guess - the
+	// caller is required to have submitted this frame's rendering there too.
+	vkQueuePresentKHR(swap_chain->_present_queue_vk, &presentInfo);
 
 	// Advance the frame-in-flight cursor
 	swap_chain->_current_frame = (swap_chain->_current_frame + 1) % swap_chain->_max_frames_in_flight;

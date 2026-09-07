@@ -38,6 +38,16 @@ static void spudgpuvulkan___image_usage_flags_internal(
     if (__spud_gpu_image_usage & SPUDGPU_IMAGE_USAGE_TRANSFER_DST)
         flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
+    if (__spud_gpu_image_usage & SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT) {
+        // spudgpu_create_image already rejected combining this with any
+        // other usage bit, so none of the above ran - only the transient
+        // bit itself and whichever attachment bit(s) validation required
+        // are relevant here.
+        flags |= VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+        *output = flags;
+        return;
+    }
+
     // Uploading data to device-local images always requires transfer dst
     flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
@@ -95,6 +105,23 @@ SPUDRESULT spudgpu_create_image(
         if (!(desc->width && desc->height && desc->depth && desc->format && desc->array_layers && desc->mip_levels))
             return SPUDRESULT_DESC_INVALID_PARAMETERS;
         if (desc->usage == 0) return SPUDRESULT_GPU_INVALID_IMAGE_USAGE;
+
+        // SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT's contract (see
+        // spudgpu.h) is enforced identically on every backend, not just the
+        // ones that act on it - Vulkan's own spec imposes the same
+        // restriction on VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT (it must
+        // not be combined with any usage besides the attachment bits), so
+        // this isn't a Metal-specific rule being forced onto Vulkan.
+        if (desc->usage & SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT) {
+            if (!(desc->usage & (SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT | SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)))
+                return SPUDRESULT_GPU_INVALID_IMAGE_USAGE;
+            if (desc->usage & (SPUDGPU_IMAGE_USAGE_SAMPLED | SPUDGPU_IMAGE_USAGE_STORAGE |
+                                SPUDGPU_IMAGE_USAGE_TRANSFER_SRC | SPUDGPU_IMAGE_USAGE_TRANSFER_DST |
+                                SPUDGPU_IMAGE_USAGE_PRESENTABLE))
+                return SPUDRESULT_GPU_INVALID_IMAGE_USAGE;
+            if (desc->memory_flags & SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE)
+                return SPUDRESULT_GPU_INVALID_MEMORY_FLAGS;
+        }
     }
 
     // Create the result struct
@@ -138,12 +165,29 @@ SPUDRESULT spudgpu_create_image(
         VkMemoryRequirements memRequirements;
         vkGetImageMemoryRequirements(vk_device, result._image_vk, &memRequirements);
 
+        uint32_t memoryTypeIndex = UINT32_MAX;
+        if (result._desc.usage & SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT) {
+            // Lazily-allocated memory is an optimization opportunity, not a
+            // guarantee - implementations without tile-memory-backed
+            // allocation (most desktop GPUs) simply don't expose a memory
+            // type with this property, and VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT
+            // still permits falling back to a normal DEVICE_LOCAL
+            // allocation in that case (unlike Metal's MTLStorageModeMemoryless,
+            // which is a hard requirement with no such fallback).
+            memoryTypeIndex = spudgpuvulkan___find_memory_type_internal(
+                vk_physical_device, memRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+        if (memoryTypeIndex == UINT32_MAX) {
+            memoryTypeIndex = spudgpuvulkan___find_memory_type_internal(
+                vk_physical_device, memRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+
         VkMemoryAllocateInfo allocInfo = {0};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = spudgpuvulkan___find_memory_type_internal(
-            vk_physical_device, memRequirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        allocInfo.memoryTypeIndex = memoryTypeIndex;
         if (vkAllocateMemory(vk_device, &allocInfo, NULL, &result._memory_vk) != VK_SUCCESS) {
             //throw std::runtime_error("Failed to allocate image memory!");
             vkDestroyImage(vk_device, result._image_vk, NULL);

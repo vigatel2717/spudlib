@@ -39,7 +39,6 @@ if(NOT TARGET spudlib)
         src/spudperf.c
         src/spudnet.c
         src/gpu/spudgpuformat.c
-        src/gpu/spudgpurendering.c
     )
     # Determine which backend sources to append.
     if(WIN32)
@@ -250,10 +249,46 @@ if(NOT TARGET spudlib)
                 "-framework Foundation"
             )
 
-            # Backend implementation itself is still pending real Apple
-            # hardware - see src/gpu/backends/metal/*.m (currently empty
-            # placeholders) and include/spudgpu_metal_natives.h (drafted,
-            # not yet implemented).
+            # SPIRV-Cross (for SPIR-V -> MSL cross-compilation) - same
+            # dependency the D3D12 backend vendors for its own SPIR-V -> HLSL
+            # step, just built with the MSL backend instead of the HLSL one.
+            # The C API is required, not the C++ one: spudgpumetalshader.m is
+            # plain Objective-C (see the OBJC note above), which can't link
+            # against SPIRV-Cross's C++ template-heavy interface directly.
+            #
+            # Vendored locally under eqdev/.deps/SPIRV-Cross (the same
+            # eqdev/.deps/ convention already used for SDL3/glm/imgui-docking/
+            # etc.) rather than a fresh git clone - FetchContent's SOURCE_DIR
+            # points it at that checkout instead of fetching anything.
+            include(FetchContent)
+            set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+            set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+            set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+            set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+            set(SPIRV_CROSS_ENABLE_MSL ON CACHE BOOL "" FORCE)
+            set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+            set(SPIRV_CROSS_ENABLE_C_API ON CACHE BOOL "" FORCE)
+            set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+            FetchContent_Declare(
+                spirv_cross
+                SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.deps/SPIRV-Cross
+            )
+            set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+            FetchContent_MakeAvailable(spirv_cross)
+
+            target_link_libraries(spudlib PRIVATE
+                spirv-cross-c
+                spirv-cross-msl
+                spirv-cross-glsl
+                spirv-cross-core
+            )
+
+            # Command-list encoding, image/buffer resources, and the swap
+            # chain are implemented and verified against real Apple hardware
+            # - see src/gpu/backends/metal/*.m. include/spudgpu_metal_natives.h
+            # is drafted and mostly implemented alongside them. Shader/
+            # pipeline creation (this block's reason for existing) and
+            # descriptor set binding remain the newest pieces.
         endif()
     endif()
 

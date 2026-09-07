@@ -13,6 +13,8 @@ SPUDRESULT spudgpu_create_swap_chain(
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
+	if (!desc->queue)
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
 	if (!out_swap_chain)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
@@ -22,8 +24,10 @@ SPUDRESULT spudgpu_create_swap_chain(
 	pResult->_desc   = *desc;
 
 	HWND hwnd = desc->surface->_hwnd;
-	ID3D12CommandQueue *cmdQueue =
-	    device->_cmd_queues_direct[0]->_d3d_cmd_queue.Get();
+	// The DXGI swap chain is bound to this specific queue for its lifetime -
+	// spudgpu_swap_chain_desc::queue, not a hardcoded "the graphics queue"
+	// guess, since DXGI can't rebind a swap chain to a different queue later.
+	ID3D12CommandQueue *cmdQueue = desc->queue->_d3d_cmd_queue.Get();
 
 	DXGI_SWAP_CHAIN_DESC1 scDesc = {};
 	scDesc.Width                 = desc->width;

@@ -174,9 +174,9 @@ void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool) {
 	delete p;
 }
 
-SPUDRESULT spudgpu_allocate_descriptor_sets(
+SPUDRESULT spudgpu_create_descriptor_sets(
     spudgpu_device device,
-    const spudgpu_descriptor_set_alloc_desc *desc,
+    const spudgpu_descriptor_set_desc *desc,
     spudgpu_descriptor_set *out_sets) {
 	if (!device)
 		return SPUDRESULT_GPU_INVALID_DEVICE;
@@ -193,11 +193,11 @@ SPUDRESULT spudgpu_allocate_descriptor_sets(
 	    (spudgpu_descriptor_pool_d3d12 *)desc->pool;
 
 	for (uint32_t i = 0; i < desc->set_count; ++i) {
-		if (!desc->layouts[i])
+		if (!desc->set_layouts[i])
 			return SPUDRESULT_NULL_DESC;
 
 		spudgpu_descriptor_set_layout_d3d12 *layout =
-		    (spudgpu_descriptor_set_layout_d3d12 *)desc->layouts[i];
+		    (spudgpu_descriptor_set_layout_d3d12 *)desc->set_layouts[i];
 
 		// Check pool has capacity.
 		if (pool->_cbv_srv_uav_cursor + layout->_cbv_srv_uav_count >
@@ -411,6 +411,295 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
 			cmdList->SetComputeRootDescriptorTable(first_set + i, table);
 		}
 	}
+}
+
+// ============================================================================
+//  Bindless / Descriptor Indexing
+// ============================================================================
+
+// Lazy-init is safe here (unlike Vulkan): every D3D12 struct stores
+// spudgpu_device_d3d12* by pointer, so there is no stale-snapshot risk from
+// initializing this after other device-owned objects already exist.
+static SPUDRESULT spudgpud3d12___ensure_bindless_state(spudgpu_device_d3d12 *device) {
+	if (device->_bindless)
+		return SPUD_SUCCESS;
+
+	ID3D12Device *d3dDevice = device->_d3d_device.Get();
+
+	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+	heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	heapDesc.NumDescriptors = 3 * SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+	heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	heapDesc.NodeMask       = 0;
+
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+	if (FAILED(d3dDevice->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap))))
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+
+	// Sentinel layout: only binding_count/bindings[] matter — that's all
+	// spudgpu_d3d12_build_root_signature (spudgpud3d12shader.cpp) reads to
+	// generate the matching root-signature ranges when a caller includes
+	// this handle in their own descriptor_set_layouts[]. Root signature
+	// version 1.0 (what that builder already serializes with) treats every
+	// range as DESCRIPTORS_VOLATILE | DATA_VOLATILE by default, so the
+	// update-after-bind write pattern below is already valid with zero
+	// changes to that shared helper.
+	auto *layout = (spudgpu_descriptor_set_layout_d3d12 *)
+	    calloc(1, sizeof(spudgpu_descriptor_set_layout_d3d12));
+	if (!layout)
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	layout->_device              = device;
+	layout->_desc.binding_count  = 3;
+
+	SPUDGPU_SHADER_STAGE allStages = (SPUDGPU_SHADER_STAGE)(
+	    SPUDGPU_SHADER_STAGE_VERTEX | SPUDGPU_SHADER_STAGE_FRAGMENT |
+	    SPUDGPU_SHADER_STAGE_COMPUTE | SPUDGPU_SHADER_STAGE_GEOMETRY |
+	    SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL |
+	    SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION);
+
+	layout->_desc.bindings[0] = {
+	    0, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, allStages};
+	layout->_desc.bindings[1] = {
+	    1, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, allStages};
+	layout->_desc.bindings[2] = {
+	    2, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, allStages};
+
+	auto *state = new spudgpu_bindless_state_d3d12();
+	state->heap = heap;
+	state->increment = d3dDevice->GetDescriptorHandleIncrementSize(
+	    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	state->layout = layout;
+
+	device->_bindless = state;
+	return SPUD_SUCCESS;
+}
+
+static SPUDRESULT spudgpud3d12___bindless_alloc_index(
+    uint32_t *next_unused,
+    std::vector<uint32_t> &free_stack,
+    uint32_t *out_index) {
+	if (!free_stack.empty()) {
+		*out_index = free_stack.back();
+		free_stack.pop_back();
+		return SPUD_SUCCESS;
+	}
+	if (*next_unused >= SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS)
+		return SPUDRESULT_GPU_BINDLESS_OUT_OF_SLOTS;
+	*out_index = (*next_unused)++;
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudgpu_get_bindless_capabilities(
+    spudgpu_device device,
+    spudgpu_bindless_capabilities *out_caps) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!out_caps)
+		return SPUD_SUCCESS;
+
+	*out_caps = {};
+	// Lazily attempted on first call, unlike Vulkan's device-creation-time
+	// attempt — safe here since D3D12's lazy init carries no staleness risk
+	// (see spudgpud3d12___ensure_bindless_state).
+	out_caps->supported = spudgpud3d12___ensure_bindless_state(device) == SPUD_SUCCESS;
+	if (!out_caps->supported)
+		return SPUD_SUCCESS;
+	out_caps->max_sampled_images  = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+	out_caps->max_storage_images  = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+	out_caps->max_storage_buffers = SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS;
+	return SPUD_SUCCESS;
+}
+
+spudgpu_descriptor_set_layout spudgpu_get_bindless_descriptor_set_layout(spudgpu_device device) {
+	if (!device)
+		return nullptr;
+	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
+		return nullptr;
+	return (spudgpu_descriptor_set_layout)device->_bindless->layout;
+}
+
+SPUDRESULT spudgpu_bindless_register_sampled_image(
+    spudgpu_device device,
+    spudgpu_image_view view,
+    uint32_t *out_index) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!view)
+		return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
+	if (!out_index)
+		return SPUD_SUCCESS;
+	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
+		return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
+
+	spudgpu_bindless_state_d3d12 *state = device->_bindless;
+	SPUDRESULT sr = spudgpud3d12___bindless_alloc_index(
+	    &state->sampled_image_next_unused, state->sampled_image_free_stack, out_index);
+	if (sr != SPUD_SUCCESS)
+		return sr;
+
+	spudgpu_image_view_d3d12 *vView = (spudgpu_image_view_d3d12 *)view;
+	D3D12_CPU_DESCRIPTOR_HANDLE handle =
+	    state->heap->GetCPUDescriptorHandleForHeapStart();
+	handle.ptr += (SIZE_T)(*out_index) * state->increment; // class base 0
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = vView->_d3d_view_desc._srv;
+	device->_d3d_device->CreateShaderResourceView(
+	    vView->_image->_d3d_resource.Get(), &srvDesc, handle);
+	return SPUD_SUCCESS;
+}
+
+void spudgpu_bindless_unregister_sampled_image(spudgpu_device device, uint32_t index) {
+	if (!device || !device->_bindless)
+		return;
+	if (index == SPUDGPU_BINDLESS_INVALID_INDEX)
+		return;
+	device->_bindless->sampled_image_free_stack.push_back(index);
+}
+
+SPUDRESULT spudgpu_bindless_register_storage_image(
+    spudgpu_device device,
+    spudgpu_image_view view,
+    uint32_t *out_index) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!view)
+		return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
+	if (!out_index)
+		return SPUD_SUCCESS;
+	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
+		return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
+
+	spudgpu_bindless_state_d3d12 *state = device->_bindless;
+	SPUDRESULT sr = spudgpud3d12___bindless_alloc_index(
+	    &state->storage_image_next_unused, state->storage_image_free_stack, out_index);
+	if (sr != SPUD_SUCCESS)
+		return sr;
+
+	spudgpu_image_view_d3d12 *vView = (spudgpu_image_view_d3d12 *)view;
+	D3D12_CPU_DESCRIPTOR_HANDLE handle =
+	    state->heap->GetCPUDescriptorHandleForHeapStart();
+	handle.ptr += (SIZE_T)(SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS + *out_index) *
+	              state->increment; // class base 1
+
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = vView->_d3d_view_desc._uav;
+	device->_d3d_device->CreateUnorderedAccessView(
+	    vView->_image->_d3d_resource.Get(), nullptr, &uavDesc, handle);
+	return SPUD_SUCCESS;
+}
+
+void spudgpu_bindless_unregister_storage_image(spudgpu_device device, uint32_t index) {
+	if (!device || !device->_bindless)
+		return;
+	if (index == SPUDGPU_BINDLESS_INVALID_INDEX)
+		return;
+	device->_bindless->storage_image_free_stack.push_back(index);
+}
+
+SPUDRESULT spudgpu_bindless_register_storage_buffer(
+    spudgpu_device device,
+    spudgpu_buffer_view view,
+    uint32_t *out_index) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!view)
+		return SPUDRESULT_GPU_INVALID_BUFFER_VIEW;
+	if (!out_index)
+		return SPUD_SUCCESS;
+	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
+		return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
+
+	spudgpu_bindless_state_d3d12 *state = device->_bindless;
+	SPUDRESULT sr = spudgpud3d12___bindless_alloc_index(
+	    &state->storage_buffer_next_unused, state->storage_buffer_free_stack, out_index);
+	if (sr != SPUD_SUCCESS)
+		return sr;
+
+	spudgpu_buffer_view_d3d12 *vView = (spudgpu_buffer_view_d3d12 *)view;
+	spudgpu_buffer_d3d12 *vBuf       = vView->_buffer;
+
+	// Raw byte-address UAV, matching spudgpu_update_descriptor_sets'
+	// STORAGE_BUFFER handling above — buffer views have no pre-built UAV
+	// desc (SPUDGPU_D3D12_BUFFER_VIEW only carries VB/IB/CB/SO views).
+	uint64_t range = vView->_desc.size
+	                     ? vView->_desc.size
+	                     : (vBuf->_desc.size - vView->_desc.offset_from_parent_buffer);
+
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format              = DXGI_FORMAT_R32_TYPELESS;
+	uavDesc.ViewDimension       = D3D12_UAV_DIMENSION_BUFFER;
+	uavDesc.Buffer.FirstElement = vView->_desc.offset_from_parent_buffer / sizeof(uint32_t);
+	uavDesc.Buffer.NumElements  = (UINT)(range / sizeof(uint32_t));
+	uavDesc.Buffer.Flags        = D3D12_BUFFER_UAV_FLAG_RAW;
+
+	D3D12_CPU_DESCRIPTOR_HANDLE handle =
+	    state->heap->GetCPUDescriptorHandleForHeapStart();
+	handle.ptr += (SIZE_T)(2 * SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS + *out_index) *
+	              state->increment; // class base 2
+
+	device->_d3d_device->CreateUnorderedAccessView(
+	    vBuf->_d3d_resource.Get(), nullptr, &uavDesc, handle);
+	return SPUD_SUCCESS;
+}
+
+void spudgpu_bindless_unregister_storage_buffer(spudgpu_device device, uint32_t index) {
+	if (!device || !device->_bindless)
+		return;
+	if (index == SPUDGPU_BINDLESS_INVALID_INDEX)
+		return;
+	device->_bindless->storage_buffer_free_stack.push_back(index);
+}
+
+void spudgpu_cmd_bind_bindless_resources(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline,
+    uint32_t set_index) {
+	if (!cmd || !pipeline)
+		return;
+	spudgpu_device_d3d12 *device = cmd->_allocator->_device;
+	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
+		return;
+	spudgpu_bindless_state_d3d12 *state = device->_bindless;
+
+	ID3D12GraphicsCommandList *cmdList = cmd->_d3d_cmd_list.Get();
+
+	// D3D12 allows exactly one bound CBV_SRV_UAV heap per command list.
+	// Calling spudgpu_cmd_bind_descriptor_sets (classic path, pool-owned
+	// heap) after this on the same command list silently rebinds a
+	// different heap and invalidates this table — re-call this function
+	// afterward, before the next bindless-indexed draw, if both paths are
+	// ever mixed within one command list. Vulkan has no equivalent
+	// constraint (vkCmdBindDescriptorSets binds individual sets, not a
+	// whole shared heap), so this is a genuine D3D12-only interop rule.
+	ID3D12DescriptorHeap *heaps[] = {state->heap.Get()};
+	cmdList->SetDescriptorHeaps(1, heaps);
+
+	D3D12_GPU_DESCRIPTOR_HANDLE tableStart =
+	    state->heap->GetGPUDescriptorHandleForHeapStart();
+	cmdList->SetGraphicsRootDescriptorTable(set_index, tableStart);
+}
+
+void spudgpu_cmd_bind_bindless_resources_compute(
+    spudgpu_command_list cmd,
+    spudgpu_compute_pipeline pipeline,
+    uint32_t set_index) {
+	if (!cmd || !pipeline)
+		return;
+	spudgpu_device_d3d12 *device = cmd->_allocator->_device;
+	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
+		return;
+	spudgpu_bindless_state_d3d12 *state = device->_bindless;
+
+	ID3D12GraphicsCommandList *cmdList = cmd->_d3d_cmd_list.Get();
+
+	ID3D12DescriptorHeap *heaps[] = {state->heap.Get()};
+	cmdList->SetDescriptorHeaps(1, heaps);
+
+	D3D12_GPU_DESCRIPTOR_HANDLE tableStart =
+	    state->heap->GetGPUDescriptorHandleForHeapStart();
+	cmdList->SetComputeRootDescriptorTable(set_index, tableStart);
 }
 
 } // extern "C"

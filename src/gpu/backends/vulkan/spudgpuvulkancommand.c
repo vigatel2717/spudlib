@@ -225,7 +225,7 @@ void spudgpu_end_command_list(spudgpu_command_list cmd) {
     vkEndCommandBuffer(cmd->_command_buffer_vk);
 }
 
-void spudgpu_set_viewports(
+void spudgpu_cmd_set_viewports(
     spudgpu_command_list cmd,
     uint32_t first_viewport,
     uint32_t viewport_count,
@@ -247,7 +247,7 @@ void spudgpu_set_viewports(
     free(vk_viewports);
 }
 
-void spudgpu_set_scissor_rects(
+void spudgpu_cmd_set_scissor_rects(
     spudgpu_command_list cmd,
     uint32_t first_scissor_rect,
     uint32_t scissor_rect_count,
@@ -267,7 +267,7 @@ void spudgpu_set_scissor_rects(
     free(vk_scissors);
 }
 
-void spudgpu_set_vertex_buffers(
+void spudgpu_cmd_set_vertex_buffers(
     spudgpu_command_list cmd,
     uint32_t start_slot,
     uint32_t view_count,
@@ -294,7 +294,7 @@ void spudgpu_set_vertex_buffers(
     free(vk_offsets);
 }
 
-void spudgpu_set_index_buffer(
+void spudgpu_cmd_set_index_buffer(
     spudgpu_command_list cmd,
     spudgpu_buffer_view buffer_view) {
     if (!(cmd && buffer_view)) return;
@@ -309,7 +309,7 @@ void spudgpu_set_index_buffer(
         index_type);
 }
 
-void spudgpu_draw(
+void spudgpu_cmd_draw(
     spudgpu_command_list cmd,
     uint32_t vertex_count,
     uint32_t start_vertex_location) {
@@ -333,7 +333,7 @@ void spudgpu_cmd_bind_pipeline(
         pipeline->_pipeline_vk);
 }
 
-void spudgpu_draw_indexed(
+void spudgpu_cmd_draw_indexed(
     spudgpu_command_list cmd,
     uint32_t index_count,
     uint32_t start_index_location,
@@ -348,7 +348,7 @@ void spudgpu_draw_indexed(
         0);
 }
 
-void spudgpu_draw_instanced(
+void spudgpu_cmd_draw_instanced(
     spudgpu_command_list cmd,
     uint32_t vertex_count_per_instance,
     uint32_t instance_count,
@@ -363,7 +363,7 @@ void spudgpu_draw_instanced(
         start_instance_location);
 }
 
-void spudgpu_draw_indexed_instanced(
+void spudgpu_cmd_draw_indexed_instanced(
     spudgpu_command_list cmd,
     uint32_t index_count_per_instance,
     uint32_t instance_count,
@@ -465,6 +465,40 @@ void spudgpu_cmd_push_constants(
         cmd->_command_buffer_vk,
         pipeline->_pipeline_layout_vk,
         stages, offset, size, data);
+}
+
+void spudgpu_cmd_bind_bindless_resources(
+    spudgpu_command_list cmd,
+    spudgpu_shader_pipeline pipeline,
+    uint32_t set_index) {
+    if (!cmd || !pipeline) return;
+    spudgpu_device_vulkan *device = &cmd->_allocator._device;
+    if (!device->_bindless) return;
+
+    vkCmdBindDescriptorSets(
+        cmd->_command_buffer_vk,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pipeline->_pipeline_layout_vk,
+        set_index,
+        1, &device->_bindless->set_vk,
+        0, NULL);
+}
+
+void spudgpu_cmd_bind_bindless_resources_compute(
+    spudgpu_command_list cmd,
+    spudgpu_compute_pipeline pipeline,
+    uint32_t set_index) {
+    if (!cmd || !pipeline) return;
+    spudgpu_device_vulkan *device = &cmd->_allocator._device;
+    if (!device->_bindless) return;
+
+    vkCmdBindDescriptorSets(
+        cmd->_command_buffer_vk,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        pipeline->_pipeline_layout_vk,
+        set_index,
+        1, &device->_bindless->set_vk,
+        0, NULL);
 }
 
 #if __cplusplus
