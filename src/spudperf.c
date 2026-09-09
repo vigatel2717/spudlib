@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <time.h>
 #include <stdint.h>
+#elif SPUDLIB_PLATFORM_APPLE
+#include <mach/mach.h>
+#include <stdint.h>
+#include <time.h>
 #endif
 
 #if __cplusplus
@@ -69,6 +73,22 @@ void spudperf_get_ram_usage(
 		*current_ram_usage = rss;
 	if (peak_ram_usage)
 		*peak_ram_usage = hwm;
+#elif SPUDLIB_PLATFORM_APPLE
+	struct task_vm_info info;
+	mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+	kern_return_t kr             = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count);
+	if (kr != KERN_SUCCESS) {
+		if (current_ram_usage)
+			*current_ram_usage = 0;
+		if (peak_ram_usage)
+			*peak_ram_usage = 0;
+		return;
+	}
+
+	if (current_ram_usage)
+		*current_ram_usage = (uint64_t)info.phys_footprint;
+	if (peak_ram_usage)
+		*peak_ram_usage = (uint64_t)info.resident_size_peak;
 #endif
 }
 
@@ -80,7 +100,7 @@ uint64_t spudperf_get_current_time_milliseconds() {
 	LARGE_INTEGER counter;
 	QueryPerformanceCounter(&counter);
 	return (uint64_t)((counter.QuadPart * 1000) / frequency.QuadPart);
-#elif SPUDLIB_PLATFORM_LINUX
+#elif SPUDLIB_PLATFORM_LINUX || SPUDLIB_PLATFORM_APPLE
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
