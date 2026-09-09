@@ -65,3 +65,6 @@ target/
 # Swift binding build folder
 bindings/swift/.build/
 bindings/swift/.swiftpm/
+
+# Claude Code worktrees
+.claude/worktrees/
