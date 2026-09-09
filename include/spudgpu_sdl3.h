@@ -53,4 +53,19 @@ static inline spudgpu_surface spudgpu_create_surface_from_sdl3(
 }
 #endif // SPUDGPU_COMPILE_D3D12_API
 
+
+#if SPUDGPU_COMPILE_METAL_API
+#include <SDL3/SDL_metal.h>
+
+static inline spudgpu_surface spudgpu_create_surface_from_sdl3(
+    spudgpu_instance instance,
+    SDL_Window *window) {
+    SDL_MetalView view = SDL_Metal_CreateView(window);
+    void *metal_layer  = SDL_Metal_GetLayer(view);
+    spudgpu_surface surface = NULL;
+    spudgpu_create_surface(instance, metal_layer, NULL, &surface);
+    return surface;
+}
+#endif // SPUDGPU_COMPILE_METAL_API
+
 #endif //SPUDLIB_SPUDGPU_SDL3_H

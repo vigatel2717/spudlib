@@ -1806,7 +1806,6 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
     const spudgpu_descriptor_set *sets,
     uint32_t set_count);
 
-<<<<<<< HEAD
 // ============================================================================
 //  Bindless / Descriptor Indexing
 //  Maps to: VK_EXT_descriptor_indexing update-after-bind arrays, promoted
@@ -2001,8 +2000,6 @@ void spudgpu_cmd_bind_bindless_resources_compute(
 
 #endif // SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING
 
-=======
->>>>>>> 5a737da092100dd1797b106187fded965744c1f2
 typedef uint32_t SPUDGPU_PRIMITIVE_TOPOLOGY;
 
 enum {
