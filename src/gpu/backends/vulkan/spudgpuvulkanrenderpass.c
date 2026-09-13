@@ -502,10 +502,14 @@ void spudgpu_begin_bundle_command_list(
 
     // RENDER_PASS_CONTINUE_BIT is required for a secondary buffer that will
     // be executed inside an active rendering instance (dynamic rendering
-    // included, per VK_KHR_dynamic_rendering).
+    // included, per VK_KHR_dynamic_rendering). SIMULTANEOUS_USE_BIT is
+    // required because a bundle is recorded once and resubmitted via
+    // vkCmdExecuteCommands every frame without ever being re-recorded --
+    // without it, resubmitting the buffer while a prior submission may
+    // still be pending on the GPU is invalid usage.
     VkCommandBufferBeginInfo begin = {0};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
     begin.pInheritanceInfo = &inheritance;
     vkBeginCommandBuffer(bundle->_command_buffer_vk, &begin);
 }

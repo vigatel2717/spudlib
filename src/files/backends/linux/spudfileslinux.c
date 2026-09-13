@@ -1,8 +1,3 @@
-<<<<<<< HEAD
-#include "spudfiles.h"
-
-#include <sys/stat.h>
-=======
 #define _POSIX_C_SOURCE 200809L
 
 #include "spudcore.h"
@@ -209,7 +204,6 @@ sfs_file_set_pos(
 
 	return SPUD_SUCCESS;
 }
->>>>>>> 5a737da092100dd1797b106187fded965744c1f2
 
 // --------------------------------------------------------------------------
 // File / directory queries
@@ -224,7 +218,6 @@ bool sfs_file_exists(const char *file_path) {
 	return !S_ISDIR(st.st_mode);
 }
 
-<<<<<<< HEAD
 bool sfs_directory_exists(const char *dir_path) {
 	if (!dir_path || dir_path[0] == '\0')
 		return false;
@@ -233,7 +226,6 @@ bool sfs_directory_exists(const char *dir_path) {
 		return false;
 	return S_ISDIR(st.st_mode);
 }
-=======
 SPUDRESULT sfs_set_working_directory(const char *dir) {
 	if (!dir || dir[0] == '\0')
 		return SPUDRESULT_SFS_NULL_PATH;
@@ -461,4 +453,3 @@ const char *sfs_open_folder_dialog(const char *title) {
 #if __cplusplus
 }
 #endif // __cplusplus
->>>>>>> 5a737da092100dd1797b106187fded965744c1f2
