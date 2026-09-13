@@ -347,7 +347,8 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	depthStencil.depthWriteEnable =
 	    desc->depth_write_enable ? VK_TRUE : VK_FALSE;
 	depthStencil.depthCompareOp        = (VkCompareOp)desc->depth_compare_op;
-	depthStencil.depthBoundsTestEnable = VK_FALSE;
+	depthStencil.depthBoundsTestEnable =
+	    desc->depth_bounds_test_enable ? VK_TRUE : VK_FALSE;
 	depthStencil.stencilTestEnable     = VK_FALSE;
 
 	// ------------------------------------------------------------------
@@ -380,11 +381,15 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	// ------------------------------------------------------------------
 	// 9. Dynamic state – viewport + scissor changed per frame via commands
 	// ------------------------------------------------------------------
-	VkDynamicState dynamic_states[] = {
+	VkDynamicState dynamic_states[3] = {
 	    VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+	uint32_t dynamic_state_count = 2;
+	if (desc->depth_bounds_test_enable) {
+		dynamic_states[dynamic_state_count++] = VK_DYNAMIC_STATE_DEPTH_BOUNDS;
+	}
 	VkPipelineDynamicStateCreateInfo dynamicState = {0};
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount = 2;
+	dynamicState.dynamicStateCount = dynamic_state_count;
 	dynamicState.pDynamicStates    = dynamic_states;
 
 	// ------------------------------------------------------------------

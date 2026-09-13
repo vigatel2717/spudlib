@@ -232,7 +232,7 @@ struct spudgpu_d3d12_mesh_pipeline_stream {
 	CD3DX12_PIPELINE_STATE_STREAM_BLEND_DESC BlendState;
 	CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_MASK SampleMask;
 	CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER RasterizerState;
-	CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL DepthStencilState;
+	CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL1 DepthStencilState;
 	CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
 	CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
 	CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_DESC SampleDesc;
@@ -323,7 +323,9 @@ static SPUDRESULT spudgpu_d3d12___create_mesh_shader_pipeline(
 	stream.BlendState        = CD3DX12_BLEND_DESC(blendDesc);
 	stream.SampleMask        = UINT_MAX;
 	stream.RasterizerState   = CD3DX12_RASTERIZER_DESC(rastDesc);
-	stream.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(dsDesc);
+	CD3DX12_DEPTH_STENCIL_DESC1 meshDsDesc1(dsDesc);
+	meshDsDesc1.DepthBoundsTestEnable = desc->depth_bounds_test_enable ? TRUE : FALSE;
+	stream.DepthStencilState = meshDsDesc1;
 	stream.DSVFormat         = (desc->depth_format != SPUDGPU_FORMAT_UNKNOWN)
 	                               ? spudgpu_d3d12_get_dxgi_format(desc->depth_format)
 	                               : DXGI_FORMAT_UNKNOWN;
@@ -619,8 +621,26 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	psoDesc.NodeMask   = 0;
 	psoDesc.Flags      = D3D12_PIPELINE_STATE_FLAG_NONE;
 
-	hr = device->_d3d_device->CreateGraphicsPipelineState(
-	    &psoDesc, IID_PPV_ARGS(&pResult->_d3d_pipeline_state));
+	// CreateGraphicsPipelineState's D3D12_GRAPHICS_PIPELINE_STATE_DESC only
+	// carries a D3D12_DEPTH_STENCIL_DESC (no DepthBoundsTestEnable - that
+	// field only exists on D3D12_DEPTH_STENCIL_DESC1). CD3DX12_PIPELINE_
+	// STATE_STREAM1 round-trips psoDesc losslessly (see its
+	// D3D12_GRAPHICS_PIPELINE_STATE_DESC constructor in d3dx12.h) while
+	// upgrading DepthStencilState to the "1" variant, so every pipeline
+	// created here goes through CreatePipelineState instead - not just the
+	// ones that ask for depth_bounds_test_enable - to avoid two divergent
+	// creation paths for what should behave identically otherwise.
+	CD3DX12_PIPELINE_STATE_STREAM1 pipelineStateStream(psoDesc);
+	CD3DX12_DEPTH_STENCIL_DESC1 dsDesc1(dsDesc);
+	dsDesc1.DepthBoundsTestEnable = desc->depth_bounds_test_enable ? TRUE : FALSE;
+	pipelineStateStream.DepthStencilState = dsDesc1;
+
+	D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+	streamDesc.SizeInBytes                   = sizeof(pipelineStateStream);
+	streamDesc.pPipelineStateSubobjectStream = &pipelineStateStream;
+
+	hr = device->_d3d_device->CreatePipelineState(
+	    &streamDesc, IID_PPV_ARGS(&pResult->_d3d_pipeline_state));
 	if (FAILED(hr)) {
 		delete pResult;
 		return SPUDRESULT_API_SPECIFIC_FAILURE;

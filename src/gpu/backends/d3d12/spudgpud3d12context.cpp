@@ -281,6 +281,24 @@ SPUDRESULT spudgpu_get_mesh_shading_capabilities(
 }
 #endif
 
+#if SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+SPUDRESULT spudgpu_get_depth_bounds_capabilities(
+    spudgpu_device device, spudgpu_depth_bounds_capabilities *out_caps) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!out_caps)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+
+	*out_caps = {};
+
+	D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2 = {};
+	HRESULT hr                                  = device->_d3d_device->CheckFeatureSupport(
+	    D3D12_FEATURE_D3D12_OPTIONS2, &options2, sizeof(options2));
+	out_caps->supported = SUCCEEDED(hr) && options2.DepthBoundsTestSupported;
+	return SPUD_SUCCESS;
+}
+#endif
+
 SPUDRESULT spudgpu_create_surface(
     spudgpu_instance instance,
     void *window_handle,

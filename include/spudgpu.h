@@ -2333,6 +2333,17 @@ typedef struct spudgpu_shader_pipeline_desc {
 	/// @see SPUDGPU_COMPARE_OP
 	SPUDGPU_COMPARE_OP depth_compare_op;
 
+	/// Discards a fragment whose depth attachment value (already primed by
+	/// an earlier draw, not this fragment's own depth) falls outside
+	/// spudgpu_cmd_set_depth_bounds' [min, max] range. Independent of
+	/// depth_test_enable/depth_compare_op above — the two mechanisms compose
+	/// (both run when both are enabled) rather than one replacing the other.
+	/// No-op on backends without depth bounds test support (see
+	/// SPUDGPU_EXT_DEPTH_BOUNDS_TEST) — the pipeline behaves as if this is
+	/// false. Check spudgpu_depth_bounds_capabilities::supported before
+	/// relying on it even on a backend that compiles the extension in.
+	bool depth_bounds_test_enable;
+
 	// -----------------------------------------------------------------------
 	// Blend state
 	// -----------------------------------------------------------------------
@@ -2743,6 +2754,86 @@ void spudgpu_cmd_dispatch_mesh(
     uint32_t group_count_z);
 
 #endif // SPUDGPU_EXT_MESH_SHADING
+
+// ============================================================================
+//  Depth Bounds Test
+//  Maps to: vkCmdSetDepthBounds + VkPipelineDepthStencilStateCreateInfo::
+//  depthBoundsTestEnable, core Vulkan 1.0 gated behind the optional
+//  VkPhysicalDeviceFeatures::depthBounds feature bit (Vulkan) /
+//  ID3D12GraphicsCommandList1::OMSetDepthBounds + D3D12_DEPTH_STENCIL_DESC1::
+//  DepthBoundsTestEnable, gated behind D3D12_FEATURE_DATA_D3D12_OPTIONS2::
+//  DepthBoundsTestSupported (D3D12).
+//
+//  Discards a fragment based on whether the depth attachment's *existing*
+//  value at that pixel (primed by an earlier draw) falls inside a caller-set
+//  [min, max] range — independent of, and composable with, the ordinary
+//  per-fragment depth test (depth_test_enable/depth_compare_op). The classic
+//  use (see SpudGPUDepthBoundsTest, ported from D3D12DepthBoundsTest) is a
+//  depth-only priming pass followed by a second pass whose visible region is
+//  clipped by an animated depth-bounds window.
+//
+//  Metal has no depth-bounds-test primitive at all — no equivalent field on
+//  MTLDepthStencilDescriptor, no equivalent MTLRenderCommandEncoder method.
+//  That is a structural capability gap, not a missing feature, so this whole
+//  section is compiled out on Metal rather than emulated. Unlike
+//  SPUDGPU_EXT_BUNDLES though, hardware/driver support genuinely varies even
+//  on the two backends that do compile this in — spudgpu_depth_bounds_
+//  capabilities::supported (mirroring SPUDGPU_EXT_MESH_SHADING's runtime
+//  query) is how the caller finds out. spudgpu_shader_pipeline_desc::
+//  depth_bounds_test_enable itself is declared unconditionally (see
+//  spudgpu_rendering_begin_desc::will_execute_bundles for the same pattern)
+//  since it's a plain no-op toggle on a backend/device that lacks this,
+//  rather than something that needs to be a compile error to touch; the
+//  functions below are the narrow island that's actually gated.
+// ============================================================================
+
+#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API
+#define SPUDGPU_EXT_DEPTH_BOUNDS_TEST 1
+#else
+#define SPUDGPU_EXT_DEPTH_BOUNDS_TEST 0
+#endif
+
+#if SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+
+/**
+ * @brief Reports whether this device supports the depth bounds test.
+ *
+ * Vulkan: reflects VkPhysicalDeviceFeatures::depthBounds. D3D12: reflects
+ * D3D12_FEATURE_DATA_D3D12_OPTIONS2::DepthBoundsTestSupported.
+ */
+typedef struct spudgpu_depth_bounds_capabilities {
+	bool supported;
+} spudgpu_depth_bounds_capabilities;
+
+/**
+ * @return SPUD_SUCCESS with out_caps populated (out_caps->supported may
+ * still be false — that is not an error, it's the answer).
+ */
+SPUDRESULT spudgpu_get_depth_bounds_capabilities(
+    spudgpu_device device,
+    spudgpu_depth_bounds_capabilities *out_caps);
+
+/**
+ * @brief Sets the [min, max] depth-attachment-value range the depth bounds
+ * test clips against for subsequent draws.
+ *
+ * Call after binding a pipeline created with depth_bounds_test_enable=true,
+ * before any draw call that should be clipped by it. A no-op if this
+ * device/driver doesn't support the depth bounds test — check
+ * spudgpu_depth_bounds_capabilities::supported before relying on this.
+ *
+ * Maps to: vkCmdSetDepthBounds (Vulkan), ID3D12GraphicsCommandList1::
+ * OMSetDepthBounds (D3D12).
+ *
+ * @param[in] min_depth_bounds/max_depth_bounds Both in [0, 1], matching the
+ * depth attachment's own value range.
+ */
+void spudgpu_cmd_set_depth_bounds(
+    spudgpu_command_list cmd,
+    float min_depth_bounds,
+    float max_depth_bounds);
+
+#endif // SPUDGPU_EXT_DEPTH_BOUNDS_TEST
 
 /**
  * @brief Complete configuration descriptor for creating a compute shader

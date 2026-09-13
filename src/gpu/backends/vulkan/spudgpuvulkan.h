@@ -66,6 +66,15 @@ typedef struct spudgpu_device_t {
     uint32_t _mesh_shading_max_output_vertices;
     uint32_t _mesh_shading_max_output_primitives;
     uint32_t _mesh_shading_max_workgroup_invocations;
+
+    // Set once at device creation (spudgpuvulkancontext.c) from
+    // VkPhysicalDeviceFeatures::depthBounds - queried before the logical
+    // device exists (unlike _properties_vk/_features_vk below, which are
+    // only populated after), since it must also decide whether to request
+    // the depthBounds feature bit when creating the device. Mirrors
+    // spudgpu_depth_bounds_capabilities (see SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+    // in spudgpu.h).
+    bool _depth_bounds_test_supported;
     // NULL when _mesh_shading_supported is false. Loaded via
     // vkGetDeviceProcAddr since VK_EXT_mesh_shader's entry points don't come
     // statically linked the way VK_KHR_swapchain's do (the only other

@@ -572,6 +572,22 @@ void spudgpu_cmd_dispatch_mesh(
 }
 #endif
 
+#if SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+void spudgpu_cmd_set_depth_bounds(
+    spudgpu_command_list cmd,
+    float min_depth_bounds,
+    float max_depth_bounds) {
+    if (!cmd) return;
+    // _depth_bounds_test_supported is set once at device creation (see
+    // spudgpuvulkancontext.c) - false here means the depthBounds feature
+    // was never enabled on this device, so vkCmdSetDepthBounds would be
+    // invalid to call at all (mirrors spudgpu_cmd_dispatch_mesh's null
+    // function-pointer no-op guard above).
+    if (!cmd->_allocator._device._depth_bounds_test_supported) return;
+    vkCmdSetDepthBounds(cmd->_command_buffer_vk, min_depth_bounds, max_depth_bounds);
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // spudgpu_cmd_pipeline_barrier — SPUDGPU_RESOURCE_STATE -> VkAccessFlags /
 // VkPipelineStageFlags / VkImageLayout. Distinct from the SPUDGPU_IMAGE_LAYOUT

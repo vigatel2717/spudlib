@@ -215,6 +215,16 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
 
     VkPhysicalDeviceFeatures deviceFeatures = {0};
 
+    // depthBounds is a core-1.0, optional VkPhysicalDeviceFeatures bit (no
+    // extension, unlike VK_EXT_mesh_shader below) - query it directly rather
+    // than assuming, and only request it if the hardware actually reports
+    // it. device->_features_vk (populated by the caller after this function
+    // returns) can't be used here since it doesn't exist yet at this point.
+    VkPhysicalDeviceFeatures availableFeatures = {0};
+    vkGetPhysicalDeviceFeatures(physicalDevice, &availableFeatures);
+    deviceFeatures.depthBounds = availableFeatures.depthBounds;
+    device->_depth_bounds_test_supported = availableFeatures.depthBounds == VK_TRUE;
+
     // spudgpu_create_buffer/spudgpu_create_image always call
     // vkGetBufferDeviceAddress/equivalent to populate desc.gpu_address_location
     // (see spudgpu.h's documented contract that it's valid after creation,
@@ -574,6 +584,20 @@ SPUDRESULT spudgpu_get_mesh_shading_capabilities(
         out_caps->max_mesh_output_primitives     = device->_mesh_shading_max_output_primitives;
         out_caps->max_mesh_workgroup_invocations = device->_mesh_shading_max_workgroup_invocations;
     }
+    return SPUD_SUCCESS;
+}
+#endif
+
+#if SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+SPUDRESULT spudgpu_get_depth_bounds_capabilities(
+    spudgpu_device device, spudgpu_depth_bounds_capabilities *out_caps) {
+    if (!device)
+        return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!out_caps)
+        return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+
+    memset(out_caps, 0, sizeof(*out_caps));
+    out_caps->supported = device->_depth_bounds_test_supported;
     return SPUD_SUCCESS;
 }
 #endif

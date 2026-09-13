@@ -289,6 +289,20 @@ void spudgpu_cmd_dispatch_mesh(
 }
 #endif
 
+#if SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+void spudgpu_cmd_set_depth_bounds(
+    spudgpu_command_list cmd,
+    float min_depth_bounds,
+    float max_depth_bounds) {
+	if (!cmd)
+		return;
+	// OMSetDepthBounds is declared on ID3D12GraphicsCommandList1 - _d3d_cmd_list
+	// is stored as the newer ID3D12GraphicsCommandList10 (spudgpud3d12.hpp),
+	// which already inherits it, so no QueryInterface is needed here.
+	cmd->_d3d_cmd_list->OMSetDepthBounds(min_depth_bounds, max_depth_bounds);
+}
+#endif
+
 // Lazily creates (and caches on the device) the root-signature-less command
 // signature used by spudgpu_cmd_draw_indirect / _indexed_indirect. Mechanical
 // translation, not a policy choice: D3D12 structurally requires this object
