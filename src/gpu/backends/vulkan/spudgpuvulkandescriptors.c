@@ -25,6 +25,67 @@ static VkDescriptorType spudgpuvulkan___descriptor_type_internal(
     }
 }
 
+static VkFilter spudgpuvulkan___filter_internal(SPUDGPU_FILTER filter) {
+    return filter == SPUDGPU_FILTER_LINEAR ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+}
+
+static VkSamplerMipmapMode spudgpuvulkan___mipmap_mode_internal(SPUDGPU_FILTER filter) {
+    return filter == SPUDGPU_FILTER_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+}
+
+static VkSamplerAddressMode spudgpuvulkan___address_mode_internal(SPUDGPU_ADDRESS_MODE mode) {
+    switch (mode) {
+        case SPUDGPU_ADDRESS_MODE_MIRRORED_REPEAT: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        case SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        case SPUDGPU_ADDRESS_MODE_CLAMP_TO_BORDER: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        case SPUDGPU_ADDRESS_MODE_REPEAT:
+        default: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    }
+}
+
+SPUDRESULT spudgpu_create_sampler(
+    spudgpu_device device,
+    const spudgpu_sampler_desc *desc,
+    spudgpu_sampler *out_sampler) {
+    if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!desc) return SPUDRESULT_NULL_DESC;
+    if (!out_sampler) return SPUD_SUCCESS;
+
+    VkSamplerCreateInfo info = {0};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.magFilter = spudgpuvulkan___filter_internal(desc->mag_filter);
+    info.minFilter = spudgpuvulkan___filter_internal(desc->min_filter);
+    info.mipmapMode = spudgpuvulkan___mipmap_mode_internal(desc->mipmap_filter);
+    info.addressModeU = spudgpuvulkan___address_mode_internal(desc->address_mode_u);
+    info.addressModeV = spudgpuvulkan___address_mode_internal(desc->address_mode_v);
+    info.addressModeW = spudgpuvulkan___address_mode_internal(desc->address_mode_w);
+    info.mipLodBias = desc->mip_lod_bias;
+    info.minLod = desc->min_lod;
+    info.maxLod = desc->max_lod;
+    info.anisotropyEnable = desc->max_anisotropy > 1.0f ? VK_TRUE : VK_FALSE;
+    info.maxAnisotropy = desc->max_anisotropy;
+    info.compareEnable = VK_FALSE;
+    info.compareOp = VK_COMPARE_OP_ALWAYS;
+    info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+
+    spudgpu_sampler_vulkan *pResult = calloc(1, sizeof(spudgpu_sampler_vulkan));
+    pResult->_device = *device;
+
+    if (vkCreateSampler(device->_logical_device_vk, &info, NULL, &pResult->_sampler_vk) != VK_SUCCESS) {
+        free(pResult);
+        return SPUDRESULT_API_SPECIFIC_FAILURE;
+    }
+
+    *out_sampler = pResult;
+    return SPUD_SUCCESS;
+}
+
+void spudgpu_destroy_sampler(spudgpu_sampler sampler) {
+    if (!sampler) return;
+    vkDestroySampler(sampler->_device._logical_device_vk, sampler->_sampler_vk, NULL);
+    free(sampler);
+}
+
 SPUDRESULT spudgpu_create_descriptor_set_layout(
     spudgpu_device device,
     const spudgpu_descriptor_set_layout_desc *desc,
@@ -52,7 +113,10 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
         vk_bindings[i].descriptorType = vk_type;
         vk_bindings[i].descriptorCount = b->count;
         vk_bindings[i].stageFlags = (VkShaderStageFlags) b->stage_flags;
-        vk_bindings[i].pImmutableSamplers = NULL; // Dynamic samplers only for now
+        // Immutable samplers aren't supported yet — see the "no static/immutable
+        // sampler support" gap in ../../../CLAUDE.md. Every sampler goes through
+        // the dynamic, descriptor-bound spudgpu_sampler path today.
+        vk_bindings[i].pImmutableSamplers = NULL;
     }
 
     VkDescriptorSetLayoutCreateInfo layoutInfo = {0};
@@ -285,8 +349,14 @@ void spudgpu_update_descriptor_sets(
                     (spudgpu_image_view_vulkan *) w->image_info->image_view;
             vk_img_infos[i].imageView = vkView->_image_view_vk;
             vk_img_infos[i].imageLayout = (VkImageLayout) w->image_info->image_layout;
-            // Sampler is NULL — set it if COMBINED_IMAGE_SAMPLER support is added later.
-            vk_img_infos[i].sampler = VK_NULL_HANDLE;
+            // Non-NULL only for COMBINED_IMAGE_SAMPLER writes.
+            vk_img_infos[i].sampler = w->sampler
+                                           ? ((spudgpu_sampler_vulkan *) w->sampler)->_sampler_vk
+                                           : VK_NULL_HANDLE;
+            vk_writes[i].pImageInfo = &vk_img_infos[i];
+        } else if (w->sampler) {
+            // Pure SAMPLER descriptor — no image_info involved.
+            vk_img_infos[i].sampler = ((spudgpu_sampler_vulkan *) w->sampler)->_sampler_vk;
             vk_writes[i].pImageInfo = &vk_img_infos[i];
         }
     }

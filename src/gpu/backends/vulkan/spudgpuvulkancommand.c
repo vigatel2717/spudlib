@@ -501,6 +501,219 @@ void spudgpu_cmd_bind_bindless_resources_compute(
         0, NULL);
 }
 
+void spudgpu_cmd_bind_compute_pipeline(
+    spudgpu_command_list cmd,
+    spudgpu_compute_pipeline pipeline) {
+    if (!(cmd && pipeline)) return;
+
+    vkCmdBindPipeline(
+        cmd->_command_buffer_vk,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        pipeline->_pipeline_vk);
+}
+
+void spudgpu_cmd_dispatch(
+    spudgpu_command_list cmd,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z) {
+    if (!cmd) return;
+    vkCmdDispatch(cmd->_command_buffer_vk, group_count_x, group_count_y, group_count_z);
+}
+
+void spudgpu_cmd_draw_indirect(
+    spudgpu_command_list cmd,
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint32_t draw_count,
+    uint32_t stride) {
+    if (!(cmd && buffer) || draw_count == 0) return;
+    vkCmdDrawIndirect(
+        cmd->_command_buffer_vk,
+        buffer->_buffer_vk,
+        (VkDeviceSize) offset,
+        draw_count,
+        stride);
+}
+
+void spudgpu_cmd_draw_indexed_indirect(
+    spudgpu_command_list cmd,
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint32_t draw_count,
+    uint32_t stride) {
+    if (!(cmd && buffer) || draw_count == 0) return;
+    vkCmdDrawIndexedIndirect(
+        cmd->_command_buffer_vk,
+        buffer->_buffer_vk,
+        (VkDeviceSize) offset,
+        draw_count,
+        stride);
+}
+
+#if SPUDGPU_EXT_MESH_SHADING
+void spudgpu_cmd_dispatch_mesh(
+    spudgpu_command_list cmd,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z) {
+    if (!cmd) return;
+    // Loaded once at device creation via vkGetDeviceProcAddr - see
+    // spudgpuvulkancontext.c - since VK_EXT_mesh_shader's entry points
+    // don't come statically linked. NULL here means the device this
+    // command list's allocator was created against never enabled mesh
+    // shading (spudgpu_get_mesh_shading_capabilities::supported was false).
+    PFN_vkCmdDrawMeshTasksEXT draw_mesh_tasks = cmd->_allocator._device._vkCmdDrawMeshTasksEXT;
+    if (!draw_mesh_tasks) return;
+    draw_mesh_tasks(cmd->_command_buffer_vk, group_count_x, group_count_y, group_count_z);
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// spudgpu_cmd_pipeline_barrier — SPUDGPU_RESOURCE_STATE -> VkAccessFlags /
+// VkPipelineStageFlags / VkImageLayout. Distinct from the SPUDGPU_IMAGE_LAYOUT
+// mechanism spudgpu_cmd_image_barrier already uses (spudgpuvulkanrenderpass.c)
+// — that path stays the one used for swap chain/render target transitions;
+// this one exists for the more general resource-state model (buffers, plus
+// images expressed the same way) declared alongside SPUDGPU_RESOURCE_STATE.
+// ---------------------------------------------------------------------------
+
+static VkAccessFlags spudgpu_vk___resource_state_to_access(SPUDGPU_RESOURCE_STATE state) {
+    switch (state) {
+    case SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER:
+        return VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    case SPUDGPU_RESOURCE_STATE_INDEX_BUFFER:
+        return VK_ACCESS_INDEX_READ_BIT;
+    case SPUDGPU_RESOURCE_STATE_RENDER_TARGET:
+        return VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    case SPUDGPU_RESOURCE_STATE_DEPTH_WRITE:
+        return VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    case SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE:
+        return VK_ACCESS_SHADER_READ_BIT;
+    case SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS:
+        return VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    case SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT:
+        return VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    case SPUDGPU_RESOURCE_STATE_PRESENT:
+    case SPUDGPU_RESOURCE_STATE_COMMON:
+    default:
+        return 0;
+    }
+}
+
+static VkPipelineStageFlags spudgpu_vk___resource_state_to_stage(SPUDGPU_RESOURCE_STATE state) {
+    switch (state) {
+    case SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER:
+    case SPUDGPU_RESOURCE_STATE_INDEX_BUFFER:
+        return VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    case SPUDGPU_RESOURCE_STATE_RENDER_TARGET:
+        return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    case SPUDGPU_RESOURCE_STATE_DEPTH_WRITE:
+        return VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    case SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE:
+    case SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS:
+        return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    case SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT:
+        return VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    case SPUDGPU_RESOURCE_STATE_PRESENT:
+        return VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    case SPUDGPU_RESOURCE_STATE_COMMON:
+    default:
+        return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    }
+}
+
+static VkImageLayout spudgpu_vk___resource_state_to_image_layout(SPUDGPU_RESOURCE_STATE state) {
+    switch (state) {
+    case SPUDGPU_RESOURCE_STATE_RENDER_TARGET:
+        return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    case SPUDGPU_RESOURCE_STATE_DEPTH_WRITE:
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    case SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE:
+        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    case SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS:
+        return VK_IMAGE_LAYOUT_GENERAL;
+    case SPUDGPU_RESOURCE_STATE_PRESENT:
+        return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    case SPUDGPU_RESOURCE_STATE_COMMON:
+    default:
+        return VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+}
+
+void spudgpu_cmd_pipeline_barrier(
+    spudgpu_command_list cmd,
+    const spudgpu_buffer_barrier *buffer_barriers,
+    uint32_t buffer_barrier_count,
+    const spudgpu_image_barrier *image_barriers,
+    uint32_t image_barrier_count) {
+    if (!cmd) return;
+    if (buffer_barrier_count > 0 && !buffer_barriers) return;
+    if (image_barrier_count > 0 && !image_barriers) return;
+    if (buffer_barrier_count == 0 && image_barrier_count == 0) return;
+
+    VkPipelineStageFlags src_stage = 0;
+    VkPipelineStageFlags dst_stage = 0;
+
+    VkBufferMemoryBarrier *vk_buffer_barriers =
+        buffer_barrier_count ? calloc(buffer_barrier_count, sizeof(VkBufferMemoryBarrier)) : NULL;
+    for (uint32_t i = 0; i < buffer_barrier_count; i++) {
+        const spudgpu_buffer_barrier *b = &buffer_barriers[i];
+        vk_buffer_barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        vk_buffer_barriers[i].srcAccessMask = spudgpu_vk___resource_state_to_access(b->state_before);
+        vk_buffer_barriers[i].dstAccessMask = spudgpu_vk___resource_state_to_access(b->state_after);
+        vk_buffer_barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vk_buffer_barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vk_buffer_barriers[i].buffer = b->buffer->_buffer_vk;
+        vk_buffer_barriers[i].offset = 0;
+        vk_buffer_barriers[i].size = VK_WHOLE_SIZE;
+
+        src_stage |= spudgpu_vk___resource_state_to_stage(b->state_before);
+        dst_stage |= spudgpu_vk___resource_state_to_stage(b->state_after);
+    }
+
+    VkImageMemoryBarrier *vk_image_barriers =
+        image_barrier_count ? calloc(image_barrier_count, sizeof(VkImageMemoryBarrier)) : NULL;
+    for (uint32_t i = 0; i < image_barrier_count; i++) {
+        const spudgpu_image_barrier *b = &image_barriers[i];
+        VkImageAspectFlags aspect = (b->state_before == SPUDGPU_RESOURCE_STATE_DEPTH_WRITE ||
+                                      b->state_after == SPUDGPU_RESOURCE_STATE_DEPTH_WRITE)
+                                         ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                         : VK_IMAGE_ASPECT_COLOR_BIT;
+
+        vk_image_barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        vk_image_barriers[i].srcAccessMask = spudgpu_vk___resource_state_to_access(b->state_before);
+        vk_image_barriers[i].dstAccessMask = spudgpu_vk___resource_state_to_access(b->state_after);
+        vk_image_barriers[i].oldLayout = spudgpu_vk___resource_state_to_image_layout(b->state_before);
+        vk_image_barriers[i].newLayout = spudgpu_vk___resource_state_to_image_layout(b->state_after);
+        vk_image_barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vk_image_barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vk_image_barriers[i].image = b->image->_image_vk;
+        vk_image_barriers[i].subresourceRange.aspectMask = aspect;
+        vk_image_barriers[i].subresourceRange.baseMipLevel = 0;
+        vk_image_barriers[i].subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+        vk_image_barriers[i].subresourceRange.baseArrayLayer = 0;
+        vk_image_barriers[i].subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
+
+        src_stage |= spudgpu_vk___resource_state_to_stage(b->state_before);
+        dst_stage |= spudgpu_vk___resource_state_to_stage(b->state_after);
+    }
+
+    if (!src_stage) src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (!dst_stage) dst_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd->_command_buffer_vk,
+        src_stage, dst_stage,
+        0,
+        0, NULL,
+        buffer_barrier_count, vk_buffer_barriers,
+        image_barrier_count, vk_image_barriers);
+
+    free(vk_buffer_barriers);
+    free(vk_image_barriers);
+}
+
 #if __cplusplus
 }
 #endif

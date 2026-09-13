@@ -1,10 +1,12 @@
 //
 // SpudGPU Metal backend - swap chain (CAMetalLayer/drawables).
-// spudgpu_create_surface/spudgpu_create_surface_from_callback below remain
-// unimplemented (a real CAMetalLayer needs attaching to the platform view,
-// out of scope here) - spudgpu_create_swap_chain fails cleanly rather than
-// assuming that's done. The swap chain itself is implemented and verified
-// against real Apple hardware.
+// spudgpu_create_surface takes a CAMetalLayer already attached to the
+// platform view by the caller (see spudgpu_sdl3.h's Metal branch) and
+// stores it directly - it does not create or attach one itself.
+// spudgpu_create_surface_from_callback stays unimplemented: it is a Vulkan-
+// only interop escape hatch (VkInstance-typed callback) Metal has no
+// equivalent for. The swap chain itself is implemented and verified against
+// real Apple hardware.
 //
 
 #if SPUDGPU_COMPILE_METAL_API
@@ -81,9 +83,10 @@ SPUDRESULT spudgpu_create_surface(
 	surface_metal->_window_handle   = window_handle;
 	surface_metal->_display_handle  = display_handle;
 
-	// METAL API CODE
-	// A CAMetalLayer is attached to the platform view represented by
-	// window_handle here (display_handle is unused on Apple platforms).
+	// window_handle is the CAMetalLayer itself (display_handle is unused on
+	// Apple platforms) - spudgpu_sdl3.h's Metal branch gets one from SDL via
+	// SDL_Metal_GetLayer() and passes it straight through.
+	surface_metal->_metal_layer = (CAMetalLayer *)window_handle;
 
 	*out_surface = (spudgpu_surface)surface_metal;
 

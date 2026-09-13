@@ -34,6 +34,8 @@ void spudgpuvulkan___buffer_usage_flags_internal(
         *outputValue |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     if (__spud_gpu_buffer_usage & SPUDGPU_BUFFER_USAGE_STORAGE)
         *outputValue |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (__spud_gpu_buffer_usage & SPUDGPU_BUFFER_USAGE_INDIRECT)
+        *outputValue |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 }
 
 void spudgpuvulkan___memory_property_flags_internal(

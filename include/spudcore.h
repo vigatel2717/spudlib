@@ -105,6 +105,7 @@ typedef enum SPUDRESULT {
 	// functions aren't declared at all in that case, so calling one is a
 	// compile/link error, not a runtime result.
 	SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED = 325,
+	SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED                 = 326,
 
 	SPUDRESULT_GPU_INVALID_RESOURCE_STATE                      = 350,
 	SPUDRESULT_GPU_INVALID_IMAGE_LAYOUT                        = 351,

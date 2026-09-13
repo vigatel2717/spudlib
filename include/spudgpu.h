@@ -598,7 +598,18 @@ enum {
 	/// Buffer holds a built raytracing acceleration structure (BLAS/TLAS).
 	/// This is a binding-compatibility fact like the other usage bits, not a
 	/// resource-creation flag.
-	SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE = 1 << 6
+	SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE = 1 << 6,
+
+	/** * @brief Buffer holds spudgpu_draw_indirect_args /
+	 * spudgpu_draw_indexed_indirect_args consumed by spudgpu_cmd_draw_indirect
+	 * / spudgpu_cmd_draw_indexed_indirect.
+	 * * Vulkan-specific creation-time fact (maps to
+	 * VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) — D3D12/Metal have no equivalent
+	 * creation-time bit for indirect-argument buffers (D3D12 only cares about
+	 * the resource *state* at draw time; Metal takes any id<MTLBuffer>), so
+	 * this is a no-op on those two backends.
+	 */
+	SPUDGPU_BUFFER_USAGE_INDIRECT = 1 << 7
 };
 
 /**
@@ -1222,7 +1233,8 @@ enum {
 	SPUDGPU_RESOURCE_STATE_DEPTH_WRITE,
 	SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE,  // Read-only in shader
 	SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, // Read/Write (SSBO/UAV)
-	SPUDGPU_RESOURCE_STATE_PRESENT
+	SPUDGPU_RESOURCE_STATE_PRESENT,
+	SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT // Read by spudgpu_cmd_draw_indirect / _indexed_indirect
 };
 
 /**
@@ -1519,7 +1531,14 @@ enum {
 	SPUDGPU_SHADER_STAGE_COMPUTE                 = 1 << 2,
 	SPUDGPU_SHADER_STAGE_GEOMETRY                = 1 << 3,
 	SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL    = 1 << 4,
-	SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION = 1 << 5
+	SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION = 1 << 5,
+
+	/// @see SPUDGPU_EXT_MESH_SHADING
+	SPUDGPU_SHADER_STAGE_MESH                    = 1 << 6,
+	/// Amplification/task shader, upstream of a mesh shader. Not used by any
+	/// sample yet — declared alongside MESH for completeness.
+	/// @see SPUDGPU_EXT_MESH_SHADING
+	SPUDGPU_SHADER_STAGE_TASK                    = 1 << 7
 };
 
 /**
@@ -1686,6 +1705,74 @@ SPUDRESULT spudgpu_create_descriptor_sets(
     spudgpu_device device,
     const spudgpu_descriptor_set_desc *desc,
     spudgpu_descriptor_set *out_sets);
+
+// ============================================================================
+//  Sampler
+//  Maps to: VkSampler (Vulkan) / a D3D12_SAMPLER_DESC written into a sampler
+//  descriptor heap slot at write time, not a standalone device object
+//  (D3D12) / id<MTLSamplerState> (Metal).
+// ============================================================================
+
+typedef struct spudgpu_sampler_t *spudgpu_sampler;
+
+/**
+ * @brief Sampling filter used when a blit's source and destination regions
+ * differ in size, or (see spudgpu_sampler_desc below) when a shader samples
+ * a texture between texels/mip levels.
+ */
+typedef uint32_t SPUDGPU_FILTER;
+enum { SPUDGPU_FILTER_NEAREST = 0, SPUDGPU_FILTER_LINEAR = 1 };
+
+/**
+ * @brief How a sampler handles texture coordinates outside [0, 1].
+ */
+typedef uint32_t SPUDGPU_ADDRESS_MODE;
+enum {
+	SPUDGPU_ADDRESS_MODE_REPEAT          = 0,
+	SPUDGPU_ADDRESS_MODE_MIRRORED_REPEAT = 1,
+	SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE   = 2,
+	SPUDGPU_ADDRESS_MODE_CLAMP_TO_BORDER = 3,
+};
+
+/**
+ * @brief Configuration descriptor for a texture sampler.
+ */
+typedef struct spudgpu_sampler_desc {
+	SPUDGPU_FILTER mag_filter;
+	SPUDGPU_FILTER min_filter;
+	SPUDGPU_FILTER mipmap_filter;
+
+	SPUDGPU_ADDRESS_MODE address_mode_u;
+	SPUDGPU_ADDRESS_MODE address_mode_v;
+	SPUDGPU_ADDRESS_MODE address_mode_w;
+
+	float mip_lod_bias;
+	float min_lod;
+	float max_lod;
+
+	/// 1.0 disables anisotropic filtering.
+	float max_anisotropy;
+#if _DEBUG
+	/// @brief A string identifier used for diagnostic tracking.
+	const char *debug_name;
+#endif
+} spudgpu_sampler_desc;
+
+/**
+ * @brief Creates a sampler object.
+ * @param[in] device The GPU device this sampler will be created on.
+ * @param[in] desc   Pointer to the configuration descriptor.
+ * @param[out] out_sampler The new sampler.
+ * @return SPUD_SUCCESS or another SPUDRESULT.
+ */
+SPUDRESULT spudgpu_create_sampler(
+    spudgpu_device device,
+    const spudgpu_sampler_desc *desc,
+    spudgpu_sampler *out_sampler);
+
+/// Destroys a sampler.
+void spudgpu_destroy_sampler(spudgpu_sampler sampler);
+
 // ============================================================================
 //  Descriptor Writes
 //  Wires actual GPU resources into the allocated binding slots.
@@ -1753,6 +1840,9 @@ typedef struct spudgpu_write_descriptor_set {
 	/// Set when writing SAMPLED_IMAGE, STORAGE_IMAGE, or COMBINED_IMAGE_SAMPLER
 	/// descriptors.
 	const spudgpu_descriptor_image_info *image_info;
+
+	/// Set when writing SAMPLER or COMBINED_IMAGE_SAMPLER descriptors.
+	spudgpu_sampler sampler;
 } spudgpu_write_descriptor_set;
 
 /**
@@ -2153,10 +2243,28 @@ typedef struct spudgpu_shader_pipeline_desc {
 	// Shader stages
 	// -----------------------------------------------------------------------
 
-	/// Compiled vertex shader module. Required.
+	/// Compiled vertex shader module. Required unless mesh_module is set —
+	/// a pipeline is either vertex-fetch-based (vertex_module +
+	/// vertex_attributes/vertex_bindings below) or mesh-shader-based
+	/// (mesh_module, which supplies its own geometry with no vertex input
+	/// state at all), never both. @see SPUDGPU_EXT_MESH_SHADING
 	spudgpu_shader_module vertex_module;
 	/// Null-terminated entry point name. Pass NULL to default to "main".
 	const char *vertex_entry_point;
+
+	/// Compiled mesh shader module. Mutually exclusive with vertex_module —
+	/// set this instead to build a mesh-shader pipeline (no vertex input
+	/// layout/input-assembly stage). Optional — leave NULL for a classic
+	/// vertex-fetch pipeline. @see SPUDGPU_EXT_MESH_SHADING
+	spudgpu_shader_module mesh_module;
+	const char *mesh_entry_point;
+
+	/// Compiled amplification/task shader module, upstream of mesh_module.
+	/// Optional — leave NULL to dispatch mesh shader workgroups directly
+	/// with no task stage (this is what spudgpu_cmd_dispatch_mesh does).
+	/// Ignored unless mesh_module is also set. @see SPUDGPU_EXT_MESH_SHADING
+	spudgpu_shader_module task_module;
+	const char *task_entry_point;
 
 	/// Compiled fragment shader module. Required.
 	spudgpu_shader_module fragment_module;
@@ -2486,6 +2594,156 @@ void spudgpu_cmd_draw_indexed_instanced(
     uint32_t start_index_location,
     int32_t base_vertex_location,
     uint32_t start_instance_location);
+
+/**
+ * @brief Per-draw argument layout consumed by spudgpu_cmd_draw_indirect.
+ *
+ * Bit-for-bit identical to VkDrawIndirectCommand / D3D12_DRAW_ARGUMENTS /
+ * MTLDrawPrimitivesIndirectArguments — a buffer of these can be written
+ * directly by a compute shader and consumed by any of the three backends
+ * with no repacking.
+ */
+typedef struct spudgpu_draw_indirect_args {
+	uint32_t vertex_count;
+	uint32_t instance_count;
+	uint32_t first_vertex;
+	uint32_t first_instance;
+} spudgpu_draw_indirect_args;
+
+/**
+ * @brief Per-draw argument layout consumed by
+ * spudgpu_cmd_draw_indexed_indirect.
+ *
+ * Bit-for-bit identical to VkDrawIndexedIndirectCommand /
+ * D3D12_DRAW_INDEXED_ARGUMENTS / MTLDrawIndexedPrimitivesIndirectArguments.
+ */
+typedef struct spudgpu_draw_indexed_indirect_args {
+	uint32_t index_count;
+	uint32_t instance_count;
+	uint32_t first_index;
+	int32_t base_vertex;
+	uint32_t first_instance;
+} spudgpu_draw_indexed_indirect_args;
+
+/**
+ * @brief Records draw_count non-indexed draws, each reading its arguments
+ * from a consecutive spudgpu_draw_indirect_args entry in buffer starting at
+ * offset.
+ *
+ * The buffer must currently be in SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT
+ * (see spudgpu_cmd_pipeline_barrier) and have been created with
+ * SPUDGPU_BUFFER_USAGE_INDIRECT.
+ *
+ * Maps to: vkCmdDrawIndirect (Vulkan), ID3D12GraphicsCommandList::ExecuteIndirect
+ * against an internal draw-only command signature (D3D12),
+ * drawPrimitives:indirectBuffer:indirectBufferOffset: looped draw_count times
+ * (Metal — Metal has no native multi-draw-from-buffer primitive).
+ *
+ * @param[in] cmd        The active recording command list.
+ * @param[in] buffer     Buffer holding draw_count consecutive
+ * spudgpu_draw_indirect_args entries.
+ * @param[in] offset     Byte offset of the first entry.
+ * @param[in] draw_count Number of draws to issue.
+ * @param[in] stride     Byte stride between consecutive entries. Pass
+ * sizeof(spudgpu_draw_indirect_args) for a tightly packed buffer.
+ */
+void spudgpu_cmd_draw_indirect(
+    spudgpu_command_list cmd,
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint32_t draw_count,
+    uint32_t stride);
+
+/**
+ * @brief Indexed variant of spudgpu_cmd_draw_indirect — draw_count entries of
+ * spudgpu_draw_indexed_indirect_args, an active index buffer bound via
+ * spudgpu_cmd_set_index_buffer.
+ */
+void spudgpu_cmd_draw_indexed_indirect(
+    spudgpu_command_list cmd,
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint32_t draw_count,
+    uint32_t stride);
+
+// ============================================================================
+//  Mesh Shading
+//  Maps to: VK_EXT_mesh_shader (Vulkan) / mesh-shader pipeline state objects,
+//  Shader Model 6.5+ (D3D12) / MTLMeshRenderPipelineDescriptor, Metal 3
+//  (Metal).
+//
+//  A mesh-shader pipeline replaces vertex-fetch/input-assembly with a
+//  compute-like shader stage (spudgpu_shader_pipeline_desc::mesh_module)
+//  that emits meshlet geometry directly — no vertex_attributes/
+//  vertex_bindings, no bound vertex/index buffers; the mesh shader reads
+//  whatever data it needs from ordinary descriptor-bound buffers by manual
+//  indexing, the same as a compute shader would.
+//
+//  Unlike SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING, this is not gated to
+//  Vulkan/D3D12 only — Metal 3 mesh shading is a mature, real API and this
+//  backend already targets Metal-3-only hardware (see the bindless section
+//  below), so all three backends compile this in.
+// ============================================================================
+
+#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API || SPUDGPU_COMPILE_METAL_API
+#define SPUDGPU_EXT_MESH_SHADING 1
+#else
+#define SPUDGPU_EXT_MESH_SHADING 0
+#endif
+
+#if SPUDGPU_EXT_MESH_SHADING
+
+/**
+ * @brief Reports whether this device supports mesh shading, and the
+ * hardware limits a mesh shader must respect.
+ *
+ * Vulkan: reflects VK_EXT_mesh_shader support + VkPhysicalDeviceMeshShader
+ * PropertiesEXT. D3D12: reflects D3D12_FEATURE_DATA_D3D12_OPTIONS7's
+ * MeshShaderTier and D3D_SHADER_MODEL_6_5+ support. Metal: always supported
+ * — Metal 3 mesh shading is required on every device this backend targets.
+ */
+typedef struct spudgpu_mesh_shading_capabilities {
+	bool supported;
+
+	uint32_t max_mesh_output_vertices;
+	uint32_t max_mesh_output_primitives;
+	uint32_t max_mesh_workgroup_invocations;
+} spudgpu_mesh_shading_capabilities;
+
+/**
+ * @return SPUD_SUCCESS with out_caps populated (out_caps->supported may
+ * still be false — that is not an error, it's the answer).
+ */
+SPUDRESULT spudgpu_get_mesh_shading_capabilities(
+    spudgpu_device device,
+    spudgpu_mesh_shading_capabilities *out_caps);
+
+/**
+ * @brief Records a mesh-shader dispatch against the currently bound
+ * mesh-shader pipeline. Callable only inside a render pass (between
+ * spudgpu_cmd_begin_rendering/_end_rendering), unlike spudgpu_cmd_dispatch
+ * which targets a compute pipeline outside one.
+ *
+ * Maps to: vkCmdDrawMeshTasksEXT (Vulkan), ID3D12GraphicsCommandList6::
+ * DispatchMesh (D3D12), drawMeshThreadgroups:threadsPerObjectThreadgroup:
+ * threadsPerMeshThreadgroup: with a nil object function (Metal, since
+ * spudgpu_shader_pipeline_desc has no task_module-driven path yet).
+ *
+ * @param[in] group_count_x/y/z Number of mesh shader workgroups to dispatch
+ * in each dimension — matches the pipeline's mesh_module's declared
+ * [numthreads]/local_size, the same convention spudgpu_cmd_dispatch uses
+ * for compute. A no-op if the bound pipeline isn't a mesh-shader pipeline,
+ * or if this device/driver doesn't support mesh shading — check
+ * spudgpu_mesh_shading_capabilities::supported before relying on this.
+ */
+void spudgpu_cmd_dispatch_mesh(
+    spudgpu_command_list cmd,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z);
+
+#endif // SPUDGPU_EXT_MESH_SHADING
+
 /**
  * @brief Complete configuration descriptor for creating a compute shader
  * pipeline.
@@ -2548,6 +2806,34 @@ void spudgpu_destroy_compute_pipeline(spudgpu_compute_pipeline pipeline);
 SPUDRESULT spudgpu_get_compute_pipeline_desc(
     spudgpu_compute_pipeline pipeline,
     spudgpu_compute_pipeline_desc *out_desc);
+
+/**
+ * @brief Binds a compute pipeline for subsequent spudgpu_cmd_dispatch calls.
+ *
+ * Compute-pipeline counterpart to spudgpu_cmd_bind_pipeline (graphics-only).
+ * Bind spudgpu_cmd_bind_descriptor_sets_compute / bindless resources after
+ * this, then spudgpu_cmd_dispatch.
+ */
+void spudgpu_cmd_bind_compute_pipeline(
+    spudgpu_command_list cmd,
+    spudgpu_compute_pipeline pipeline);
+
+/**
+ * @brief Records a compute dispatch against the currently bound compute
+ * pipeline.
+ *
+ * Maps to: vkCmdDispatch (Vulkan), ID3D12GraphicsCommandList::Dispatch
+ * (D3D12), dispatchThreadgroups:threadsPerThreadgroup: (Metal).
+ *
+ * @param[in] group_count_x/y/z Number of local workgroups to dispatch in
+ * each dimension (not thread count — matches the [numthreads]/local_size
+ * declared in the compute shader).
+ */
+void spudgpu_cmd_dispatch(
+    spudgpu_command_list cmd,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z);
 
 // ============================================================================
 //  Image <-> Buffer Copies
@@ -2654,13 +2940,6 @@ void spudgpu_get_image_buffer_copy_size(
 //  Image Blit
 //  Maps to: vkCmdBlitImage (Vulkan)
 // ============================================================================
-
-/**
- * @brief Sampling filter used when a blit's source and destination regions
- * differ in size.
- */
-typedef uint32_t SPUDGPU_FILTER;
-enum { SPUDGPU_FILTER_NEAREST = 0, SPUDGPU_FILTER_LINEAR = 1 };
 
 /**
  * @brief Describes a source and destination subresource/region pair for an

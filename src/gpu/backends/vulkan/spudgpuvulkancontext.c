@@ -244,10 +244,55 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     vk13Features.dynamicRendering = VK_TRUE;
     vk13Features.synchronization2 = VK_TRUE;
 
-    const char *deviceExtensions[] = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME
-    };
-    const uint32_t deviceExtensionCount = sizeof(deviceExtensions) / sizeof(deviceExtensions[0]);
+    // VK_EXT_mesh_shader is the first genuinely optional device extension
+    // this backend enables - unlike VK_KHR_swapchain (always required), a
+    // driver/hardware combination may not expose it at all, so its presence
+    // must be probed for rather than assumed (see SPUDGPU_EXT_MESH_SHADING
+    // in spudgpu.h). Enumerable-but-unsupported and never-enumerated are
+    // both treated the same way here: mesh shading stays off.
+    bool meshShaderExtensionAvailable = false;
+    {
+        uint32_t extensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &extensionCount, NULL);
+        if (extensionCount > 0) {
+            VkExtensionProperties *extensions = calloc(extensionCount, sizeof(VkExtensionProperties));
+            vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &extensionCount, extensions);
+            for (uint32_t i = 0; i < extensionCount; i++) {
+                if (strcmp(extensions[i].extensionName, VK_EXT_MESH_SHADER_EXTENSION_NAME) == 0) {
+                    meshShaderExtensionAvailable = true;
+                    break;
+                }
+            }
+            free(extensions);
+        }
+    }
+
+    VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {0};
+    meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+    bool meshShaderFeatureSupported = false;
+    if (meshShaderExtensionAvailable) {
+        // The extension being enumerable doesn't by itself guarantee the
+        // driver actually supports meshShader - query the real feature bit
+        // via the same VkPhysicalDeviceFeatures2 chaining mechanism used
+        // for Vulkan 1.2/1.3 features above.
+        VkPhysicalDeviceFeatures2 features2 = {0};
+        features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        features2.pNext = &meshShaderFeatures;
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+        meshShaderFeatureSupported = meshShaderFeatures.meshShader == VK_TRUE;
+    }
+
+    const char *deviceExtensions[2] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    uint32_t deviceExtensionCount = 1;
+    if (meshShaderFeatureSupported) {
+        deviceExtensions[deviceExtensionCount++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
+        // meshShader is the only bit this sample family needs; taskShader
+        // stays off since nothing here uses amplification shaders yet.
+        meshShaderFeatures.taskShader = VK_FALSE;
+        meshShaderFeatures.meshShader = VK_TRUE;
+        meshShaderFeatures.pNext      = vk13Features.pNext;
+        vk13Features.pNext            = &meshShaderFeatures;
+    }
 
     VkDeviceCreateInfo createInfo = {0};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -264,6 +309,25 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
         printf("failed to create logical device\n");
         free(queueFamilies);
         return NULL;
+    }
+
+    device->_mesh_shading_supported = meshShaderFeatureSupported;
+    if (meshShaderFeatureSupported) {
+        device->_vkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)
+            vkGetDeviceProcAddr(result, "vkCmdDrawMeshTasksEXT");
+
+        VkPhysicalDeviceMeshShaderPropertiesEXT meshShaderProperties = {0};
+        meshShaderProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 properties2 = {0};
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties2.pNext = &meshShaderProperties;
+        vkGetPhysicalDeviceProperties2(physicalDevice, &properties2);
+
+        device->_mesh_shading_max_output_vertices      = meshShaderProperties.maxMeshOutputVertices;
+        device->_mesh_shading_max_output_primitives    = meshShaderProperties.maxMeshOutputPrimitives;
+        device->_mesh_shading_max_workgroup_invocations = meshShaderProperties.maxMeshWorkGroupInvocations;
+    } else {
+        device->_vkCmdDrawMeshTasksEXT = NULL;
     }
 
     /*
@@ -494,6 +558,25 @@ SPUDRESULT spudgpu_get_device_properties(
 SPUDGPU_NATIVE_API spudgpu_get_native_gpu_api(spudgpu_instance instance) {
     return instance ? SPUDGPU_NATIVE_API_VULKAN : SPUDGPU_NATIVE_API_NONE;
 }
+
+#if SPUDGPU_EXT_MESH_SHADING
+SPUDRESULT spudgpu_get_mesh_shading_capabilities(
+    spudgpu_device device, spudgpu_mesh_shading_capabilities *out_caps) {
+    if (!device)
+        return SPUDRESULT_GPU_INVALID_DEVICE;
+    if (!out_caps)
+        return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+
+    memset(out_caps, 0, sizeof(*out_caps));
+    out_caps->supported = device->_mesh_shading_supported;
+    if (device->_mesh_shading_supported) {
+        out_caps->max_mesh_output_vertices       = device->_mesh_shading_max_output_vertices;
+        out_caps->max_mesh_output_primitives     = device->_mesh_shading_max_output_primitives;
+        out_caps->max_mesh_workgroup_invocations = device->_mesh_shading_max_workgroup_invocations;
+    }
+    return SPUD_SUCCESS;
+}
+#endif
 
 #if __cplusplus
 }

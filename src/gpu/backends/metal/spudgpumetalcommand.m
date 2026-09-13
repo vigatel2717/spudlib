@@ -301,7 +301,43 @@ void spudgpu_end_command_list(spudgpu_command_list cmd) {
 
 	// Metal command buffers have no vkEndCommandBuffer/Close() equivalent -
 	// encoding simply stops once the last active encoder is ended, and the
-	// buffer is submittable as-is. Nothing to do here.
+	// buffer is submittable as-is. Rendering already requires the caller to
+	// end it explicitly via spudgpu_cmd_end_rendering (there's no equivalent
+	// "end dispatch" call in the public API for compute, so this is the one
+	// place that's guaranteed to run before every commit - see
+	// spudgpu_cmd_dispatch/spudgpu_cmd_bind_compute_pipeline below).
+	spudgpumetal___internal_end_active_compute_encoder((spudgpu_command_list_metal *)cmd);
+}
+
+// Ends and releases _active_compute_encoder if one is active. Shared with
+// spudgpu_cmd_begin_rendering (spudgpumetalrenderpass.m) - see this
+// function's declaration in spudgpumetal.h.
+void spudgpumetal___internal_end_active_compute_encoder(spudgpu_command_list_metal *cmd_list_metal) {
+	if (!cmd_list_metal || !cmd_list_metal->_active_compute_encoder)
+		return;
+	[cmd_list_metal->_active_compute_encoder endEncoding];
+	[cmd_list_metal->_active_compute_encoder release];
+	cmd_list_metal->_active_compute_encoder = nil;
+}
+
+// Returns the active compute encoder, lazily opening one (ending any active
+// render encoder first - Metal disallows two live encoders of different
+// kinds on one command buffer at once, see _active_compute_encoder's comment
+// in spudgpumetal.h) if none exists yet.
+static id<MTLComputeCommandEncoder> spudgpumetal___internal_ensure_compute_encoder(
+    spudgpu_command_list_metal *cmd_list_metal) {
+	if (cmd_list_metal->_active_compute_encoder)
+		return cmd_list_metal->_active_compute_encoder;
+
+	if (cmd_list_metal->_active_render_encoder) {
+		[cmd_list_metal->_active_render_encoder endEncoding];
+		[cmd_list_metal->_active_render_encoder release];
+		cmd_list_metal->_active_render_encoder = nil;
+	}
+
+	id<MTLComputeCommandEncoder> encoder = [cmd_list_metal->_command_buffer_mtl computeCommandEncoder];
+	cmd_list_metal->_active_compute_encoder = [encoder retain];
+	return cmd_list_metal->_active_compute_encoder;
 }
 
 void spudgpu_cmd_set_viewports(
@@ -596,6 +632,157 @@ void spudgpu_cmd_bind_pipeline(
 	}
 }
 
+void spudgpu_cmd_bind_compute_pipeline(
+    spudgpu_command_list cmd,
+    spudgpu_compute_pipeline pipeline) {
+	if (!cmd || !pipeline)
+		return;
+
+	spudgpu_command_list_metal *cmd_list_metal      = (spudgpu_command_list_metal *)cmd;
+	spudgpu_compute_pipeline_metal *pipeline_metal  = (spudgpu_compute_pipeline_metal *)pipeline;
+	cmd_list_metal->_bound_compute_pipeline          = (struct spudgpu_compute_pipeline_t *)pipeline_metal;
+
+	id<MTLComputeCommandEncoder> encoder = spudgpumetal___internal_ensure_compute_encoder(cmd_list_metal);
+	[encoder setComputePipelineState:pipeline_metal->_compute_pipeline_state_mtl];
+}
+
+void spudgpu_cmd_dispatch(
+    spudgpu_command_list cmd,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z) {
+	if (!cmd)
+		return;
+
+	spudgpu_command_list_metal *cmd_list_metal = (spudgpu_command_list_metal *)cmd;
+	spudgpu_compute_pipeline_metal *pipeline_metal =
+	    (spudgpu_compute_pipeline_metal *)cmd_list_metal->_bound_compute_pipeline;
+	if (!cmd_list_metal->_active_compute_encoder || !pipeline_metal)
+		return;
+
+	// See spudgpu_shader_module_metal::_local_size_x/y/z in spudgpumetal.h -
+	// Metal has no way to read this back out of the bound pipeline the way
+	// vkCmdDispatch/Dispatch do, so it travels with the pipeline instead.
+	// Clamped to 1 in case reflection ever comes back empty (e.g. a compute
+	// shader that never declared a local_size layout) - 0 in any dimension
+	// is a guaranteed Metal validation failure.
+	MTLSize threads_per_threadgroup = MTLSizeMake(
+	    pipeline_metal->_local_size_x ? pipeline_metal->_local_size_x : 1,
+	    pipeline_metal->_local_size_y ? pipeline_metal->_local_size_y : 1,
+	    pipeline_metal->_local_size_z ? pipeline_metal->_local_size_z : 1);
+	MTLSize threadgroups_per_grid = MTLSizeMake(group_count_x, group_count_y, group_count_z);
+
+	[cmd_list_metal->_active_compute_encoder dispatchThreadgroups:threadgroups_per_grid
+	                                          threadsPerThreadgroup:threads_per_threadgroup];
+}
+
+#if SPUDGPU_EXT_MESH_SHADING
+void spudgpu_cmd_dispatch_mesh(
+    spudgpu_command_list cmd,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z) {
+	if (!cmd)
+		return;
+
+	spudgpu_command_list_metal *cmd_list_metal = (spudgpu_command_list_metal *)cmd;
+	spudgpu_shader_pipeline_metal *pipeline_metal =
+	    (spudgpu_shader_pipeline_metal *)cmd_list_metal->_bound_pipeline;
+	if (!cmd_list_metal->_active_render_encoder || !pipeline_metal || !pipeline_metal->_is_mesh_pipeline)
+		return;
+
+	// See spudgpu_shader_pipeline_metal::_mesh_local_size_x/y/z in
+	// spudgpumetal.h - same "no equivalent of reading this out of the bound
+	// pipeline at dispatch time" reasoning as spudgpu_cmd_dispatch above.
+	MTLSize threads_per_mesh_threadgroup = MTLSizeMake(
+	    pipeline_metal->_mesh_local_size_x ? pipeline_metal->_mesh_local_size_x : 1,
+	    pipeline_metal->_mesh_local_size_y ? pipeline_metal->_mesh_local_size_y : 1,
+	    pipeline_metal->_mesh_local_size_z ? pipeline_metal->_mesh_local_size_z : 1);
+	MTLSize threadgroups_per_grid = MTLSizeMake(group_count_x, group_count_y, group_count_z);
+
+	// No object/task shader (spudgpu_shader_pipeline_desc::task_module isn't
+	// wired to a real pipeline path yet - see spudgpu.h) - Metal's own
+	// threadsPerObjectThreadgroup argument is documented as ignored when the
+	// pipeline has no object function, so {1,1,1} is a safe placeholder.
+	[cmd_list_metal->_active_render_encoder drawMeshThreadgroups:threadgroups_per_grid
+	                                   threadsPerObjectThreadgroup:MTLSizeMake(1, 1, 1)
+	                                     threadsPerMeshThreadgroup:threads_per_mesh_threadgroup];
+}
+#endif // SPUDGPU_EXT_MESH_SHADING
+
+void spudgpu_cmd_draw_indirect(
+    spudgpu_command_list cmd,
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint32_t draw_count,
+    uint32_t stride) {
+	if (!cmd || !buffer || draw_count == 0)
+		return;
+
+	spudgpu_command_list_metal *cmd_list_metal = (spudgpu_command_list_metal *)cmd;
+	if (!cmd_list_metal->_active_render_encoder)
+		return;
+	spudgpu_shader_pipeline_metal *pipeline_metal = (spudgpu_shader_pipeline_metal *)cmd_list_metal->_bound_pipeline;
+	if (!pipeline_metal)
+		return;
+	spudgpu_buffer_metal *buffer_metal = (spudgpu_buffer_metal *)buffer;
+
+	MTLPrimitiveType primitive_type =
+	    spudgpumetal___internal_primitive_type(pipeline_metal->_desc.primitive_topology);
+
+	// -drawPrimitives:indirectBuffer:indirectBufferOffset: issues exactly one
+	// draw per call, reading its args from one offset in the buffer - unlike
+	// vkCmdDrawIndirect/ExecuteIndirect, Metal has no native "draw_count
+	// consecutive structs, one call" primitive, so this loops internally.
+	// Purely a mechanical backend difference; the public call signature is
+	// identical across all three backends.
+	for (uint32_t i = 0; i < draw_count; i++) {
+		[cmd_list_metal->_active_render_encoder
+		    drawPrimitives:primitive_type
+		    indirectBuffer:buffer_metal->_buffer_mtl
+		    indirectBufferOffset:offset + (uint64_t)i * stride];
+	}
+}
+
+void spudgpu_cmd_draw_indexed_indirect(
+    spudgpu_command_list cmd,
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint32_t draw_count,
+    uint32_t stride) {
+	if (!cmd || !buffer || draw_count == 0)
+		return;
+
+	spudgpu_command_list_metal *cmd_list_metal = (spudgpu_command_list_metal *)cmd;
+	if (!cmd_list_metal->_active_render_encoder)
+		return;
+	spudgpu_shader_pipeline_metal *pipeline_metal = (spudgpu_shader_pipeline_metal *)cmd_list_metal->_bound_pipeline;
+	spudgpu_buffer_view_metal *index_view         = cmd_list_metal->_bound_index_buffer_view;
+	if (!pipeline_metal || !index_view)
+		return;
+	spudgpu_buffer_metal *index_buffer_metal = (spudgpu_buffer_metal *)index_view->_desc.parent_buffer;
+	if (!index_buffer_metal)
+		return;
+	spudgpu_buffer_metal *buffer_metal = (spudgpu_buffer_metal *)buffer;
+
+	MTLIndexType index_type;
+	if (!spudgpumetal___internal_resolve_index_type(index_view->_desc.stride, &index_type))
+		return;
+
+	MTLPrimitiveType primitive_type =
+	    spudgpumetal___internal_primitive_type(pipeline_metal->_desc.primitive_topology);
+
+	for (uint32_t i = 0; i < draw_count; i++) {
+		[cmd_list_metal->_active_render_encoder
+		    drawIndexedPrimitives:primitive_type
+		               indexType:index_type
+		             indexBuffer:index_buffer_metal->_buffer_mtl
+		       indexBufferOffset:(NSUInteger)index_view->_desc.offset_from_parent_buffer
+		          indirectBuffer:buffer_metal->_buffer_mtl
+		    indirectBufferOffset:offset + (uint64_t)i * stride];
+	}
+}
+
 void spudgpu_cmd_push_constants(
     spudgpu_command_list cmd,
     spudgpu_shader_pipeline pipeline,
@@ -627,7 +814,7 @@ void spudgpu_cmd_push_constants(
 	// collect which stages any range overlapping [offset, offset+size)
 	// actually declares (same overlap test the Vulkan backend uses) and
 	// push to each of those.
-	bool vertex_stage = false, fragment_stage = false;
+	bool vertex_stage = false, fragment_stage = false, mesh_stage = false;
 	uint32_t range_count = pipeline_metal->_desc.push_constant_range_count;
 	for (uint32_t i = 0; i < range_count; i++) {
 		const spudgpu_push_constant_range_desc *r = &pipeline_metal->_desc.push_constant_ranges[i];
@@ -636,9 +823,11 @@ void spudgpu_cmd_push_constants(
 				vertex_stage = true;
 			if (r->stage_flags & SPUDGPU_SHADER_STAGE_FRAGMENT)
 				fragment_stage = true;
+			if (r->stage_flags & SPUDGPU_SHADER_STAGE_MESH)
+				mesh_stage = true;
 		}
 	}
-	if (!vertex_stage && !fragment_stage)
+	if (!vertex_stage && !fragment_stage && !mesh_stage)
 		return;
 
 	if (vertex_stage) {
@@ -650,6 +839,11 @@ void spudgpu_cmd_push_constants(
 		[cmd_list_metal->_active_render_encoder setFragmentBytes:cmd_list_metal->_push_constants_scratch
 		                                                   length:cmd_list_metal->_push_constants_extent
 		                                                  atIndex:SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX];
+	}
+	if (mesh_stage) {
+		[cmd_list_metal->_active_render_encoder setMeshBytes:cmd_list_metal->_push_constants_scratch
+		                                               length:cmd_list_metal->_push_constants_extent
+		                                              atIndex:SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX];
 	}
 }
 

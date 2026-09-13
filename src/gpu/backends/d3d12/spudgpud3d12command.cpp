@@ -263,6 +263,173 @@ void spudgpu_cmd_push_constants(
 	    data,
 	    offset / sizeof(uint32_t));
 }*/
+
+void spudgpu_cmd_dispatch(
+    spudgpu_command_list cmd,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z) {
+	if (!cmd)
+		return;
+	cmd->_d3d_cmd_list->Dispatch(group_count_x, group_count_y, group_count_z);
+}
+
+#if SPUDGPU_EXT_MESH_SHADING
+void spudgpu_cmd_dispatch_mesh(
+    spudgpu_command_list cmd,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z) {
+	if (!cmd)
+		return;
+	// DispatchMesh is declared on ID3D12GraphicsCommandList6 - _d3d_cmd_list
+	// is stored as the newer ID3D12GraphicsCommandList10 (spudgpud3d12.hpp),
+	// which already inherits it, so no QueryInterface is needed here.
+	cmd->_d3d_cmd_list->DispatchMesh(group_count_x, group_count_y, group_count_z);
+}
+#endif
+
+// Lazily creates (and caches on the device) the root-signature-less command
+// signature used by spudgpu_cmd_draw_indirect / _indexed_indirect. Mechanical
+// translation, not a policy choice: D3D12 structurally requires this object
+// for any ExecuteIndirect call at all, and since SpudGPU's indirect-draw
+// argument layout never varies per caller (see spudgpu_draw_indirect_args /
+// spudgpu_draw_indexed_indirect_args in spudgpu.h), one signature per device
+// per draw type covers every call site.
+static ID3D12CommandSignature *spudgpu_d3d12___get_draw_indirect_signature(
+    spudgpu_device_d3d12 *device, bool indexed) {
+	Microsoft::WRL::ComPtr<ID3D12CommandSignature> &cached =
+	    indexed ? device->_draw_indexed_indirect_command_signature
+	            : device->_draw_indirect_command_signature;
+	if (cached)
+		return cached.Get();
+
+	D3D12_INDIRECT_ARGUMENT_DESC argument_desc = {};
+	argument_desc.Type = indexed ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
+	                              : D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+
+	D3D12_COMMAND_SIGNATURE_DESC signature_desc = {};
+	signature_desc.pArgumentDescs = &argument_desc;
+	signature_desc.NumArgumentDescs = 1;
+	signature_desc.ByteStride = indexed
+	                                ? sizeof(spudgpu_draw_indexed_indirect_args)
+	                                : sizeof(spudgpu_draw_indirect_args);
+
+	// rootSignature is nullptr: only valid (and required) when every argument
+	// in the signature is DRAW/DRAW_INDEXED/DISPATCH — no root-parameter
+	// update arguments, which SpudGPU's indirect draw never uses.
+	if (FAILED(device->_d3d_device->CreateCommandSignature(
+	        &signature_desc, nullptr, IID_PPV_ARGS(&cached))))
+		return nullptr;
+	return cached.Get();
+}
+
+void spudgpu_cmd_draw_indirect(
+    spudgpu_command_list cmd,
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint32_t draw_count,
+    uint32_t stride) {
+	if (!cmd || !buffer || draw_count == 0)
+		return;
+	ID3D12CommandSignature *signature =
+	    spudgpu_d3d12___get_draw_indirect_signature(cmd->_allocator->_device, false);
+	if (!signature)
+		return;
+	cmd->_d3d_cmd_list->ExecuteIndirect(
+	    signature, draw_count, buffer->_d3d_resource.Get(), offset, nullptr, 0);
+}
+
+void spudgpu_cmd_draw_indexed_indirect(
+    spudgpu_command_list cmd,
+    spudgpu_buffer buffer,
+    uint64_t offset,
+    uint32_t draw_count,
+    uint32_t stride) {
+	if (!cmd || !buffer || draw_count == 0)
+		return;
+	ID3D12CommandSignature *signature =
+	    spudgpu_d3d12___get_draw_indirect_signature(cmd->_allocator->_device, true);
+	if (!signature)
+		return;
+	cmd->_d3d_cmd_list->ExecuteIndirect(
+	    signature, draw_count, buffer->_d3d_resource.Get(), offset, nullptr, 0);
+}
+
+// ---------------------------------------------------------------------------
+// spudgpu_cmd_pipeline_barrier — SPUDGPU_RESOURCE_STATE -> D3D12_RESOURCE_STATES.
+// Distinct from the image-only spudgpu_cmd_image_barrier mechanism (which
+// uses SPUDGPU_IMAGE_LAYOUT and already works for swap chain/render target
+// transitions) — this is the more general resource-state model that also
+// covers buffers.
+// ---------------------------------------------------------------------------
+
+static D3D12_RESOURCE_STATES spudgpu_d3d12___resource_state(SPUDGPU_RESOURCE_STATE state) {
+	switch (state) {
+	case SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER:
+		return D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+	case SPUDGPU_RESOURCE_STATE_INDEX_BUFFER:
+		return D3D12_RESOURCE_STATE_INDEX_BUFFER;
+	case SPUDGPU_RESOURCE_STATE_RENDER_TARGET:
+		return D3D12_RESOURCE_STATE_RENDER_TARGET;
+	case SPUDGPU_RESOURCE_STATE_DEPTH_WRITE:
+		return D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	case SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE:
+		return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	case SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS:
+		return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	case SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT:
+		return D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+	case SPUDGPU_RESOURCE_STATE_PRESENT:
+		return D3D12_RESOURCE_STATE_PRESENT;
+	case SPUDGPU_RESOURCE_STATE_COMMON:
+	default:
+		return D3D12_RESOURCE_STATE_COMMON;
+	}
+}
+
+void spudgpu_cmd_pipeline_barrier(
+    spudgpu_command_list cmd,
+    const spudgpu_buffer_barrier *buffer_barriers,
+    uint32_t buffer_barrier_count,
+    const spudgpu_image_barrier *image_barriers,
+    uint32_t image_barrier_count) {
+	if (!cmd)
+		return;
+	if (buffer_barrier_count > 0 && !buffer_barriers)
+		return;
+	if (image_barrier_count > 0 && !image_barriers)
+		return;
+	uint32_t total = buffer_barrier_count + image_barrier_count;
+	if (total == 0)
+		return;
+
+	std::vector<D3D12_RESOURCE_BARRIER> barriers;
+	barriers.reserve(total);
+
+	for (uint32_t i = 0; i < buffer_barrier_count; i++) {
+		const spudgpu_buffer_barrier &b = buffer_barriers[i];
+		D3D12_RESOURCE_STATES before = spudgpu_d3d12___resource_state(b.state_before);
+		D3D12_RESOURCE_STATES after = spudgpu_d3d12___resource_state(b.state_after);
+		if (before == after)
+			continue;
+		barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+		    b.buffer->_d3d_resource.Get(), before, after));
+	}
+	for (uint32_t i = 0; i < image_barrier_count; i++) {
+		const spudgpu_image_barrier &b = image_barriers[i];
+		D3D12_RESOURCE_STATES before = spudgpu_d3d12___resource_state(b.state_before);
+		D3D12_RESOURCE_STATES after = spudgpu_d3d12___resource_state(b.state_after);
+		if (before == after)
+			continue;
+		barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+		    b.image->_d3d_resource.Get(), before, after));
+	}
+
+	if (!barriers.empty())
+		cmd->_d3d_cmd_list->ResourceBarrier(
+		    static_cast<UINT>(barriers.size()), barriers.data());
+}
 void spudgpu_queue_submit(
     spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
 	if (!(queue && desc && desc->cmd_list_count > 0))

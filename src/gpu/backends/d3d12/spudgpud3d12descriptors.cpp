@@ -22,7 +22,70 @@ static bool spudgpu_d3d12_is_sampler_type(SPUDGPU_DESCRIPTOR_TYPE type) {
 	       type == SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 }
 
+static D3D12_TEXTURE_ADDRESS_MODE spudgpu_d3d12_address_mode(SPUDGPU_ADDRESS_MODE mode) {
+	switch (mode) {
+	case SPUDGPU_ADDRESS_MODE_MIRRORED_REPEAT: return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+	case SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE:   return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	case SPUDGPU_ADDRESS_MODE_CLAMP_TO_BORDER: return D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+	case SPUDGPU_ADDRESS_MODE_REPEAT:
+	default:                                   return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	}
+}
+
+// D3D12_FILTER packs min/mag/mip into one enum rather than three independent
+// values — translate the three SPUDGPU_FILTER fields into the matching named
+// combination (anisotropic wins over all three when max_anisotropy > 1).
+static D3D12_FILTER spudgpu_d3d12_filter(
+    SPUDGPU_FILTER min_filter, SPUDGPU_FILTER mag_filter, SPUDGPU_FILTER mip_filter, float max_anisotropy) {
+	if (max_anisotropy > 1.0f)
+		return D3D12_FILTER_ANISOTROPIC;
+
+	bool minL = min_filter == SPUDGPU_FILTER_LINEAR;
+	bool magL = mag_filter == SPUDGPU_FILTER_LINEAR;
+	bool mipL = mip_filter == SPUDGPU_FILTER_LINEAR;
+
+	if (!minL && !magL && !mipL) return D3D12_FILTER_MIN_MAG_MIP_POINT;
+	if (!minL && !magL &&  mipL) return D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR;
+	if (!minL &&  magL && !mipL) return D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT;
+	if (!minL &&  magL &&  mipL) return D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR;
+	if ( minL && !magL && !mipL) return D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT;
+	if ( minL && !magL &&  mipL) return D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR;
+	if ( minL &&  magL && !mipL) return D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+	return D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+}
+
 extern "C" {
+
+SPUDRESULT spudgpu_create_sampler(
+    spudgpu_device device,
+    const spudgpu_sampler_desc *desc,
+    spudgpu_sampler *out_sampler) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!desc)
+		return SPUDRESULT_NULL_DESC;
+	if (!out_sampler)
+		return SPUD_SUCCESS;
+
+	spudgpu_sampler_d3d12 *pResult = new spudgpu_sampler_d3d12();
+	pResult->_d3d_desc.Filter = spudgpu_d3d12_filter(
+	    desc->min_filter, desc->mag_filter, desc->mipmap_filter, desc->max_anisotropy);
+	pResult->_d3d_desc.AddressU       = spudgpu_d3d12_address_mode(desc->address_mode_u);
+	pResult->_d3d_desc.AddressV       = spudgpu_d3d12_address_mode(desc->address_mode_v);
+	pResult->_d3d_desc.AddressW       = spudgpu_d3d12_address_mode(desc->address_mode_w);
+	pResult->_d3d_desc.MipLODBias     = desc->mip_lod_bias;
+	pResult->_d3d_desc.MaxAnisotropy  = desc->max_anisotropy > 1.0f ? (UINT)desc->max_anisotropy : 1;
+	pResult->_d3d_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+	pResult->_d3d_desc.MinLOD         = desc->min_lod;
+	pResult->_d3d_desc.MaxLOD         = desc->max_lod;
+
+	*out_sampler = pResult;
+	return SPUD_SUCCESS;
+}
+
+void spudgpu_destroy_sampler(spudgpu_sampler sampler) {
+	delete sampler;
+}
 
 SPUDRESULT spudgpu_create_descriptor_set_layout(
     spudgpu_device device,
@@ -324,8 +387,16 @@ void spudgpu_update_descriptor_sets(
 		}
 
 		// Write sampler descriptors (SAMPLER or COMBINED_IMAGE_SAMPLER).
-		// Samplers aren't backed by spudgpu_buffer/image_info yet — placeholder.
-		// When a sampler object type is added, fill this in.
+		if (spudgpu_d3d12_is_sampler_type(dtype) && wr.sampler && pool->_sampler_heap) {
+			D3D12_CPU_DESCRIPTOR_HANDLE heapStart =
+			    pool->_sampler_heap->GetCPUDescriptorHandleForHeapStart();
+			uint32_t baseSlot = set->_sampler_base + slot.sampler_offset + wr.dst_array_element;
+			D3D12_CPU_DESCRIPTOR_HANDLE handle;
+			handle.ptr = heapStart.ptr + (SIZE_T)baseSlot * pool->_sampler_increment;
+
+			spudgpu_sampler_d3d12 *sampler = (spudgpu_sampler_d3d12 *)wr.sampler;
+			d3dDevice->CreateSampler(&sampler->_d3d_desc, handle);
+		}
 	}
 }
 

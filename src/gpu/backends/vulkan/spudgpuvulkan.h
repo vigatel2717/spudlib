@@ -55,6 +55,23 @@ typedef struct spudgpu_device_t {
     VkPhysicalDeviceFeatures _features_vk;
     uint32_t _graphics_queue_family_index;
 
+    // Set once at device creation (spudgpuvulkancontext.c) after checking
+    // both VK_EXT_mesh_shader's presence in vkEnumerateDeviceExtensionProperties
+    // *and* querying VkPhysicalDeviceMeshShaderFeaturesEXT::meshShader via
+    // vkGetPhysicalDeviceFeatures2 - the extension being enumerable doesn't
+    // by itself guarantee the feature bit is supported. Mirrors
+    // spudgpu_mesh_shading_capabilities (see SPUDGPU_EXT_MESH_SHADING in
+    // spudgpu.h).
+    bool _mesh_shading_supported;
+    uint32_t _mesh_shading_max_output_vertices;
+    uint32_t _mesh_shading_max_output_primitives;
+    uint32_t _mesh_shading_max_workgroup_invocations;
+    // NULL when _mesh_shading_supported is false. Loaded via
+    // vkGetDeviceProcAddr since VK_EXT_mesh_shader's entry points don't come
+    // statically linked the way VK_KHR_swapchain's do (the only other
+    // device extension this backend has ever enabled).
+    PFN_vkCmdDrawMeshTasksEXT _vkCmdDrawMeshTasksEXT;
+
     // Lazily allocated by the first spudgpu_get_bindless_capabilities /
     // spudgpu_bindless_register_* / spudgpu_get_bindless_descriptor_set_layout
     // call. NULL until then. Owned by this device; never copied by value —
@@ -217,6 +234,14 @@ typedef struct spudgpu_compute_pipeline_t {
     spudgpu_device_vulkan _device;
     spudgpu_compute_pipeline_desc _desc;
 } spudgpu_compute_pipeline_vulkan;
+
+typedef struct spudgpu_sampler_t {
+#if _DEBUG
+    const char *_debug_name;
+#endif
+    VkSampler _sampler_vk;
+    spudgpu_device_vulkan _device;
+} spudgpu_sampler_vulkan;
 
 typedef struct spudgpu_descriptor_set_layout_t {
 #if _DEBUG

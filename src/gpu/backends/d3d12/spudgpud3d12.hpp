@@ -172,6 +172,17 @@ typedef struct spudgpu_device_t {
 	// call. nullptr until then; this device struct is calloc'd (see
 	// spudgpud3d12context.cpp), so it starts nullptr for free.
 	spudgpu_bindless_state_d3d12 *_bindless;
+
+	// Lazily created by the first spudgpu_cmd_draw_indirect /
+	// _indexed_indirect call on this device. Both are root-signature-less
+	// (nullptr) command signatures describing only a single DRAW/DRAW_INDEXED
+	// argument — the layout is fixed by spudgpu_draw_indirect_args /
+	// spudgpu_draw_indexed_indirect_args, never per-caller, so one signature
+	// per device covers every indirect draw ever issued against it. This
+	// device struct is calloc'd, so both ComPtrs start empty (nullptr) for
+	// free, same as _bindless above.
+	Microsoft::WRL::ComPtr<ID3D12CommandSignature> _draw_indirect_command_signature;
+	Microsoft::WRL::ComPtr<ID3D12CommandSignature> _draw_indexed_indirect_command_signature;
 } spudgpu_device_d3d12;
 
 typedef struct spudgpu_command_queue_t {
@@ -266,6 +277,12 @@ typedef struct spudgpu_shader_pipeline_t {
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> _d3d_pipeline_state;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> _d3d_root_signature;
 	D3D_PRIMITIVE_TOPOLOGY _d3d_primitive_topology;
+	// True when built from desc->mesh_module (SPUDGPU_EXT_MESH_SHADING) via
+	// the D3D12_PIPELINE_STATE_STREAM_DESC path instead of the classic
+	// CreateGraphicsPipelineState path - see spudgpud3d12shader.cpp. Mesh
+	// pipelines have no input-assembler stage, so _d3d_primitive_topology
+	// is meaningless for them and IASetPrimitiveTopology must be skipped.
+	bool _is_mesh_pipeline;
 } spudgpu_shader_pipeline_d3d12;
 
 typedef struct spudgpu_compute_pipeline_t {
@@ -304,6 +321,17 @@ typedef struct spudgpu_d3d12_binding_slot {
 	uint32_t sampler_offset;     // from set base in the sampler heap
 	bool     is_sampler;         // true if this binding lives in the sampler heap
 } spudgpu_d3d12_binding_slot;
+
+// D3D12 samplers are descriptor-heap entries, not standalone device objects
+// the way VkSampler/id<MTLSamplerState> are — this just stores the
+// translated desc, written into a sampler heap slot on demand by
+// spudgpu_update_descriptor_sets (spudgpud3d12descriptors.cpp).
+typedef struct spudgpu_sampler_t {
+#if _DEBUG
+	const char *_debug_name;
+#endif
+	D3D12_SAMPLER_DESC _d3d_desc;
+} spudgpu_sampler_d3d12;
 
 typedef struct spudgpu_descriptor_set_layout_t {
 #if _DEBUG

@@ -41,6 +41,19 @@
 // reach it - Metal has no other channel for push-constant-style data.
 #define SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX 30
 
+// Metal shares one buffer-argument-index namespace across vertex-attribute
+// buffers and everything else bound via -setVertexBuffer:/-setFragmentBuffer:
+// - unlike Vulkan/D3D12, which keep vertex bindings and descriptor sets in
+// separate namespaces. Descriptor sets are pinned to the SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS
+// indices directly below the push-constant buffer (see
+// spudgpumetal___internal_cross_compile_spirv_to_msl in spudgpumetalshader.m,
+// which pins SPIR-V descriptor set N's whole argument buffer to MSL
+// buffer(SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE + N) via
+// SPVC_MSL_ARGUMENT_BUFFER_BINDING), leaving indices below this free for
+// vertex attribute buffers.
+#define SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE \
+	(SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX - SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
+
 typedef struct spudgpu_instance_t {
 #if _DEBUG
 	const char *_debug_name;
@@ -164,6 +177,18 @@ typedef struct spudgpu_command_list_t {
 	struct spudgpu_shader_pipeline_t *_bound_pipeline;
 	spudgpu_buffer_view_metal *_bound_index_buffer_view;
 
+	// Compute counterpart to _active_render_encoder above. Metal disallows
+	// two live encoders of different kinds on one command buffer at once, so
+	// spudgpu_cmd_bind_compute_pipeline/spudgpu_cmd_dispatch (spudgpumetalcommand.m)
+	// end _active_render_encoder before opening this, and spudgpu_cmd_begin_rendering
+	// (spudgpumetalrenderpass.m) ends this before opening a render encoder -
+	// see spudgpumetal___internal_end_active_compute_encoder. Set by the
+	// first of those two calls per compute pass, cleared by
+	// spudgpumetal___internal_end_active_compute_encoder (called from
+	// spudgpu_cmd_begin_rendering and spudgpu_end_command_list).
+	id<MTLComputeCommandEncoder> _active_compute_encoder;
+	struct spudgpu_compute_pipeline_t *_bound_compute_pipeline;
+
 	// Push-constant scratch block - see SPUDGPU_METAL_PUSH_CONSTANTS_SIZE.
 	uint8_t _push_constants_scratch[SPUDGPU_METAL_PUSH_CONSTANTS_SIZE];
 	uint32_t _push_constants_extent; // High-water mark of bytes ever written.
@@ -173,6 +198,14 @@ typedef struct spudgpu_command_list_t {
 // formats agree exactly with what spudgpu_create_image produces for the
 // same SPUDGPU_FORMAT.
 MTLPixelFormat spudgpumetal___internal_image_pixel_format(SPUDGPU_FORMAT format);
+
+// Defined in spudgpumetalcommand.m - ends and releases cmd_list_metal's
+// _active_compute_encoder if one is active, else a no-op. Shared with
+// spudgpu_cmd_begin_rendering (spudgpumetalrenderpass.m), which must end any
+// active compute encoder before opening a render encoder (Metal disallows
+// two live encoders of different kinds on one command buffer at once) - see
+// _active_compute_encoder's comment above.
+void spudgpumetal___internal_end_active_compute_encoder(spudgpu_command_list_metal *cmd_list_metal);
 
 typedef struct spudgpu_shader_module_t {
 #if _DEBUG
@@ -191,6 +224,19 @@ typedef struct spudgpu_shader_module_t {
 	// spudgpu_create_shader_module.
 	id<MTLLibrary> _library_mtl;
 	id<MTLFunction> _function_mtl;
+	// SPUDGPU_SHADER_STAGE_COMPUTE and _MESH only: the GLSL shader's declared
+	// local_size_x/y/z (SPIR-V's LocalSize execution mode), reflected out of
+	// the SPIR-V at cross-compile time - see
+	// spudgpumetal___internal_cross_compile_spirv_to_msl in
+	// spudgpumetalshader.m. Unlike Vulkan/D3D12, where the driver reads this
+	// straight out of the bound pipeline at dispatch time, Metal's
+	// -dispatchThreadgroups:threadsPerThreadgroup:/-drawMeshThreadgroups:
+	// threadsPerObjectThreadgroup:threadsPerMeshThreadgroup: require the caller to
+	// supply it explicitly every call - spudgpu_create_compute_pipeline
+	// copies these onto spudgpu_compute_pipeline_metal below so
+	// spudgpu_cmd_dispatch (spudgpumetalcommand.m) never needs the module
+	// directly. Zero (never set) for vertex/fragment modules.
+	uint32_t _local_size_x, _local_size_y, _local_size_z;
 } spudgpu_shader_module_metal;
 
 typedef struct spudgpu_shader_pipeline_t {
@@ -205,6 +251,19 @@ typedef struct spudgpu_shader_pipeline_t {
 	id<MTLDepthStencilState> _depth_stencil_state_mtl;
 	spudgpu_device_metal *_parent_device;
 	spudgpu_shader_pipeline_desc _desc;
+	// True when this pipeline was built from a MTLMeshRenderPipelineDescriptor
+	// (desc.mesh_module set) rather than a classic MTLRenderPipelineDescriptor
+	// - _render_pipeline_state_mtl/_depth_stencil_state_mtl are reused as-is
+	// either way (newRenderPipelineStateWithMeshDescriptor:... returns the
+	// same id<MTLRenderPipelineState> type), but binding buffers/bytes to a
+	// mesh pipeline's render encoder goes through -setMeshBuffer:/
+	// -setMeshBytes: instead of -setVertexBuffer:/-setVertexBytes: (see
+	// spudgpu_cmd_bind_descriptor_sets/spudgpu_cmd_push_constants), so
+	// callers need to know which shape is bound.
+	bool _is_mesh_pipeline;
+	// Copied from mesh_module at pipeline-creation time when _is_mesh_pipeline
+	// - see spudgpu_shader_module_metal::_local_size_x/y/z above.
+	uint32_t _mesh_local_size_x, _mesh_local_size_y, _mesh_local_size_z;
 } spudgpu_shader_pipeline_metal;
 
 typedef struct spudgpu_compute_pipeline_t {
@@ -214,6 +273,9 @@ typedef struct spudgpu_compute_pipeline_t {
 	id<MTLComputePipelineState> _compute_pipeline_state_mtl;
 	spudgpu_device_metal *_parent_device;
 	spudgpu_compute_pipeline_desc _desc;
+	// Copied from the compute module at creation time - see
+	// spudgpu_shader_module_metal::_local_size_x/y/z above.
+	uint32_t _local_size_x, _local_size_y, _local_size_z;
 } spudgpu_compute_pipeline_metal;
 
 typedef struct spudgpu_fence_t {
@@ -241,12 +303,26 @@ typedef struct spudgpu_semaphore_t {
 	uint64_t _signal_value;
 } spudgpu_semaphore_metal;
 
+typedef struct spudgpu_sampler_t {
+#if _DEBUG
+	const char *_debug_name;
+#endif
+	id<MTLSamplerState> _sampler_state_mtl;
+} spudgpu_sampler_metal;
+
 typedef struct spudgpu_descriptor_set_layout_t {
 #if _DEBUG
 	const char *_debug_name;
 #endif
 	spudgpu_device_metal *_parent_device;
 	spudgpu_descriptor_set_layout_desc _desc;
+	// Metal has no VkDescriptorSetLayout-equivalent schema object independent
+	// of a concrete backing buffer - the schema lives entirely in this
+	// MTLArgumentEncoder, built once here from the binding list and reused
+	// (redirected via -setArgumentBuffer:offset:) to encode every descriptor
+	// set allocated from this layout, per Apple's documented pattern for
+	// writing into many argument buffer instances from one shared encoder.
+	id<MTLArgumentEncoder> _argument_encoder_mtl;
 } spudgpu_descriptor_set_layout_metal;
 
 typedef struct spudgpu_descriptor_pool_t {
@@ -255,7 +331,29 @@ typedef struct spudgpu_descriptor_pool_t {
 #endif
 	spudgpu_device_metal *_parent_device;
 	spudgpu_descriptor_pool_desc _desc;
+	// Metal needs no real backing arena the way Vulkan's VkDescriptorPool
+	// does - each descriptor set below owns its own small MTLBuffer sized to
+	// its layout's encodedLength. This only enforces the caller's declared
+	// _desc.max_sets cap (see spudgpu_create_descriptor_sets), matching
+	// vkAllocateDescriptorSets' out-of-pool-memory failure without an actual
+	// pooled allocator behind it.
+	uint32_t _allocated_set_count;
+	// Owned array of every live set allocated from this pool (length
+	// _desc.max_sets) - purely so spudgpu_reset_descriptor_pool/
+	// spudgpu_destroy_descriptor_pool can free each set's MTLBuffer in bulk,
+	// matching those calls' "free all sets allocated from this pool"
+	// contract instead of leaking GPU memory every reset.
+	struct spudgpu_descriptor_set_t **_tracked_sets_mtl;
 } spudgpu_descriptor_pool_metal;
+
+// Upper bound on distinct underlying resources (buffers/textures) tracked
+// per descriptor set for residency (see spudgpu_cmd_bind_descriptor_sets in
+// spudgpumetalcommand.m) - anything reached only indirectly through an
+// argument buffer must be marked resident with -useResource:usage: on every
+// encoder that uses it, unlike a directly-bound resource. Sized well above
+// SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET to leave room for small resource
+// arrays within a single binding.
+#define SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET 32
 
 typedef struct spudgpu_descriptor_set_t {
 #if _DEBUG
@@ -263,6 +361,13 @@ typedef struct spudgpu_descriptor_set_t {
 #endif
 	spudgpu_descriptor_pool_metal *_parent_pool;
 	spudgpu_descriptor_set_layout_metal *_layout;
+	// The argument buffer itself, written into by spudgpu_update_descriptor_sets
+	// via _layout's shared MTLArgumentEncoder.
+	id<MTLBuffer> _argument_buffer_mtl;
+	// See SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET above.
+	id<MTLResource> _tracked_resources_mtl[SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET];
+	MTLResourceUsage _tracked_resource_usages_mtl[SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET];
+	uint32_t _tracked_resource_count;
 } spudgpu_descriptor_set_metal;
 
 typedef struct spudgpu_surface_t {

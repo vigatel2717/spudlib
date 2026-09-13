@@ -33,7 +33,7 @@ codes) rather than inventing its own error convention.
 
 | Module | Header | Prefix | Backends |
 |---|---|---|---|
-| SpudGPU | `spudgpu.h` | `spudgpu_` | Vulkan, D3D12, Metal (scaffolded, unimplemented) |
+| SpudGPU | `spudgpu.h` | `spudgpu_` | Vulkan, D3D12, Metal |
 | SpudFiles | `spudfiles.h` | `sfs_` | Windows only |
 | SpudMemory | `spudmemory.h` | `smem_` | Windows, Linux |
 | SpudNet | `spudnet.h` | `spudnet_` | Windows, Linux |
@@ -90,7 +90,7 @@ allocator, not a general allocator library.
     `SPUDGPU_EXT_<NAME>` with a `SPUDRESULT_GPU_EXT_<NAME>_NOT_SUPPORTED` in
     `spudcore.h`, returned when the backend compiles the extension in but the
     specific device/driver still doesn't support it — a distinct, later-discovered
-    case from the macro itself being `0`. Ray tracing, mesh shading, and
+    case from the macro itself being `0`. Ray tracing and
     `SPUDGPU_EXT_DESCRIPTOR_SETS`/`SPUDGPU_EXT_SUBPASS_MERGING` (see the OpenGL note
     below) are the next likely candidates whenever their real API surface gets
     built. An `EXT` has to stay a narrow, self-contained island (a handful of
@@ -98,6 +98,22 @@ allocator, not a general allocator library.
     `spudgpu_cmd_*` or another load-bearing chunk of the header, that's a sign the
     backend needs its own `GRAPHICS_BACKEND` entry instead of an `EXT` flag draped
     over nearly everything.
+  - `SPUDGPU_EXT_MESH_SHADING` (`SpudGPUMeshShaders` sample) is a second, distinct
+    flavor of the same pattern: the macro itself is `1` on **every** backend — mesh
+    shading has no structural per-backend gap the way bindless does — so the compile
+    flag alone doesn't do the interesting work here. What still needs the full
+    `EXT` treatment is *runtime* hardware/driver support, which genuinely varies even
+    though the backend code exists on all three: Vulkan probes
+    `VK_EXT_mesh_shader`'s presence and `VkPhysicalDeviceMeshShaderFeaturesEXT` at
+    device-creation time (`spudgpuvulkancontext.c`, the first optional device
+    extension this backend has ever had to enumerate rather than assume), D3D12
+    checks `D3D12_FEATURE_DATA_D3D12_OPTIONS7::MeshShaderTier`
+    (`spudgpud3d12context.cpp`), and only Metal's is unconditionally true (Metal 3
+    mesh shading is guaranteed on every Apple Silicon target this backend already
+    requires). `spudgpu_get_mesh_shading_capabilities` and
+    `SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED` exist precisely to surface that
+    per-device fact to the caller — don't assume `SPUDGPU_EXT_MESH_SHADING == 1`
+    means a given device can actually draw with it.
   - `SPUDGPU_LEGACY_<NAME>` gates a fallback for hardware that some devices *within*
     a single backend's target range lack, even though every *currently* targeted
     device of that backend has it (dynamic rendering on old/low-end Vulkan hardware
@@ -164,10 +180,11 @@ allocator, not a general allocator library.
   `/MDd` debug build; building from source lets it inherit `CMAKE_MSVC_RUNTIME_LIBRARY`
   correctly). Also pulls in Microsoft's vendored `d3dx12.h` (3,400+ lines, not
   authored here — don't "clean up" or reformat it as if it were project code).
-- **Metal** — scaffolded only. All ten backend `.m` files are ~9-line placeholders
-  (`#if SPUDGPU_COMPILE_METAL_API` guard + comment). Blocked on Apple hardware access,
-  not on unresolved design — the natives-header asymmetries above were already worked
-  out. Don't start implementing without real hardware to validate against.
+- **Metal** — implemented, all ten backend `.m` files, now that Apple hardware is
+  available to validate against. Swap chain creation/present is verified end-to-end
+  on real hardware (Apple M5 Pro) via `spudgpusamples/Samples/HelloTriangle`; the
+  natives-header asymmetries above were worked out ahead of the implementation and
+  held.
 
 ## Build system
 
@@ -218,4 +235,17 @@ one.
 - SpudFiles has no Linux/macOS backend (Windows only).
 - No automated test suite/CTest target exists — verification in this repo has been
   manual smoke-testing, not committed tests.
-- Metal backend is unimplemented pending hardware access (see above).
+- No static/immutable sampler support. `spudgpu_sampler` (added alongside
+  `SpudGPUDynamicIndexing`) only covers the dynamic, descriptor-bound case — a real
+  `VkSampler` written into a descriptor set on Vulkan, a heap-slot `CreateSampler` on
+  D3D12, an argument-buffer `MTLSamplerState` on Metal. D3D12's *static* samplers
+  (baked into the root signature at pipeline-creation time, zero descriptor-heap cost)
+  and Vulkan's *immutable* samplers (`VkDescriptorSetLayoutBinding::pImmutableSamplers`,
+  already stubbed at `spudgpuvulkandescriptors.c`'s `pImmutableSamplers = NULL; //
+  Dynamic samplers only for now`) are a real, better-fitting mechanism for the common
+  case of a small fixed set of samplers that never change for the life of a pipeline —
+  worth adding as a genuinely separate concept alongside `spudgpu_sampler`, not a
+  replacement for it (Metal has no equivalent distinction — a regular sampler bound
+  once already is the zero-cost path there). Needs reconciling two different points in
+  the object hierarchy: Vulkan's immutable samplers live on the descriptor-set-layout
+  binding, D3D12's static samplers live on the pipeline/root-signature.

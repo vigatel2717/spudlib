@@ -253,6 +253,34 @@ SPUDGPU_NATIVE_API spudgpu_get_native_gpu_api(spudgpu_instance instance) {
 	return instance ? SPUDGPU_NATIVE_API_D3D12 : SPUDGPU_NATIVE_API_NONE;
 }
 
+#if SPUDGPU_EXT_MESH_SHADING
+SPUDRESULT spudgpu_get_mesh_shading_capabilities(
+    spudgpu_device device, spudgpu_mesh_shading_capabilities *out_caps) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!out_caps)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+
+	*out_caps = {};
+
+	D3D12_FEATURE_DATA_D3D12_OPTIONS7 options7 = {};
+	HRESULT hr                                 = device->_d3d_device->CheckFeatureSupport(
+	    D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof(options7));
+	out_caps->supported =
+	    SUCCEEDED(hr) && options7.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+	if (!out_caps->supported)
+		return SPUD_SUCCESS;
+
+	// D3D12/SM6.5 spec-mandated maximums (not a per-device query the way
+	// Vulkan's VkPhysicalDeviceMeshShaderPropertiesEXT is) - every tier
+	// (D3D12_MESH_SHADER_TIER_1) guarantees these limits.
+	out_caps->max_mesh_output_vertices       = 256;
+	out_caps->max_mesh_output_primitives     = 256;
+	out_caps->max_mesh_workgroup_invocations = 128;
+	return SPUD_SUCCESS;
+}
+#endif
+
 SPUDRESULT spudgpu_create_surface(
     spudgpu_instance instance,
     void *window_handle,

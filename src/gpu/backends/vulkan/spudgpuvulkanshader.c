@@ -41,6 +41,10 @@ spudgpuvulkan___shader_stage_flag_internal(SPUDGPU_SHADER_STAGE stage) {
 		return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 	case SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION:
 		return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+	case SPUDGPU_SHADER_STAGE_MESH:
+		return VK_SHADER_STAGE_MESH_BIT_EXT;
+	case SPUDGPU_SHADER_STAGE_TASK:
+		return VK_SHADER_STAGE_TASK_BIT_EXT;
 	default:
 		return (VkShaderStageFlagBits)0;
 	}
@@ -139,23 +143,29 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	if (!out_pipeline)
 		return SPUD_SUCCESS;
 
-	// Validate: at minimum a vertex and fragment shader are required for
-	// graphics
-	if (!(desc->vertex_module && desc->fragment_module))
+	// Validate: at minimum a fragment shader plus either a vertex module
+	// (classic pipeline) or a mesh module (SPUDGPU_EXT_MESH_SHADING - mesh
+	// pipelines have no vertex-fetch/input-assembly stage at all, see
+	// spudgpu.h) is required. The two are mutually exclusive.
+	if (!((desc->vertex_module || desc->mesh_module) && desc->fragment_module))
 		return SPUDRESULT_GPU_VERTEX_AND_FRAGMENT_SHADER_REQUIRED;
+	if (desc->vertex_module && desc->mesh_module)
+		return SPUDRESULT_GPU_INVALID_SHADER_STAGE;
 
 	spudgpu_shader_pipeline_vulkan result = {0};
 	result._device                        = *device;
 	result._desc                          = *desc;
 
+	bool is_mesh_pipeline = desc->mesh_module != NULL;
+
 	// ------------------------------------------------------------------
 	// 1. Shader stages
 	// ------------------------------------------------------------------
-	VkPipelineShaderStageCreateInfo shader_stages[6] = {0};
+	VkPipelineShaderStageCreateInfo shader_stages[8] = {0};
 	uint32_t stage_count                             = 0;
 
-	// Vertex stage (required)
-	{
+	// Vertex stage (classic pipeline only)
+	if (desc->vertex_module) {
 		spudgpu_shader_module_vulkan *vert =
 		    (spudgpu_shader_module_vulkan *)desc->vertex_module;
 		shader_stages[stage_count].sType =
@@ -164,6 +174,32 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		shader_stages[stage_count].module = vert->_shader_module_vk;
 		shader_stages[stage_count].pName =
 		    desc->vertex_entry_point ? desc->vertex_entry_point : "main";
+		stage_count++;
+	}
+
+	// Optional task (amplification) stage - mesh pipeline only
+	if (desc->task_module) {
+		spudgpu_shader_module_vulkan *task =
+		    (spudgpu_shader_module_vulkan *)desc->task_module;
+		shader_stages[stage_count].sType =
+		    VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		shader_stages[stage_count].stage  = VK_SHADER_STAGE_TASK_BIT_EXT;
+		shader_stages[stage_count].module = task->_shader_module_vk;
+		shader_stages[stage_count].pName =
+		    desc->task_entry_point ? desc->task_entry_point : "main";
+		stage_count++;
+	}
+
+	// Mesh stage (mesh pipeline only)
+	if (desc->mesh_module) {
+		spudgpu_shader_module_vulkan *mesh =
+		    (spudgpu_shader_module_vulkan *)desc->mesh_module;
+		shader_stages[stage_count].sType =
+		    VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		shader_stages[stage_count].stage  = VK_SHADER_STAGE_MESH_BIT_EXT;
+		shader_stages[stage_count].module = mesh->_shader_module_vk;
+		shader_stages[stage_count].pName =
+		    desc->mesh_entry_point ? desc->mesh_entry_point : "main";
 		stage_count++;
 	}
 
@@ -374,6 +410,10 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 			sf |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 		if (s & SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION)
 			sf |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+		if (s & SPUDGPU_SHADER_STAGE_MESH)
+			sf |= VK_SHADER_STAGE_MESH_BIT_EXT;
+		if (s & SPUDGPU_SHADER_STAGE_TASK)
+			sf |= VK_SHADER_STAGE_TASK_BIT_EXT;
 		push_constant_ranges[i].stageFlags = sf;
 		push_constant_ranges[i].offset = desc->push_constant_ranges[i].offset;
 		push_constant_ranges[i].size   = desc->push_constant_ranges[i].size;
@@ -439,8 +479,12 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	pipelineInfo.pNext      = &renderingInfo;
 	pipelineInfo.stageCount = stage_count;
 	pipelineInfo.pStages    = shader_stages;
-	pipelineInfo.pVertexInputState   = &vertexInputInfo;
-	pipelineInfo.pInputAssemblyState = &inputAssembly;
+	// A mesh pipeline has no vertex-fetch/input-assembly stage at all - the
+	// mesh shader emits geometry directly (see spudgpu.h's
+	// SPUDGPU_EXT_MESH_SHADING section) - so these must stay NULL rather
+	// than pointing at the (meaningless, all-zero) structs built above.
+	pipelineInfo.pVertexInputState   = is_mesh_pipeline ? NULL : &vertexInputInfo;
+	pipelineInfo.pInputAssemblyState = is_mesh_pipeline ? NULL : &inputAssembly;
 	pipelineInfo.pViewportState      = &viewportState;
 	pipelineInfo.pRasterizationState = &rasterizer;
 	pipelineInfo.pMultisampleState   = &multisampling;
@@ -453,8 +497,10 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	pipelineInfo.basePipelineHandle  = VK_NULL_HANDLE;
 	pipelineInfo.basePipelineIndex   = -1;
 
-	// Tessellation state is only meaningful when both tess stages exist.
-	if (desc->tess_control_module && desc->tess_eval_module) {
+	// Tessellation state is only meaningful when both tess stages exist
+	// (and never alongside a mesh pipeline, which has no fixed-function
+	// input-assembly/tessellation stages to configure at all).
+	if (!is_mesh_pipeline && desc->tess_control_module && desc->tess_eval_module) {
 		pipelineInfo.pTessellationState = &tessellationState;
 	}
 

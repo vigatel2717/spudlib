@@ -1,7 +1,8 @@
 //
 // SpudGPU Metal backend - render pass / render pipeline descriptors.
-// Not yet implemented: no Apple hardware available to develop/verify against.
-// Wired into the spudlib CMake target ahead of time - see CMakeLists.txt.
+// spudgpu_cmd_begin_rendering/end_rendering are the one piece of this file
+// implemented against real Apple hardware; the copy/blit functions below
+// remain unimplemented placeholders (no caller needs them yet).
 //
 
 #if SPUDGPU_COMPILE_METAL_API
@@ -122,20 +123,96 @@ void spudgpu_cmd_blit_image(
 	// METAL API CODE
 }
 
+static MTLLoadAction spudgpumetal___internal_load_action(SPUDGPU_LOAD_OP op) {
+	switch (op) {
+	case SPUDGPU_LOAD_OP_LOAD:  return MTLLoadActionLoad;
+	case SPUDGPU_LOAD_OP_CLEAR: return MTLLoadActionClear;
+	default:                    return MTLLoadActionDontCare;
+	}
+}
+
+static MTLStoreAction spudgpumetal___internal_store_action(SPUDGPU_STORE_OP op) {
+	switch (op) {
+	case SPUDGPU_STORE_OP_STORE: return MTLStoreActionStore;
+	default:                     return MTLStoreActionDontCare;
+	}
+}
+
 void spudgpu_cmd_begin_rendering(
     spudgpu_command_list cmd,
     const spudgpu_rendering_begin_desc *desc) {
 	if (!cmd || !desc)
 		return;
 
-	// METAL API CODE
+	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
+
+	// Metal disallows two live encoders of different kinds on one command
+	// buffer at once - end any compute encoder left active by
+	// spudgpu_cmd_bind_compute_pipeline/spudgpu_cmd_dispatch before opening
+	// the render encoder below (spudgpumetalcommand.m).
+	spudgpumetal___internal_end_active_compute_encoder(cmd_metal);
+
+	MTLRenderPassDescriptor *pass_desc = [MTLRenderPassDescriptor renderPassDescriptor];
+
+	uint32_t color_count = desc->color_attachment_count;
+	if (color_count > SPUDGPU_MAX_COLOR_ATTACHMENTS)
+		color_count = SPUDGPU_MAX_COLOR_ATTACHMENTS;
+
+	for (uint32_t i = 0; i < color_count; i++) {
+		const spudgpu_color_attachment_desc *src = &desc->color_attachments[i];
+		spudgpu_image_view_metal *view           = (spudgpu_image_view_metal *)src->image_view;
+		if (!view || !view->_texture_view_mtl)
+			continue;
+
+		MTLRenderPassColorAttachmentDescriptor *attach = pass_desc.colorAttachments[i];
+		attach.texture                                 = view->_texture_view_mtl;
+		attach.loadAction                              = spudgpumetal___internal_load_action(src->load_op);
+		attach.storeAction                             = spudgpumetal___internal_store_action(src->store_op);
+		attach.clearColor = MTLClearColorMake(src->clear_color[0], src->clear_color[1], src->clear_color[2], src->clear_color[3]);
+	}
+
+	if (desc->depth_attachment.image_view) {
+		spudgpu_image_view_metal *view = (spudgpu_image_view_metal *)desc->depth_attachment.image_view;
+		if (view->_texture_view_mtl) {
+			pass_desc.depthAttachment.texture     = view->_texture_view_mtl;
+			pass_desc.depthAttachment.loadAction  = spudgpumetal___internal_load_action(desc->depth_attachment.depth_load_op);
+			pass_desc.depthAttachment.storeAction = spudgpumetal___internal_store_action(desc->depth_attachment.depth_store_op);
+			pass_desc.depthAttachment.clearDepth  = desc->depth_attachment.clear_depth;
+
+			// Depth32Float_Stencil8 is the only combined depth/stencil format
+			// this backend produces (see spudgpumetalimage.m) - the same
+			// texture doubles as the stencil attachment when it's in that
+			// format.
+			if (view->_texture_view_mtl.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) {
+				pass_desc.stencilAttachment.texture      = view->_texture_view_mtl;
+				pass_desc.stencilAttachment.loadAction   = spudgpumetal___internal_load_action(desc->depth_attachment.stencil_load_op);
+				pass_desc.stencilAttachment.storeAction  = spudgpumetal___internal_store_action(desc->depth_attachment.stencil_store_op);
+				pass_desc.stencilAttachment.clearStencil = desc->depth_attachment.clear_stencil;
+			}
+		}
+	}
+
+	pass_desc.renderTargetWidth  = desc->width;
+	pass_desc.renderTargetHeight = desc->height;
+
+	// -renderCommandEncoderWithDescriptor: returns an autoreleased encoder
+	// (same as -nextDrawable in spudgpumetalswapchain.m) - retain it so it
+	// survives past this call, to be released in spudgpu_cmd_end_rendering.
+	id<MTLRenderCommandEncoder> encoder = [cmd_metal->_command_buffer_mtl renderCommandEncoderWithDescriptor:pass_desc];
+	cmd_metal->_active_render_encoder   = [encoder retain];
 }
 
 void spudgpu_cmd_end_rendering(spudgpu_command_list cmd) {
 	if (!cmd)
 		return;
 
-	// METAL API CODE
+	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
+	if (!cmd_metal->_active_render_encoder)
+		return;
+
+	[cmd_metal->_active_render_encoder endEncoding];
+	[cmd_metal->_active_render_encoder release];
+	cmd_metal->_active_render_encoder = nil;
 }
 
 // spudgpu_cmd_clear_color_attachment / spudgpu_cmd_clear_depth_attachment —
@@ -217,7 +294,29 @@ void spudgpu_cmd_pipeline_barrier(
 	if (image_barrier_count > 0 && !image_barriers)
 		return;
 
-	// METAL API CODE
+	// No-op, deliberately - same underlying reason as the image_barrier
+	// functions above (spudgpumetal___internal_layout_recognized): resources
+	// created against a device (not a heap, which is the only way to opt out
+	// via MTLHazardTrackingModeUntracked - see spudgpumetalbuffer.m/
+	// spudgpumetalimage.m, neither of which does) are automatically
+	// hazard-tracked by Metal, which inserts the required execution
+	// dependency between encoders on the same command buffer that
+	// read/write the same resource (Write-After-Write, Write-After-Read,
+	// Read-After-Write) with no explicit call needed - this is what makes
+	// "compute writes a buffer, then a later render pass on the same command
+	// buffer reads it as an indirect-draw argument buffer" (see
+	// SpudGPUExecuteIndirect) correct with zero code here.
+	//
+	// This does NOT cover a dependency spanning two different command
+	// buffers or queues, where automatic tracking can't reach - that case
+	// needs an explicit id<MTLFence> (update on the writer's encoder before
+	// it ends, wait on the reader's encoder after it begins - see
+	// ../../../CLAUDE.md's note on MTLFence belonging here, not in fence/
+	// semaphore). Left unimplemented until a caller actually needs
+	// cross-command-buffer buffer/image synchronization; this call's single
+	// (cmd, before, after) shape has no active encoder to attach
+	// update/waitForFence calls to at the point it's invoked, so it can't be
+	// expressed generically for that case without a bigger signature change.
 }
 
 #endif // SPUDGPU_COMPILE_METAL_API

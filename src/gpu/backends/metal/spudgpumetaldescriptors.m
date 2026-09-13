@@ -1,7 +1,15 @@
 //
 // SpudGPU Metal backend - descriptor sets / argument buffers.
-// Not yet implemented: no Apple hardware available to develop/verify against.
-// Wired into the spudlib CMake target ahead of time - see CMakeLists.txt.
+// Every descriptor set is a real Metal 2 argument buffer (see spudgpu.h:
+// "On Metal it creates an MTLArgumentEncoder schema" / "MTLBuffer argument
+// buffer") rather than discrete per-resource bindings - SPIRV-Cross pins
+// each SPIR-V descriptor set's whole argument buffer to a fixed MSL buffer
+// index in spudgpumetalshader.m (SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE),
+// and this file builds/writes/binds the actual MTLArgumentEncoder/MTLBuffer
+// pair per set. The sampler half of SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+// is intentionally still not written (see the SAMPLER case below) - SpudGPU's
+// bindless design pairs bindless textures with a plain SPUDGPU_DESCRIPTOR_TYPE_SAMPLER
+// bound the ordinary way instead, which spudgpu_create_sampler (this file) does support.
 //
 
 #if SPUDGPU_COMPILE_METAL_API
@@ -10,6 +18,95 @@
 #include "spudcore.h"
 #include "spudgpumetal.h"
 #include <Metal/Metal.h>
+
+static MTLDataType spudgpumetal___internal_descriptor_argument_data_type(SPUDGPU_DESCRIPTOR_TYPE type) {
+	switch (type) {
+	case SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+	case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+		return MTLDataTypePointer;
+	case SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+	case SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+	case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+		return MTLDataTypeTexture;
+	case SPUDGPU_DESCRIPTOR_TYPE_SAMPLER:
+		return MTLDataTypeSampler;
+	default:
+		return MTLDataTypeNone;
+	}
+}
+
+static MTLSamplerMinMagFilter spudgpumetal___internal_sampler_filter(SPUDGPU_FILTER filter) {
+	return filter == SPUDGPU_FILTER_LINEAR ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+}
+
+static MTLSamplerMipFilter spudgpumetal___internal_sampler_mip_filter(SPUDGPU_FILTER filter) {
+	return filter == SPUDGPU_FILTER_LINEAR ? MTLSamplerMipFilterLinear : MTLSamplerMipFilterNearest;
+}
+
+static MTLSamplerAddressMode spudgpumetal___internal_sampler_address_mode(SPUDGPU_ADDRESS_MODE mode) {
+	switch (mode) {
+	case SPUDGPU_ADDRESS_MODE_MIRRORED_REPEAT: return MTLSamplerAddressModeMirrorRepeat;
+	case SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE:   return MTLSamplerAddressModeClampToEdge;
+	case SPUDGPU_ADDRESS_MODE_CLAMP_TO_BORDER: return MTLSamplerAddressModeClampToBorderColor;
+	case SPUDGPU_ADDRESS_MODE_REPEAT:
+	default:                                   return MTLSamplerAddressModeRepeat;
+	}
+}
+
+SPUDRESULT spudgpu_create_sampler(
+    spudgpu_device device,
+    const spudgpu_sampler_desc *desc,
+    spudgpu_sampler *out_sampler) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!desc)
+		return SPUDRESULT_NULL_DESC;
+	if (!out_sampler)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+
+	spudgpu_device_metal *device_metal = (spudgpu_device_metal *)device;
+
+	MTLSamplerDescriptor *sampler_desc = [[MTLSamplerDescriptor alloc] init];
+	sampler_desc.minFilter             = spudgpumetal___internal_sampler_filter(desc->min_filter);
+	sampler_desc.magFilter             = spudgpumetal___internal_sampler_filter(desc->mag_filter);
+	sampler_desc.mipFilter             = spudgpumetal___internal_sampler_mip_filter(desc->mipmap_filter);
+	sampler_desc.sAddressMode          = spudgpumetal___internal_sampler_address_mode(desc->address_mode_u);
+	sampler_desc.tAddressMode          = spudgpumetal___internal_sampler_address_mode(desc->address_mode_v);
+	sampler_desc.rAddressMode          = spudgpumetal___internal_sampler_address_mode(desc->address_mode_w);
+	sampler_desc.lodMinClamp           = desc->min_lod;
+	sampler_desc.lodMaxClamp           = desc->max_lod;
+	sampler_desc.maxAnisotropy         = desc->max_anisotropy > 1.0f ? (NSUInteger)desc->max_anisotropy : 1;
+
+	id<MTLSamplerState> state = [device_metal->_device_mtl newSamplerStateWithDescriptor:sampler_desc];
+	[sampler_desc release];
+	if (!state)
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+
+	spudgpu_sampler_metal *sampler_metal =
+	    (spudgpu_sampler_metal *)calloc(1, sizeof(spudgpu_sampler_metal));
+	sampler_metal->_sampler_state_mtl = [state retain];
+
+	*out_sampler = (spudgpu_sampler)sampler_metal;
+	return SPUD_SUCCESS;
+}
+
+void spudgpu_destroy_sampler(spudgpu_sampler sampler) {
+	spudgpu_sampler_metal *sampler_metal = (spudgpu_sampler_metal *)sampler;
+	if (!sampler_metal)
+		return;
+	[sampler_metal->_sampler_state_mtl release];
+	free(sampler_metal);
+}
+
+static MTLBindingAccess spudgpumetal___internal_descriptor_argument_access(SPUDGPU_DESCRIPTOR_TYPE type) {
+	switch (type) {
+	case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+	case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+		return MTLBindingAccessReadWrite;
+	default:
+		return MTLBindingAccessReadOnly;
+	}
+}
 
 SPUDRESULT spudgpu_create_descriptor_set_layout(
     spudgpu_device device,
@@ -21,6 +118,8 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 		return SPUDRESULT_NULL_DESC;
 	if (!out_layout)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (desc->binding_count > SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET)
+		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS;
 
 	SPUDRESULT sr = SPUD_SUCCESS;
 
@@ -33,19 +132,64 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 	layout_metal->_parent_device = (spudgpu_device_metal *)device;
 	layout_metal->_desc          = *desc;
 
-	// METAL API CODE
+	{
+		NSMutableArray<MTLArgumentDescriptor *> *argument_descs =
+		    [NSMutableArray arrayWithCapacity:desc->binding_count];
+		for (uint32_t i = 0; i < desc->binding_count; i++) {
+			const spudgpu_descriptor_binding_desc *b = &desc->bindings[i];
+
+			MTLDataType data_type = spudgpumetal___internal_descriptor_argument_data_type(b->descriptor_type);
+			if (data_type == MTLDataTypeNone) {
+				sr = SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE;
+				goto failedattempt;
+			}
+
+			MTLArgumentDescriptor *argument_desc = [MTLArgumentDescriptor argumentDescriptor];
+			argument_desc.index                  = b->binding;
+			// 0 means "not an array" to MTLArgumentDescriptor; b->count == 1
+			// is the ordinary single-resource case.
+			argument_desc.arrayLength = (b->count > 1) ? b->count : 0;
+			argument_desc.dataType    = data_type;
+			argument_desc.access      = spudgpumetal___internal_descriptor_argument_access(b->descriptor_type);
+			if (data_type == MTLDataTypeTexture) {
+				// Matches the overwhelmingly common case (2D sampled/storage
+				// images) - see spudgpumetalimage.m's own texture-type
+				// inference for the same assumption elsewhere in this
+				// backend. A caller needing a different texture type here
+				// (cube/array/3D) isn't supported yet.
+				argument_desc.textureType = MTLTextureType2D;
+			}
+			[argument_descs addObject:argument_desc];
+		}
+
+		layout_metal->_argument_encoder_mtl =
+		    [layout_metal->_parent_device->_device_mtl newArgumentEncoderWithArguments:argument_descs];
+		if (!layout_metal->_argument_encoder_mtl) {
+			sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+			goto failedattempt;
+		}
+	}
 
 	*out_layout = (spudgpu_descriptor_set_layout)layout_metal;
 
 	return sr;
 
 failedattempt:
+	if (layout_metal) {
+		if (layout_metal->_argument_encoder_mtl) {
+			[layout_metal->_argument_encoder_mtl release];
+		}
+		free(layout_metal);
+	}
 	return sr;
 }
 
 void spudgpu_destroy_descriptor_set_layout(spudgpu_descriptor_set_layout layout) {
 	spudgpu_descriptor_set_layout_metal *layout_metal = (spudgpu_descriptor_set_layout_metal *)layout;
 	if (layout_metal) {
+		if (layout_metal->_argument_encoder_mtl) {
+			[layout_metal->_argument_encoder_mtl release];
+		}
 		free(layout_metal);
 	}
 }
@@ -60,6 +204,8 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 		return SPUDRESULT_NULL_DESC;
 	if (!out_pool)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (desc->pool_size_count > SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES)
+		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_POOLS;
 
 	SPUDRESULT sr = SPUD_SUCCESS;
 
@@ -72,28 +218,58 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 	pool_metal->_parent_device = (spudgpu_device_metal *)device;
 	pool_metal->_desc          = *desc;
 
-	// METAL API CODE
+	// Metal needs no real backing arena the way Vulkan's VkDescriptorPool
+	// does (see spudgpu_descriptor_pool_metal's struct comment) - this array
+	// only exists so spudgpu_reset_descriptor_pool/spudgpu_destroy_descriptor_pool
+	// can free every set's MTLBuffer in bulk, matching those calls' "free
+	// all sets allocated from this pool" contract instead of leaking one
+	// small GPU buffer per set on every per-frame reset.
+	pool_metal->_tracked_sets_mtl =
+	    (spudgpu_descriptor_set_metal **)calloc(desc->max_sets, sizeof(spudgpu_descriptor_set_metal *));
+	if (desc->max_sets > 0 && !pool_metal->_tracked_sets_mtl) {
+		sr = SPUDRESULT_GENERAL_FAILURE;
+		goto failedattempt;
+	}
 
 	*out_pool = (spudgpu_descriptor_pool)pool_metal;
 
 	return sr;
 
 failedattempt:
+	if (pool_metal) {
+		free(pool_metal->_tracked_sets_mtl);
+		free(pool_metal);
+	}
 	return sr;
 }
 
-void spudgpu_reset_descriptor_pool(spudgpu_descriptor_pool pool) {
-	if (!pool)
-		return;
+static void spudgpumetal___internal_free_tracked_sets(spudgpu_descriptor_pool_metal *pool_metal) {
+	for (uint32_t i = 0; i < pool_metal->_allocated_set_count; i++) {
+		spudgpu_descriptor_set_metal *set_metal = pool_metal->_tracked_sets_mtl[i];
+		if (!set_metal)
+			continue;
+		if (set_metal->_argument_buffer_mtl) {
+			[set_metal->_argument_buffer_mtl release];
+		}
+		free(set_metal);
+	}
+	pool_metal->_allocated_set_count = 0;
+}
 
-	// METAL API CODE
+void spudgpu_reset_descriptor_pool(spudgpu_descriptor_pool pool) {
+	spudgpu_descriptor_pool_metal *pool_metal = (spudgpu_descriptor_pool_metal *)pool;
+	if (!pool_metal)
+		return;
+	spudgpumetal___internal_free_tracked_sets(pool_metal);
 }
 
 void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool) {
 	spudgpu_descriptor_pool_metal *pool_metal = (spudgpu_descriptor_pool_metal *)pool;
-	if (pool_metal) {
-		free(pool_metal);
-	}
+	if (!pool_metal)
+		return;
+	spudgpumetal___internal_free_tracked_sets(pool_metal);
+	free(pool_metal->_tracked_sets_mtl);
+	free(pool_metal);
 }
 
 SPUDRESULT spudgpu_create_descriptor_sets(
@@ -110,17 +286,36 @@ SPUDRESULT spudgpu_create_descriptor_sets(
 		return SPUDRESULT_GPU_INVALID_DESCRIPTOR_POOL;
 	if (desc->set_count == 0)
 		return SPUDRESULT_GPU_ZERO_DESCRIPTOR_SET_LAYOUTS;
+	if (desc->set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
+		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_SET_LAYOUTS;
+
+	spudgpu_descriptor_pool_metal *pool_metal = (spudgpu_descriptor_pool_metal *)desc->pool;
+	if (pool_metal->_allocated_set_count + desc->set_count > pool_metal->_desc.max_sets)
+		return SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
 
 	for (uint32_t i = 0; i < desc->set_count; i++) {
+		spudgpu_descriptor_set_layout_metal *layout_metal =
+		    (spudgpu_descriptor_set_layout_metal *)desc->set_layouts[i];
+		if (!layout_metal || !layout_metal->_argument_encoder_mtl)
+			return SPUDRESULT_GPU_INVALID_DESCRIPTOR_SET_LAYOUT;
+
 		spudgpu_descriptor_set_metal *set_metal =
 		    (spudgpu_descriptor_set_metal *)calloc(1, sizeof(spudgpu_descriptor_set_metal));
 		if (!set_metal)
-			return SPUDRESULT_GENERAL_FAILURE;
+			return SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
 
-		set_metal->_parent_pool = (spudgpu_descriptor_pool_metal *)desc->pool;
-		set_metal->_layout      = (spudgpu_descriptor_set_layout_metal *)desc->set_layouts[i];
+		set_metal->_parent_pool = pool_metal;
+		set_metal->_layout      = layout_metal;
+		set_metal->_argument_buffer_mtl =
+		    [pool_metal->_parent_device->_device_mtl newBufferWithLength:layout_metal->_argument_encoder_mtl.encodedLength
+		                                                          options:MTLResourceStorageModeShared];
+		if (!set_metal->_argument_buffer_mtl) {
+			free(set_metal);
+			return SPUDRESULT_API_SPECIFIC_FAILURE;
+		}
 
-		// METAL API CODE
+		pool_metal->_tracked_sets_mtl[pool_metal->_allocated_set_count] = set_metal;
+		pool_metal->_allocated_set_count++;
 
 		out_sets[i] = (spudgpu_descriptor_set)set_metal;
 	}
@@ -135,7 +330,70 @@ void spudgpu_update_descriptor_sets(
 	if (!device || !writes || write_count == 0)
 		return;
 
-	// METAL API CODE
+	for (uint32_t i = 0; i < write_count; i++) {
+		const spudgpu_write_descriptor_set *w = &writes[i];
+		if (!w->dst_set)
+			continue;
+
+		spudgpu_descriptor_set_metal *set_metal = (spudgpu_descriptor_set_metal *)w->dst_set;
+		spudgpu_descriptor_set_layout_metal *layout_metal = set_metal->_layout;
+		if (!layout_metal || !layout_metal->_argument_encoder_mtl)
+			continue;
+
+		id<MTLArgumentEncoder> encoder = layout_metal->_argument_encoder_mtl;
+		[encoder setArgumentBuffer:set_metal->_argument_buffer_mtl offset:0];
+		uint32_t argument_index = w->dst_binding + w->dst_array_element;
+
+		id<MTLResource> tracked_resource   = nil;
+		MTLResourceUsage tracked_usage     = MTLResourceUsageRead;
+
+		switch (w->descriptor_type) {
+		case SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+		case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER: {
+			if (!w->buffer_info || !w->buffer_info->buffer)
+				continue;
+			spudgpu_buffer_metal *buffer_metal = (spudgpu_buffer_metal *)w->buffer_info->buffer;
+			[encoder setBuffer:buffer_metal->_buffer_mtl offset:w->buffer_info->offset atIndex:argument_index];
+			tracked_resource = buffer_metal->_buffer_mtl;
+			tracked_usage    = (w->descriptor_type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+			                       ? (MTLResourceUsageRead | MTLResourceUsageWrite)
+			                       : MTLResourceUsageRead;
+			break;
+		}
+		case SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+		case SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+		case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+			if (!w->image_info || !w->image_info->image_view)
+				continue;
+			spudgpu_image_view_metal *view_metal = (spudgpu_image_view_metal *)w->image_info->image_view;
+			[encoder setTexture:view_metal->_texture_view_mtl atIndex:argument_index];
+			tracked_resource = view_metal->_texture_view_mtl;
+			tracked_usage    = (w->descriptor_type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			                       ? (MTLResourceUsageRead | MTLResourceUsageWrite)
+			                       : MTLResourceUsageRead;
+			// COMBINED_IMAGE_SAMPLER's paired sampler is intentionally not
+			// written - see this file's header comment.
+			break;
+		}
+		case SPUDGPU_DESCRIPTOR_TYPE_SAMPLER: {
+			if (!w->sampler)
+				continue;
+			spudgpu_sampler_metal *sampler_metal = (spudgpu_sampler_metal *)w->sampler;
+			[encoder setSamplerState:sampler_metal->_sampler_state_mtl atIndex:argument_index];
+			// id<MTLSamplerState> isn't an id<MTLResource> - no residency
+			// tracking (useResource:) applies to samplers on Metal.
+			break;
+		}
+		default:
+			continue;
+		}
+
+		if (tracked_resource && set_metal->_tracked_resource_count < SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET) {
+			set_metal->_tracked_resources_mtl[set_metal->_tracked_resource_count]        = tracked_resource;
+			set_metal->_tracked_resource_usages_mtl[set_metal->_tracked_resource_count] = tracked_usage;
+			set_metal->_tracked_resource_count++;
+		}
+	}
 }
 
 void spudgpu_cmd_bind_descriptor_sets(
@@ -147,7 +405,40 @@ void spudgpu_cmd_bind_descriptor_sets(
 	if (!cmd || !pipeline || !sets || set_count == 0)
 		return;
 
-	// METAL API CODE
+	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
+	if (!cmd_metal->_active_render_encoder)
+		return;
+
+	// A mesh pipeline has no vertex stage at all - bind to the mesh stage
+	// instead (-setMeshBuffer:) via spudgpu_shader_pipeline_metal::
+	// _is_mesh_pipeline, set at pipeline-creation time (spudgpumetalshader.m).
+	// Fragment stays the same either way.
+	spudgpu_shader_pipeline_metal *pipeline_metal = (spudgpu_shader_pipeline_metal *)pipeline;
+	bool is_mesh_pipeline                         = pipeline_metal->_is_mesh_pipeline;
+	MTLRenderStages non_fragment_stage             = is_mesh_pipeline ? MTLRenderStageMesh : MTLRenderStageVertex;
+
+	for (uint32_t i = 0; i < set_count; i++) {
+		spudgpu_descriptor_set_metal *set_metal = (spudgpu_descriptor_set_metal *)sets[i];
+		if (!set_metal)
+			continue;
+
+		uint32_t buffer_index = SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE + first_set + i;
+		if (is_mesh_pipeline) {
+			[cmd_metal->_active_render_encoder setMeshBuffer:set_metal->_argument_buffer_mtl offset:0 atIndex:buffer_index];
+		} else {
+			[cmd_metal->_active_render_encoder setVertexBuffer:set_metal->_argument_buffer_mtl offset:0 atIndex:buffer_index];
+		}
+		[cmd_metal->_active_render_encoder setFragmentBuffer:set_metal->_argument_buffer_mtl offset:0 atIndex:buffer_index];
+
+		// Every resource reached only indirectly through this argument
+		// buffer must be marked resident on this encoder - see
+		// SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET in spudgpumetal.h.
+		for (uint32_t r = 0; r < set_metal->_tracked_resource_count; r++) {
+			[cmd_metal->_active_render_encoder useResource:set_metal->_tracked_resources_mtl[r]
+			                                          usage:set_metal->_tracked_resource_usages_mtl[r]
+			                                         stages:non_fragment_stage | MTLRenderStageFragment];
+		}
+	}
 }
 
 void spudgpu_cmd_bind_descriptor_sets_compute(
@@ -159,7 +450,28 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
 	if (!cmd || !pipeline || !sets || set_count == 0)
 		return;
 
-	// METAL API CODE
+	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
+	if (!cmd_metal->_active_compute_encoder)
+		return;
+
+	for (uint32_t i = 0; i < set_count; i++) {
+		spudgpu_descriptor_set_metal *set_metal = (spudgpu_descriptor_set_metal *)sets[i];
+		if (!set_metal)
+			continue;
+
+		uint32_t buffer_index = SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE + first_set + i;
+		[cmd_metal->_active_compute_encoder setBuffer:set_metal->_argument_buffer_mtl offset:0 atIndex:buffer_index];
+
+		// Every resource reached only indirectly through this argument
+		// buffer must be marked resident on this encoder - see
+		// SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET in spudgpumetal.h.
+		// MTLComputeCommandEncoder's -useResource:usage: has no stages:
+		// parameter (unlike the render encoder's) - there's only one stage.
+		for (uint32_t r = 0; r < set_metal->_tracked_resource_count; r++) {
+			[cmd_metal->_active_compute_encoder useResource:set_metal->_tracked_resources_mtl[r]
+			                                           usage:set_metal->_tracked_resource_usages_mtl[r]];
+		}
+	}
 }
 
 #endif // SPUDGPU_COMPILE_METAL_API

@@ -21,6 +21,10 @@ static const wchar_t *stage_to_dxc_profile(SPUDGPU_SHADER_STAGE stage) {
 		return L"hs_6_0";
 	case SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION:
 		return L"ds_6_0";
+	case SPUDGPU_SHADER_STAGE_MESH:
+		return L"ms_6_5";
+	case SPUDGPU_SHADER_STAGE_TASK:
+		return L"as_6_5";
 	default:
 		return nullptr;
 	}
@@ -175,6 +179,10 @@ static HRESULT spudgpu_d3d12_build_root_signature(
 	D3D12_ROOT_SIGNATURE_DESC sigDesc = {};
 	sigDesc.NumParameters             = param_count;
 	sigDesc.pParameters               = params;
+	// Static samplers (baked into the root signature, zero descriptor-heap
+	// cost) aren't supported yet — see the "no static/immutable sampler
+	// support" gap in ../../../CLAUDE.md. Every sampler goes through the
+	// dynamic, descriptor-bound spudgpu_sampler path today.
 	sigDesc.NumStaticSamplers         = 0;
 	sigDesc.pStaticSamplers           = nullptr;
 	sigDesc.Flags                     = flags;
@@ -189,6 +197,164 @@ static HRESULT spudgpu_d3d12_build_root_signature(
 	return device->CreateRootSignature(
 	    0, sig_blob->GetBufferPointer(), sig_blob->GetBufferSize(),
 	    IID_PPV_ARGS(out_sig));
+}
+
+// ---------------------------------------------------------------------------
+// SPUDGPU_EXT_MESH_SHADING - mesh pipeline creation.
+//
+// A mesh pipeline has no input-assembler/vertex-fetch stage at all, so it
+// can't go through CreateGraphicsPipelineState's D3D12_GRAPHICS_PIPELINE_STATE_DESC
+// (which hard-requires an InputLayout/PrimitiveTopologyType shaped around
+// IA). It must go through CreatePipelineState's generic
+// D3D12_PIPELINE_STATE_STREAM_DESC instead. The vendored d3dx12.h predates
+// Microsoft's own CD3DX12_PIPELINE_STATE_STREAM_MS/_AS typedefs and
+// CD3DX12_MESH_SHADER_PIPELINE_STATE_DESC helper (see spudlib/CLAUDE.md's
+// D3D12 backend-status note) - rather than patch that vendored, third-party
+// file, the two missing subobject typedefs are built here from its
+// already-present generic CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT template,
+// the exact mechanism Microsoft's own typedefs use internally. Every other
+// subobject below (BLEND_DESC, RASTERIZER, DEPTH_STENCIL, ...) already
+// exists in the vendored file and is reused as-is.
+// ---------------------------------------------------------------------------
+
+typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT<
+    D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS>
+    CD3DX12_PIPELINE_STATE_STREAM_AS;
+typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT<
+    D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS>
+    CD3DX12_PIPELINE_STATE_STREAM_MS;
+
+struct spudgpu_d3d12_mesh_pipeline_stream {
+	CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE pRootSignature;
+	CD3DX12_PIPELINE_STATE_STREAM_AS AS;
+	CD3DX12_PIPELINE_STATE_STREAM_MS MS;
+	CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+	CD3DX12_PIPELINE_STATE_STREAM_BLEND_DESC BlendState;
+	CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_MASK SampleMask;
+	CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER RasterizerState;
+	CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL DepthStencilState;
+	CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
+	CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+	CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_DESC SampleDesc;
+	CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimitiveTopologyType;
+};
+
+// Takes ownership of pResult on both success and failure (deletes it on
+// failure, hands it to *out_pipeline on success) - matches every other
+// pipeline-creation path in this file. Called only after
+// spudgpu_create_shader_pipeline has already built pResult's root
+// signature with the mesh-appropriate flags.
+static SPUDRESULT spudgpu_d3d12___create_mesh_shader_pipeline(
+    spudgpu_device device,
+    const spudgpu_shader_pipeline_desc *desc,
+    spudgpu_shader_pipeline_d3d12 *pResult,
+    spudgpu_shader_pipeline *out_pipeline) {
+
+	D3D12_RASTERIZER_DESC rastDesc = {};
+	rastDesc.FillMode =
+	    desc->wireframe ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
+	rastDesc.CullMode              = (D3D12_CULL_MODE)(desc->cull_mode + 1);
+	rastDesc.FrontCounterClockwise = desc->front_face_ccw ? TRUE : FALSE;
+	rastDesc.DepthBias             = D3D12_DEFAULT_DEPTH_BIAS;
+	rastDesc.DepthBiasClamp        = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+	rastDesc.SlopeScaledDepthBias  = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+	rastDesc.DepthClipEnable       = TRUE;
+	rastDesc.MultisampleEnable     = FALSE;
+	rastDesc.AntialiasedLineEnable = FALSE;
+	rastDesc.ForcedSampleCount     = 0;
+	rastDesc.ConservativeRaster    = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+	D3D12_DEPTH_STENCILOP_DESC noOp = {
+	    D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+	    D3D12_COMPARISON_FUNC_ALWAYS};
+	D3D12_DEPTH_STENCIL_DESC dsDesc = {};
+	dsDesc.DepthEnable    = desc->depth_test_enable ? TRUE : FALSE;
+	dsDesc.DepthWriteMask = desc->depth_write_enable
+	                            ? D3D12_DEPTH_WRITE_MASK_ALL
+	                            : D3D12_DEPTH_WRITE_MASK_ZERO;
+	dsDesc.DepthFunc        = (D3D12_COMPARISON_FUNC)(desc->depth_compare_op + 1);
+	dsDesc.StencilEnable    = FALSE;
+	dsDesc.StencilReadMask  = D3D12_DEFAULT_STENCIL_READ_MASK;
+	dsDesc.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+	dsDesc.FrontFace        = noOp;
+	dsDesc.BackFace         = noOp;
+
+	const auto &ba             = desc->blend_attachment;
+	D3D12_BLEND_DESC blendDesc = {};
+	blendDesc.AlphaToCoverageEnable         = FALSE;
+	blendDesc.IndependentBlendEnable        = FALSE;
+	blendDesc.RenderTarget[0].BlendEnable   = ba.blend_enable ? TRUE : FALSE;
+	blendDesc.RenderTarget[0].LogicOpEnable = FALSE;
+	blendDesc.RenderTarget[0].SrcBlend =
+	    spudgpu_d3d12_blend_factor(ba.src_color_blend_factor);
+	blendDesc.RenderTarget[0].DestBlend =
+	    spudgpu_d3d12_blend_factor(ba.dst_color_blend_factor);
+	blendDesc.RenderTarget[0].BlendOp = (D3D12_BLEND_OP)(ba.color_blend_op + 1);
+	blendDesc.RenderTarget[0].SrcBlendAlpha =
+	    spudgpu_d3d12_blend_factor(ba.src_alpha_blend_factor);
+	blendDesc.RenderTarget[0].DestBlendAlpha =
+	    spudgpu_d3d12_blend_factor(ba.dst_alpha_blend_factor);
+	blendDesc.RenderTarget[0].BlendOpAlpha =
+	    (D3D12_BLEND_OP)(ba.alpha_blend_op + 1);
+	blendDesc.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
+	blendDesc.RenderTarget[0].RenderTargetWriteMask =
+	    D3D12_COLOR_WRITE_ENABLE_ALL;
+
+	D3D12_RT_FORMAT_ARRAY rtvFormats = {};
+	rtvFormats.NumRenderTargets = 1;
+	rtvFormats.RTFormats[0] =
+	    spudgpu_d3d12_get_dxgi_format(desc->color_attachment_format);
+
+	spudgpu_d3d12_mesh_pipeline_stream stream = {};
+	stream.pRootSignature = pResult->_d3d_root_signature.Get();
+	if (desc->task_module) {
+		stream.AS = D3D12_SHADER_BYTECODE{
+		    desc->task_module->_d3d_blob->GetBufferPointer(),
+		    desc->task_module->_d3d_blob->GetBufferSize()};
+	}
+	stream.MS = D3D12_SHADER_BYTECODE{
+	    desc->mesh_module->_d3d_blob->GetBufferPointer(),
+	    desc->mesh_module->_d3d_blob->GetBufferSize()};
+	if (desc->fragment_module) {
+		stream.PS = D3D12_SHADER_BYTECODE{
+		    desc->fragment_module->_d3d_blob->GetBufferPointer(),
+		    desc->fragment_module->_d3d_blob->GetBufferSize()};
+	}
+	stream.BlendState        = CD3DX12_BLEND_DESC(blendDesc);
+	stream.SampleMask        = UINT_MAX;
+	stream.RasterizerState   = CD3DX12_RASTERIZER_DESC(rastDesc);
+	stream.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(dsDesc);
+	stream.DSVFormat         = (desc->depth_format != SPUDGPU_FORMAT_UNKNOWN)
+	                               ? spudgpu_d3d12_get_dxgi_format(desc->depth_format)
+	                               : DXGI_FORMAT_UNKNOWN;
+	stream.RTVFormats             = rtvFormats;
+	stream.SampleDesc             = DXGI_SAMPLE_DESC{1, 0};
+	stream.PrimitiveTopologyType =
+	    spudgpu_d3d12_primitive_topology_type(desc->primitive_topology);
+
+	D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+	streamDesc.SizeInBytes                  = sizeof(stream);
+	streamDesc.pPipelineStateSubobjectStream = &stream;
+
+	HRESULT hr = device->_d3d_device->CreatePipelineState(
+	    &streamDesc, IID_PPV_ARGS(&pResult->_d3d_pipeline_state));
+	if (FAILED(hr)) {
+		delete pResult;
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+
+	// Unused by mesh draws (spudgpu_cmd_bind_pipeline skips
+	// IASetPrimitiveTopology when _is_mesh_pipeline is set - a mesh
+	// pipeline's output topology comes from the mesh shader's own
+	// [outputtopology(...)] attribute, not the input assembler) - left at
+	// its zero-initialized value.
+
+#if _DEBUG
+	pResult->_debug_name = desc->debug_name;
+#endif
+
+	*out_pipeline = pResult;
+	return SPUD_SUCCESS;
 }
 
 extern "C" {
@@ -212,7 +378,11 @@ SPUDRESULT spudgpu_create_shader_module(
 	spirv_cross::CompilerHLSL hlsl_compiler(spirv_words, word_count);
 
 	spirv_cross::CompilerHLSL::Options opts;
-	opts.shader_model = 60;
+	// Mesh/task shaders need SM 6.5+ (DXC's ms_6_5/as_6_5 profiles below
+	// reject anything lower) - every other stage keeps the project's usual
+	// 6.0 baseline.
+	opts.shader_model =
+	    (desc->stage == SPUDGPU_SHADER_STAGE_MESH || desc->stage == SPUDGPU_SHADER_STAGE_TASK) ? 65 : 60;
 	hlsl_compiler.set_hlsl_options(opts);
 
 	// Pin push constants to b0, space1 so they don't collide with descriptor
@@ -293,21 +463,33 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	if (!out_pipeline)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
+	if (desc->vertex_module && desc->mesh_module)
+		return SPUDRESULT_GPU_INVALID_SHADER_STAGE;
+
 	spudgpu_shader_pipeline_d3d12 *pResult =
 	    new spudgpu_shader_pipeline_d3d12();
-	pResult->_device = device;
-	pResult->_desc   = *desc;
+	pResult->_device          = device;
+	pResult->_desc            = *desc;
+	pResult->_is_mesh_pipeline = desc->mesh_module != nullptr;
 
-	// Root signature
+	// Root signature. A mesh pipeline has no input-assembler stage at all,
+	// so D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT must
+	// not be set for it - D3D12 validation rejects that combination.
 	HRESULT hr = spudgpu_d3d12_build_root_signature(
 	    device->_d3d_device.Get(), desc->descriptor_set_layout_count,
 	    (void *const *)desc->descriptor_set_layouts,
 	    desc->push_constant_range_count, desc->push_constant_ranges,
-	    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+	    pResult->_is_mesh_pipeline
+	        ? D3D12_ROOT_SIGNATURE_FLAG_NONE
+	        : D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
 	    &pResult->_d3d_root_signature);
 	if (FAILED(hr)) {
 		delete pResult;
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+
+	if (pResult->_is_mesh_pipeline) {
+		return spudgpu_d3d12___create_mesh_shader_pipeline(device, desc, pResult, out_pipeline);
 	}
 
 	// Vertex input layout (SPIRV-Cross HLSL emits TEXCOORD<location> semantics)
@@ -479,7 +661,21 @@ void spudgpu_cmd_bind_pipeline(
 	ID3D12GraphicsCommandList *cmdList = cmd->_d3d_cmd_list.Get();
 	cmdList->SetPipelineState(pipeline->_d3d_pipeline_state.Get());
 	cmdList->SetGraphicsRootSignature(pipeline->_d3d_root_signature.Get());
-	cmdList->IASetPrimitiveTopology(pipeline->_d3d_primitive_topology);
+	// A mesh pipeline has no input-assembler stage - its output topology
+	// comes from the mesh shader's own [outputtopology(...)] attribute, not
+	// IASetPrimitiveTopology, and _d3d_primitive_topology was never set to
+	// anything meaningful for it (see spudgpu_d3d12___create_mesh_shader_pipeline).
+	if (!pipeline->_is_mesh_pipeline)
+		cmdList->IASetPrimitiveTopology(pipeline->_d3d_primitive_topology);
+}
+
+void spudgpu_cmd_bind_compute_pipeline(
+    spudgpu_command_list cmd, spudgpu_compute_pipeline pipeline) {
+	if (!cmd || !pipeline)
+		return;
+	ID3D12GraphicsCommandList *cmdList = cmd->_d3d_cmd_list.Get();
+	cmdList->SetPipelineState(pipeline->_d3d_pipeline_state.Get());
+	cmdList->SetComputeRootSignature(pipeline->_d3d_root_signature.Get());
 }
 
 void spudgpu_cmd_push_constants(
