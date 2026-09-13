@@ -469,6 +469,23 @@ void spudgpu_queue_wait_idle(spudgpu_command_queue queue) {
 		CloseHandle(event);
 	}
 }
+
+#if SPUDGPU_EXT_BUNDLES
+void spudgpu_begin_bundle_command_list(
+    spudgpu_command_list bundle, const spudgpu_bundle_inheritance_desc *desc) {
+	// D3D12 bundles need no attachment info up front - they inherit whatever
+	// render targets are bound on the direct list that executes them.
+	(void)desc;
+	spudgpu_begin_command_list(bundle);
+}
+
+void spudgpu_cmd_execute_bundle(
+    spudgpu_command_list cmd, spudgpu_command_list bundle) {
+	if (!cmd || !bundle)
+		return;
+	cmd->_d3d_cmd_list->ExecuteBundle(bundle->_d3d_cmd_list.Get());
+}
+#endif // SPUDGPU_EXT_BUNDLES
 }
 
 #endif // SPUDGPU_COMPILE_D3D12_API

@@ -96,6 +96,10 @@ typedef struct spudgpu_command_allocator_t {
     VkCommandPool _command_pool_vk;
     spudgpu_device_vulkan _device;
     uint32_t _queue_family_index;
+    // SPUDGPU_COMMAND_LIST_TYPE_BUNDLE allocators hand out
+    // VK_COMMAND_BUFFER_LEVEL_SECONDARY buffers (see spudgpu_create_command_list);
+    // every other type hands out PRIMARY.
+    SPUDGPU_COMMAND_LIST_TYPE _type;
 } spudgpu_command_allocator_vulkan;
 
 typedef struct spudgpu_command_list_t {

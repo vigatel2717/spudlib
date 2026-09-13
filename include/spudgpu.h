@@ -3098,6 +3098,17 @@ typedef struct spudgpu_rendering_begin_desc {
 
 	/// Render area height in pixels. Usually the attachments' height.
 	uint32_t height;
+
+	/// Set true only if a bundle (SPUDGPU_COMMAND_LIST_TYPE_BUNDLE, see
+	/// SPUDGPU_EXT_BUNDLES) will be executed via spudgpu_cmd_execute_bundle
+	/// inside this rendering pass. Required on Vulkan, where secondary
+	/// command buffers may only be recorded into a scope that was opened
+	/// with VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT — SpudLib
+	/// never infers this from whether a bundle happens to get executed
+	/// later, since the caller always knows this decision up front and
+	/// SpudLib does not guess on the caller's behalf. No-op on backends
+	/// without a bundle/secondary-command-buffer distinction.
+	bool will_execute_bundles;
 } spudgpu_rendering_begin_desc;
 
 /**
@@ -3173,6 +3184,101 @@ void spudgpu_cmd_clear_depth_attachment(
     uint32_t stencil,
     uint32_t width,
     uint32_t height);
+
+// ============================================================================
+//  Bundles
+//  Maps to: ID3D12GraphicsCommandList::ExecuteBundle (D3D12),
+//  vkCmdExecuteCommands over a VK_COMMAND_BUFFER_LEVEL_SECONDARY buffer
+//  (Vulkan).
+//
+//  A bundle is a command list created against a
+//  SPUDGPU_COMMAND_LIST_TYPE_BUNDLE allocator (see
+//  spudgpu_command_allocator_desc) that records a fixed sequence of
+//  pipeline/descriptor/draw state once and is replayed, unmodified, from
+//  inside an active spudgpu_cmd_begin_rendering/_end_rendering scope on a
+//  direct command list — every frame, with no re-recording cost. It inherits
+//  whatever render target attachments and viewport/scissor state the direct
+//  list already has bound; it must never call
+//  spudgpu_cmd_begin_rendering/_end_rendering itself.
+//
+//  Metal has no CPU-side reusable secondary-command mechanism —
+//  MTLCommandBuffer/MTLRenderCommandEncoder are single-use and cannot be
+//  recorded once and replayed across multiple frames the way a D3D12 bundle
+//  or a Vulkan secondary command buffer can (SPUDGPU_COMMAND_LIST_TYPE_BUNDLE
+//  is already documented in the Metal backend as routing to the direct queue
+//  family for exactly this reason). That is a structural capability gap, not
+//  a missing feature, so this whole section is compiled out on Metal rather
+//  than emulated.
+// ============================================================================
+
+#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API
+#define SPUDGPU_EXT_BUNDLES 1
+#else
+#define SPUDGPU_EXT_BUNDLES 0
+#endif
+
+#if SPUDGPU_EXT_BUNDLES
+
+/**
+ * @brief Describes the attachments a bundle will be replayed under.
+ *
+ * Required up front on Vulkan, where a bundle is a secondary command buffer
+ * and VK_KHR_dynamic_rendering requires attachment formats at recording
+ * time via VkCommandBufferInheritanceRenderingInfo — there is no
+ * attachment/framebuffer object to inherit them from implicitly. Mirrors
+ * the attachment format fields on spudgpu_shader_pipeline_desc; must match
+ * whatever the direct command list's spudgpu_cmd_begin_rendering call
+ * actually binds when the bundle is executed.
+ */
+typedef struct spudgpu_bundle_inheritance_desc {
+	/// @see SPUDGPU_FORMAT
+	SPUDGPU_FORMAT color_attachment_format;
+
+	/// SPUDGPU_FORMAT_UNKNOWN for no depth/stencil attachment.
+	/// @see SPUDGPU_FORMAT
+	SPUDGPU_FORMAT depth_format;
+} spudgpu_bundle_inheritance_desc;
+
+/**
+ * @brief Begins recording a bundle command list (one created against a
+ * SPUDGPU_COMMAND_LIST_TYPE_BUNDLE allocator).
+ *
+ * Use this instead of spudgpu_begin_command_list for a bundle — it is the
+ * same operation on D3D12 (desc is ignored there; a bundle needs no
+ * attachment info up front) but Vulkan needs desc to fill in a secondary
+ * command buffer's required inheritance info. Still paired with the shared
+ * spudgpu_end_command_list, not a separate "end bundle" call.
+ *
+ * @param[in] bundle A command list created against an allocator with
+ * SPUDGPU_COMMAND_LIST_TYPE_BUNDLE.
+ * @param[in] desc   Attachment formats the bundle will be executed under.
+ */
+void spudgpu_begin_bundle_command_list(
+    spudgpu_command_list bundle,
+    const spudgpu_bundle_inheritance_desc *desc);
+
+/**
+ * @brief Replays a previously-recorded, closed bundle command list into an
+ * actively-recording direct command list.
+ *
+ * Must be called between spudgpu_cmd_begin_rendering (with
+ * will_execute_bundles set true) and spudgpu_cmd_end_rendering on cmd, using
+ * attachment formats matching bundle's spudgpu_bundle_inheritance_desc.
+ * bundle must already be closed (spudgpu_end_command_list called on it) and
+ * must not be re-recorded while still referenced by any command list
+ * submission in flight.
+ *
+ * Maps to: ID3D12GraphicsCommandList::ExecuteBundle (D3D12),
+ * vkCmdExecuteCommands (Vulkan).
+ *
+ * @param[in] cmd    The active direct command list currently recording.
+ * @param[in] bundle The closed bundle to replay.
+ */
+void spudgpu_cmd_execute_bundle(
+    spudgpu_command_list cmd,
+    spudgpu_command_list bundle);
+
+#endif // SPUDGPU_EXT_BUNDLES
 
 #ifdef __cplusplus
 }

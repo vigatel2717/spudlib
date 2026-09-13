@@ -434,6 +434,13 @@ void spudgpu_cmd_begin_rendering(
 	rendering_info.pColorAttachments        = color_infos;
 	rendering_info.pDepthAttachment         = has_depth ? &depth_info : NULL;
 	rendering_info.pStencilAttachment       = has_stencil ? &stencil_info : NULL;
+	// Only set when the caller says a bundle will be executed inside this
+	// scope (see spudgpu_rendering_begin_desc::will_execute_bundles) —
+	// vkCmdExecuteCommands requires it, but SpudLib never sets it on the
+	// caller's behalf.
+	rendering_info.flags                    = desc->will_execute_bundles
+	                                               ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT
+	                                               : 0;
 
     vkCmdBeginRendering(cmd->_command_buffer_vk, &rendering_info);
 
@@ -455,6 +462,60 @@ void spudgpu_cmd_end_rendering(spudgpu_command_list cmd) {
     cmd->_bound_color_attachment_count = 0;
     cmd->_bound_depth_attachment_view = VK_NULL_HANDLE;
 }
+
+// ---------------------------------------------------------------------------
+// Public API: spudgpu_begin_bundle_command_list / spudgpu_cmd_execute_bundle
+// A bundle is a VK_COMMAND_BUFFER_LEVEL_SECONDARY buffer (see
+// spudgpu_create_command_list, which allocates at this level for a
+// SPUDGPU_COMMAND_LIST_TYPE_BUNDLE allocator). VK_KHR_dynamic_rendering
+// requires its attachment formats up front via
+// VkCommandBufferInheritanceRenderingInfo, since there is no VkRenderPass/
+// VkFramebuffer object to inherit them from implicitly.
+// ---------------------------------------------------------------------------
+
+#if SPUDGPU_EXT_BUNDLES
+void spudgpu_begin_bundle_command_list(
+    spudgpu_command_list bundle, const spudgpu_bundle_inheritance_desc *desc) {
+    if (!bundle || !desc)
+        return;
+
+    vkResetCommandBuffer(bundle->_command_buffer_vk, 0);
+
+    VkFormat color_format = convert_spud_to_vulkan_format(desc->color_attachment_format);
+    VkFormat depth_format = (desc->depth_format != SPUDGPU_FORMAT_UNKNOWN)
+        ? convert_spud_to_vulkan_format(desc->depth_format)
+        : VK_FORMAT_UNDEFINED;
+    bool has_stencil = depth_format != VK_FORMAT_UNDEFINED &&
+        (spud_format_aspect(depth_format) & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
+
+    VkCommandBufferInheritanceRenderingInfo inheritance_rendering = {0};
+    inheritance_rendering.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
+    inheritance_rendering.colorAttachmentCount = 1;
+    inheritance_rendering.pColorAttachmentFormats = &color_format;
+    inheritance_rendering.depthAttachmentFormat = depth_format;
+    inheritance_rendering.stencilAttachmentFormat = has_stencil ? depth_format : VK_FORMAT_UNDEFINED;
+    inheritance_rendering.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkCommandBufferInheritanceInfo inheritance = {0};
+    inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inheritance.pNext = &inheritance_rendering;
+
+    // RENDER_PASS_CONTINUE_BIT is required for a secondary buffer that will
+    // be executed inside an active rendering instance (dynamic rendering
+    // included, per VK_KHR_dynamic_rendering).
+    VkCommandBufferBeginInfo begin = {0};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    begin.pInheritanceInfo = &inheritance;
+    vkBeginCommandBuffer(bundle->_command_buffer_vk, &begin);
+}
+
+void spudgpu_cmd_execute_bundle(spudgpu_command_list cmd, spudgpu_command_list bundle) {
+    if (!cmd || !bundle)
+        return;
+    vkCmdExecuteCommands(cmd->_command_buffer_vk, 1, &bundle->_command_buffer_vk);
+}
+#endif // SPUDGPU_EXT_BUNDLES
 
 // ---------------------------------------------------------------------------
 // Public API: spudgpu_cmd_clear_color_attachment / spudgpu_cmd_clear_depth_attachment

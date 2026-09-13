@@ -143,6 +143,7 @@ SPUDRESULT spudgpu_create_command_allocator(
     spudgpu_command_allocator_vulkan *alloc = calloc(1, sizeof(spudgpu_command_allocator_vulkan));
     alloc->_device = *device;
     alloc->_queue_family_index = graphics_family;
+    alloc->_type = desc->type;
 
     VkResult r = vkCreateCommandPool(
         device->_logical_device_vk, &pool_info, NULL, &alloc->_command_pool_vk);
@@ -179,7 +180,9 @@ SPUDRESULT spudgpu_create_command_list(
     VkCommandBufferAllocateInfo alloc_info = {0};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     alloc_info.commandPool = allocator->_command_pool_vk;
-    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.level = (allocator->_type == SPUDGPU_COMMAND_LIST_TYPE_BUNDLE)
+        ? VK_COMMAND_BUFFER_LEVEL_SECONDARY
+        : VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
     spudgpu_command_list_vulkan *cl = calloc(1, sizeof(spudgpu_command_list_vulkan));
