@@ -77,6 +77,15 @@ typedef struct spudgpu_device_t {
 	spudgpu_command_queue _cmd_queues_direct[SPUD_METAL_COMMAND_QUEUE_COUNT_PER_FAMILY];
 	spudgpu_command_queue _cmd_queues_copy[SPUD_METAL_COMMAND_QUEUE_COUNT_PER_FAMILY];
 	spudgpu_command_queue _cmd_queues_compute[SPUD_METAL_COMMAND_QUEUE_COUNT_PER_FAMILY];
+
+	// Set once at device enumeration (spudgpumetalcontext.m) from
+	// [_device_mtl supportsFamily:MTLGPUFamilyApple10] - unlike mesh shading
+	// (unconditionally true on every Metal 3 device this backend targets),
+	// depth bounds testing is a genuinely new (macOS/iOS 26+) primitive that
+	// only the newest Apple GPU family exposes. Mirrors
+	// spudgpu_depth_bounds_capabilities (see SPUDGPU_EXT_DEPTH_BOUNDS_TEST in
+	// spudgpu.h).
+	bool _depth_bounds_test_supported;
 } spudgpu_device_metal;
 
 typedef struct spudgpu_buffer_t {

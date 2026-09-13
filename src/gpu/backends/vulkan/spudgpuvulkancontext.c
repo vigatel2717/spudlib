@@ -387,13 +387,11 @@ extern "C" {
 
 
 SPUDRESULT spudgpu_create_instance(
-    SPUDGPU_NATIVE_API native_api,
     const char *application_name,
     uint32_t application_version,
     const char *engine_name,
     uint32_t engine_version,
     spudgpu_instance *out_instance) {
-    if (native_api == SPUDGPU_NATIVE_API_NONE) return SPUDRESULT_INVALID_API;
     if (!out_instance) return SPUD_SUCCESS;
     spudgpu_instance_vulkan result = {0};
 

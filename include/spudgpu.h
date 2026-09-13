@@ -218,8 +218,6 @@ enum {
  * * Configures the underlying graphics API backend, sets up instances, and
  * internally gathers a list of GPU devices. Use spudgpu_get_devices() after
  * calling this function.
- * @param[in] native_api          The targeted graphics backend (Vulkan or
- * Metal).
  * @param[in] application_name    Null-terminated string containing the client
  * application's name.
  * @param[in] application_version Packed 32-bit integer representing the
@@ -233,7 +231,6 @@ enum {
  * @note Must be called before invoking any other SpudGPU API function.
  */
 SPUDRESULT spudgpu_create_instance(
-    SPUDGPU_NATIVE_API native_api,
     const char *application_name,
     uint32_t application_version,
     const char *engine_name,
@@ -321,16 +318,22 @@ SPUDRESULT spudgpu_submit_command_lists(
     spudgpu_command_list *cmd_lists,
     uint32_t cmd_list_count);
 
-// Submit command lists with full swap chain synchronization.
-// Waits on the swap chain's image_available semaphore,
-// signals its render_finished semaphore, and signals the in-flight fence.
-// Call this instead of spudgpu_submit_command_lists when rendering to a swap
-// chain.
+/**
+ * @brief Submit command lists with full swap chain synchronization. Waits on the swap chain's image_available semaphore, signals its render_finished semaphore, and signals the in-flight fence. Call this instead of spudgpu_submit_command_lists when rendering to a swap chain.
+ * @param[in] queue - Command Queue to submit.
+ * @param[in] cmd_lists - Command lists to submit
+ * @param[in] cmd_list_count - Number of command lists to submit.
+ * @param[in] swap_chain - Swap chain to synchronize with.
+*/
 SPUDRESULT spudgpu_submit_command_lists_synced(
     spudgpu_command_queue queue,
     spudgpu_command_list *cmd_lists,
     uint32_t cmd_list_count,
     spudgpu_swap_chain swap_chain);
+
+/**
+ * @brief Provide Docs
+ */
 typedef struct spudgpu_submit_desc {
 	spudgpu_command_list *cmd_lists;
 	uint32_t cmd_list_count;
@@ -348,6 +351,9 @@ typedef struct spudgpu_submit_desc {
 	spudgpu_fence signal_fence;
 } spudgpu_submit_desc;
 
+/**
+ * @brief Provide Docs
+ */
 void spudgpu_queue_submit(
     spudgpu_command_queue queue,
     const spudgpu_submit_desc *desc);
@@ -359,6 +365,9 @@ void spudgpu_queue_submit(
  */
 void spudgpu_queue_wait_idle(spudgpu_command_queue queue);
 
+/**
+ * @brief Provide Docs
+ */
 typedef struct spudgpu_command_allocator_desc {
 	SPUDGPU_COMMAND_LIST_TYPE type;
 	uint32_t flags;
@@ -422,6 +431,9 @@ void spudgpu_begin_command_list(spudgpu_command_list cmd);
  */
 void spudgpu_end_command_list(spudgpu_command_list cmd);
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_FENCE_FLAGS;
 enum { SPUDGPU_FENCE_FLAG_NONE = 0, SPUDGPU_FENCE_FLAG_SHARED = 1 << 0 };
 
@@ -444,7 +456,14 @@ SPUDRESULT spudgpu_create_fence(
  */
 void spudgpu_destroy_fence(spudgpu_fence fence);
 
+/**
+ * @brief Provide Docs
+ */
 uint64_t spudgpu_get_fence_value(spudgpu_fence fence);
+
+/**
+ * @brief Provide Docs
+ */
 SPUDRESULT spudgpu_signal_fence(
     spudgpu_device device,
     spudgpu_fence fence,
@@ -851,6 +870,9 @@ SPUDRESULT spudgpu_invalidate_buffer(
     uint64_t offset,
     uint64_t size);
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_IMAGE_TYPE;
 
 enum {
@@ -921,11 +943,18 @@ enum {
 	SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT      = 1 << 7
 };
 
+
+/**
+ * @brief Provide Docs
+ */
 typedef struct SPUDGPU_DEPTH_STENCIL_VALUE {
 	float depth;
 	uint8_t stencil;
 } SPUDGPU_DEPTH_STENCIL_VALUE;
 
+/**
+ * @brief Provide Docs
+ */
 typedef struct SPUDGPU_CLEAR_VALUE {
 	SPUDGPU_FORMAT format;
 	union {
@@ -1039,6 +1068,9 @@ SPUDRESULT spudgpu_get_image_desc(
     spudgpu_image image,
     spudgpu_image_desc *out_desc);
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_IMAGE_VIEW_TYPE;
 
 enum {
@@ -1140,6 +1172,9 @@ SPUDRESULT spudgpu_get_image_view_desc(
 //  Maps to: VkImageLayout (Vulkan)
 // ============================================================================
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_IMAGE_LAYOUT;
 
 enum {
@@ -1264,12 +1299,18 @@ enum {
 	SPUDGPU_PIPELINE_STAGE_ALL_COMMANDS            = 0x00010000,
 };
 
+/**
+ * @brief Provide Docs
+ */
 typedef struct spudgpu_buffer_barrier {
 	spudgpu_buffer buffer;
 	SPUDGPU_RESOURCE_STATE state_before;
 	SPUDGPU_RESOURCE_STATE state_after;
 } spudgpu_buffer_barrier;
 
+/**
+ * @brief Provide Docs
+ */
 typedef struct spudgpu_image_barrier {
 	spudgpu_image image;
 	SPUDGPU_RESOURCE_STATE state_before;
@@ -1306,13 +1347,22 @@ SPUDRESULT spudgpu_create_surface(
     void *display_handle,
     spudgpu_surface *out_surface);
 
+/**
+ * @brief Provide Docs
+ */
 void spudgpu_destroy_surface(spudgpu_surface surface);
 
+/**
+ * @brief Provide Docs
+ */
 typedef bool (*spudgpu_surface_create_fn)(
     void *vk_instance, // VkInstance, typed as void* to keep spudgpu.h Vulkan-free
     void *user_data,
     void *out_surface); // VkSurfaceKHR*, typed as void*
 
+/**
+ * @brief Provide Docs
+ */
 spudgpu_surface spudgpu_create_surface_from_callback(
     spudgpu_instance instance,
     void *user_data,
@@ -1358,6 +1408,9 @@ enum {
 	SPUDGPU_PRESENT_MODE_MAILBOX = 2
 };
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint8_t SPUDGPU_FULLSCREEN_MODE;
 enum {
 	SPUDGPU_FULLSCREEN_MODE_WINDOWED   = 0,
@@ -1434,6 +1487,9 @@ SPUDRESULT spudgpu_create_swap_chain(
  */
 void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain);
 
+/**
+ * @brief Provide Docs
+ */
 SPUDRESULT spudgpu_get_swap_chain_desc(
     spudgpu_swap_chain swap_chain,
     spudgpu_swap_chain_desc *out_desc);
@@ -1522,6 +1578,9 @@ enum {
 	SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE = 5,
 };
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_SHADER_STAGE;
 
 enum {
@@ -1564,6 +1623,9 @@ typedef struct spudgpu_descriptor_binding_desc {
 	SPUDGPU_SHADER_STAGE stage_flags;
 } spudgpu_descriptor_binding_desc;
 
+/**
+ * @brief Provide Docs
+ */
 #define SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET 16
 
 /**
@@ -1581,6 +1643,7 @@ typedef struct spudgpu_descriptor_set_layout_desc {
 	spudgpu_descriptor_binding_desc bindings[SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET];
 	uint32_t binding_count;
 } spudgpu_descriptor_set_layout_desc;
+
 /**
  * @brief Creates an immutable descriptor set layout (schema).
  *
@@ -1621,6 +1684,9 @@ typedef struct spudgpu_descriptor_pool_size {
 	uint32_t count;
 } spudgpu_descriptor_pool_size;
 
+/**
+ * @brief Provide Docs
+ */
 #define SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES 8
 
 /**
@@ -1676,6 +1742,9 @@ void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool);
 //  Maps to: VkDescriptorSet (Vulkan) / MTLBuffer argument buffer (Metal)
 // ============================================================================
 
+/**
+ * @brief Provide Docs
+ */
 #define SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS 4
 
 /**
@@ -1713,6 +1782,9 @@ SPUDRESULT spudgpu_create_descriptor_sets(
 //  (D3D12) / id<MTLSamplerState> (Metal).
 // ============================================================================
 
+/**
+ * @brief Provide Docs
+ */
 typedef struct spudgpu_sampler_t *spudgpu_sampler;
 
 /**
@@ -1770,7 +1842,10 @@ SPUDRESULT spudgpu_create_sampler(
     const spudgpu_sampler_desc *desc,
     spudgpu_sampler *out_sampler);
 
-/// Destroys a sampler.
+/**
+ * @brief Destroys a sampler object.
+ * @param[in] sampler The GPU Sampler object to destroy.
+ */
 void spudgpu_destroy_sampler(spudgpu_sampler sampler);
 
 // ============================================================================
@@ -2090,6 +2165,9 @@ void spudgpu_cmd_bind_bindless_resources_compute(
 
 #endif // SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_PRIMITIVE_TOPOLOGY;
 
 enum {
@@ -2101,11 +2179,16 @@ enum {
 	SPUDGPU_PRIMITIVE_TOPOLOGY_PATCH_LIST     = 5 // Tessellation
 };
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_CULL_MODE;
 
 enum { SPUDGPU_CULL_MODE_NONE = 0, SPUDGPU_CULL_MODE_FRONT = 1, SPUDGPU_CULL_MODE_BACK = 2 };
 
-// Depth Compare Op
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_COMPARE_OP;
 
 enum {
@@ -2118,10 +2201,25 @@ enum {
 	SPUDGPU_COMPARE_OP_GREATER_OR_EQUAL = 6,
 	SPUDGPU_COMPARE_OP_ALWAYS           = 7
 };
-// Capacity Limits
+
+/**
+ * @brief Provide Docs
+ */
 #define SPUDGPU_MAX_VERTEX_ATTRIBUTES 16
+
+/**
+ * @brief Provide Docs
+ */
 #define SPUDGPU_MAX_VERTEX_BINDINGS 8
+
+/**
+ * @brief Provide Docs
+ */
 #define SPUDGPU_MAX_PUSH_CONSTANT_RANGES 4
+
+/**
+ * @brief Provide Docs
+ */
 typedef struct spudgpu_vertex_attribute_desc {
 	/// Which shader location slot this attribute binds to (layout(location =
 	/// N)).
@@ -2138,6 +2236,9 @@ typedef struct spudgpu_vertex_attribute_desc {
 	uint32_t offset;
 } spudgpu_vertex_attribute_desc;
 
+/**
+ * @brief Provide Docs
+ */
 typedef struct spudgpu_vertex_binding_desc {
 	/// The binding slot index this entry targets.
 	uint32_t binding;
@@ -2151,6 +2252,9 @@ typedef struct spudgpu_vertex_binding_desc {
 	bool per_instance;
 } spudgpu_vertex_binding_desc;
 
+/**
+ * @brief Provide Docs
+ */
 typedef struct spudgpu_push_constant_range_desc {
 	/// Bitmask of shader stages that can read this push constant range.
 	/// @see SPUDGPU_SHADER_STAGE
@@ -2163,6 +2267,9 @@ typedef struct spudgpu_push_constant_range_desc {
 	uint32_t size;
 } spudgpu_push_constant_range_desc;
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_BLEND_FACTOR;
 
 enum {
@@ -2178,6 +2285,9 @@ enum {
 	SPUDGPU_BLEND_FACTOR_ONE_MINUS_DST_COLOR = 9
 };
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_BLEND_OP;
 
 enum { SPUDGPU_BLEND_OP_ADD = 0, SPUDGPU_BLEND_OP_SUBTRACT = 1, SPUDGPU_BLEND_OP_REVERSE_SUBTRACT = 2, SPUDGPU_BLEND_OP_MIN = 3, SPUDGPU_BLEND_OP_MAX = 4 };
@@ -2218,12 +2328,19 @@ typedef struct spudgpu_shader_module_desc {
 #endif
 } spudgpu_shader_module_desc;
 
+/**
+ * @brief Provide Docs
+ */
 SPUDRESULT spudgpu_create_shader_module(
     spudgpu_device device,
     const spudgpu_shader_module_desc *desc,
     spudgpu_shader_module *out_module);
 
+/**
+ * @brief Provide Docs
+ */
 void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module);
+
 /**
  * @brief Complete configuration descriptor for creating a graphics shader
  * pipeline.
@@ -2338,9 +2455,12 @@ typedef struct spudgpu_shader_pipeline_desc {
 	/// spudgpu_cmd_set_depth_bounds' [min, max] range. Independent of
 	/// depth_test_enable/depth_compare_op above — the two mechanisms compose
 	/// (both run when both are enabled) rather than one replacing the other.
-	/// No-op on backends without depth bounds test support (see
-	/// SPUDGPU_EXT_DEPTH_BOUNDS_TEST) — the pipeline behaves as if this is
-	/// false. Check spudgpu_depth_bounds_capabilities::supported before
+	/// Ignored on Metal, which has no pipeline-level depth-bounds toggle at
+	/// all — there, spudgpu_cmd_set_depth_bounds alone both enables and
+	/// configures it per draw (see its own doc comment). On Vulkan/D3D12, a
+	/// no-op if this device/driver doesn't support the depth bounds test
+	/// (see SPUDGPU_EXT_DEPTH_BOUNDS_TEST) — the pipeline behaves as if this
+	/// is false. Check spudgpu_depth_bounds_capabilities::supported before
 	/// relying on it even on a backend that compiles the extension in.
 	bool depth_bounds_test_enable;
 
@@ -2390,13 +2510,22 @@ typedef struct spudgpu_shader_pipeline_desc {
 	uint32_t patch_control_points;
 } spudgpu_shader_pipeline_desc;
 
+/**
+ * @brief Provide Docs
+ */
 SPUDRESULT spudgpu_create_shader_pipeline(
     spudgpu_device device,
     const spudgpu_shader_pipeline_desc *desc,
     spudgpu_shader_pipeline *out_pipeline);
 
+/**
+ * @brief Provide Docs
+ */
 void spudgpu_destroy_shader_pipeline(spudgpu_shader_pipeline pipeline);
 
+/**
+ * @brief Provide Docs
+ */
 void spudgpu_cmd_bind_pipeline(
     spudgpu_command_list cmd,
     spudgpu_shader_pipeline pipeline);
@@ -2421,6 +2550,7 @@ void spudgpu_cmd_push_constants(
     uint32_t offset,
     uint32_t size,
     const void *data);
+
 /**
  * @brief Defines the normalized window transformation dimensions for rendering
  * output coordinates.
@@ -2762,7 +2892,9 @@ void spudgpu_cmd_dispatch_mesh(
 //  VkPhysicalDeviceFeatures::depthBounds feature bit (Vulkan) /
 //  ID3D12GraphicsCommandList1::OMSetDepthBounds + D3D12_DEPTH_STENCIL_DESC1::
 //  DepthBoundsTestEnable, gated behind D3D12_FEATURE_DATA_D3D12_OPTIONS2::
-//  DepthBoundsTestSupported (D3D12).
+//  DepthBoundsTestSupported (D3D12) / [MTLRenderCommandEncoder
+//  setDepthTestMinBound:maxBound:], macOS/iOS 26+, gated behind
+//  MTLGPUFamilyApple10 hardware support (Metal).
 //
 //  Discards a fragment based on whether the depth attachment's *existing*
 //  value at that pixel (primed by an earlier draw) falls inside a caller-set
@@ -2772,22 +2904,27 @@ void spudgpu_cmd_dispatch_mesh(
 //  depth-only priming pass followed by a second pass whose visible region is
 //  clipped by an animated depth-bounds window.
 //
-//  Metal has no depth-bounds-test primitive at all — no equivalent field on
-//  MTLDepthStencilDescriptor, no equivalent MTLRenderCommandEncoder method.
-//  That is a structural capability gap, not a missing feature, so this whole
-//  section is compiled out on Metal rather than emulated. Unlike
-//  SPUDGPU_EXT_BUNDLES though, hardware/driver support genuinely varies even
-//  on the two backends that do compile this in — spudgpu_depth_bounds_
-//  capabilities::supported (mirroring SPUDGPU_EXT_MESH_SHADING's runtime
-//  query) is how the caller finds out. spudgpu_shader_pipeline_desc::
-//  depth_bounds_test_enable itself is declared unconditionally (see
-//  spudgpu_rendering_begin_desc::will_execute_bundles for the same pattern)
-//  since it's a plain no-op toggle on a backend/device that lacks this,
-//  rather than something that needs to be a compile error to touch; the
-//  functions below are the narrow island that's actually gated.
+//  This is the SPUDGPU_EXT_MESH_SHADING flavor of EXT, not the
+//  SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING/SPUDGPU_EXT_BUNDLES flavor: the
+//  macro itself is 1 on every backend (Metal's setDepthTestMinBound:maxBound:
+//  is a real, if very recently added, primitive — not a structural gap the
+//  way Metal's missing MTLHeap-backed bindless allocator is), and hardware/
+//  driver support genuinely varies per device even where the macro compiles
+//  the section in. spudgpu_depth_bounds_capabilities::supported is how the
+//  caller finds out — reflecting VkPhysicalDeviceFeatures::depthBounds
+//  (Vulkan), D3D12_FEATURE_DATA_D3D12_OPTIONS2::DepthBoundsTestSupported
+//  (D3D12), or [MTLDevice supportsFamily:MTLGPUFamilyApple10] (Metal, the
+//  newest Apple GPU family as of this writing — M5-class hardware and up).
+//  spudgpu_shader_pipeline_desc::depth_bounds_test_enable itself is declared
+//  unconditionally (see spudgpu_rendering_begin_desc::will_execute_bundles
+//  for the same pattern) since Vulkan/D3D12 both need it at pipeline-creation
+//  time but it's meaningless on Metal, which has no pipeline-level toggle at
+//  all — there, depth bounds testing is enabled purely by which values
+//  spudgpu_cmd_set_depth_bounds is called with each draw (see its own doc
+//  comment below).
 // ============================================================================
 
-#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API
+#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API || SPUDGPU_COMPILE_METAL_API
 #define SPUDGPU_EXT_DEPTH_BOUNDS_TEST 1
 #else
 #define SPUDGPU_EXT_DEPTH_BOUNDS_TEST 0
@@ -2799,7 +2936,11 @@ void spudgpu_cmd_dispatch_mesh(
  * @brief Reports whether this device supports the depth bounds test.
  *
  * Vulkan: reflects VkPhysicalDeviceFeatures::depthBounds. D3D12: reflects
- * D3D12_FEATURE_DATA_D3D12_OPTIONS2::DepthBoundsTestSupported.
+ * D3D12_FEATURE_DATA_D3D12_OPTIONS2::DepthBoundsTestSupported. Metal:
+ * reflects [MTLDevice supportsFamily:MTLGPUFamilyApple10] — this is a very
+ * recently added Metal primitive (macOS/iOS 26+, MTLGPUFamilyApple10
+ * hardware only), so expect this to be false on most Metal devices in the
+ * field today.
  */
 typedef struct spudgpu_depth_bounds_capabilities {
 	bool supported;
@@ -2817,16 +2958,27 @@ SPUDRESULT spudgpu_get_depth_bounds_capabilities(
  * @brief Sets the [min, max] depth-attachment-value range the depth bounds
  * test clips against for subsequent draws.
  *
- * Call after binding a pipeline created with depth_bounds_test_enable=true,
- * before any draw call that should be clipped by it. A no-op if this
- * device/driver doesn't support the depth bounds test — check
- * spudgpu_depth_bounds_capabilities::supported before relying on this.
+ * On Vulkan/D3D12, call after binding a pipeline created with
+ * depth_bounds_test_enable=true, before any draw call that should be clipped
+ * by it. Metal has no pipeline-level toggle at all — depth_bounds_test_enable
+ * is ignored there, and this call alone both enables and configures the test
+ * for subsequent draws on cmd: passing (0, 1) (the default) disables it,
+ * anything else enables it. Calling this with (0, 1) on Vulkan/D3D12 is
+ * harmless too (a degenerate bounds window spanning the whole depth range),
+ * so callers that want one code path across all three backends can always
+ * call this rather than branching on whether the bound pipeline requested
+ * depth_bounds_test_enable.
+ *
+ * A no-op if this device/driver doesn't support the depth bounds test —
+ * check spudgpu_depth_bounds_capabilities::supported before relying on this.
  *
  * Maps to: vkCmdSetDepthBounds (Vulkan), ID3D12GraphicsCommandList1::
- * OMSetDepthBounds (D3D12).
+ * OMSetDepthBounds (D3D12), [MTLRenderCommandEncoder setDepthTestMinBound:
+ * maxBound:] (Metal).
  *
  * @param[in] min_depth_bounds/max_depth_bounds Both in [0, 1], matching the
- * depth attachment's own value range.
+ * depth attachment's own value range, with min_depth_bounds <=
+ * max_depth_bounds.
  */
 void spudgpu_cmd_set_depth_bounds(
     spudgpu_command_list cmd,
@@ -2894,6 +3046,9 @@ SPUDRESULT spudgpu_create_compute_pipeline(
  */
 void spudgpu_destroy_compute_pipeline(spudgpu_compute_pipeline pipeline);
 
+/**
+ * @brief Provide Docs
+ */
 SPUDRESULT spudgpu_get_compute_pipeline_desc(
     spudgpu_compute_pipeline pipeline,
     spudgpu_compute_pipeline_desc *out_desc);
@@ -3112,6 +3267,9 @@ void spudgpu_cmd_blit_image(
 //  against.
 // ============================================================================
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_LOAD_OP;
 enum {
 	/// Keep the attachment's existing contents.
@@ -3122,6 +3280,9 @@ enum {
 	SPUDGPU_LOAD_OP_DONT_CARE,
 };
 
+/**
+ * @brief Provide Docs
+ */
 typedef uint32_t SPUDGPU_STORE_OP;
 enum {
 	/// Write the render result back to the attachment.

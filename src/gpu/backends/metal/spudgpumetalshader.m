@@ -603,6 +603,26 @@ SPUDRESULT spudgpu_get_mesh_shading_capabilities(
 #endif // SPUDGPU_EXT_MESH_SHADING
 
 // -----------------------------------------------------------------------
+// Depth bounds test capabilities
+// -----------------------------------------------------------------------
+
+#if SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+SPUDRESULT spudgpu_get_depth_bounds_capabilities(
+    spudgpu_device device,
+    spudgpu_depth_bounds_capabilities *out_caps) {
+	if (!device)
+		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (!out_caps)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+
+	// Set once at device enumeration (spudgpumetalcontext.m) from
+	// [_device_mtl supportsFamily:MTLGPUFamilyApple10].
+	out_caps->supported = device->_depth_bounds_test_supported;
+	return SPUD_SUCCESS;
+}
+#endif // SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+
+// -----------------------------------------------------------------------
 // Compute pipelines
 // -----------------------------------------------------------------------
 

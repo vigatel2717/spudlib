@@ -710,6 +710,35 @@ void spudgpu_cmd_dispatch_mesh(
 }
 #endif // SPUDGPU_EXT_MESH_SHADING
 
+#if SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+void spudgpu_cmd_set_depth_bounds(
+    spudgpu_command_list cmd,
+    float min_depth_bounds,
+    float max_depth_bounds) {
+	if (!cmd)
+		return;
+
+	spudgpu_command_list_metal *cmd_list_metal = (spudgpu_command_list_metal *)cmd;
+	if (!cmd_list_metal->_active_render_encoder)
+		return;
+
+	// _depth_bounds_test_supported is set once at device enumeration (see
+	// spudgpumetalcontext.m) from [MTLDevice supportsFamily:
+	// MTLGPUFamilyApple10] - false here means calling
+	// setDepthTestMinBound:maxBound: at all would be invalid (unlike
+	// Vulkan/D3D12, Metal has no pipeline-level toggle to fall back to being
+	// a harmless no-op against - see spudgpu.h's
+	// spudgpu_cmd_set_depth_bounds doc comment).
+	if (!cmd_list_metal->_parent_allocator->_parent_device->_depth_bounds_test_supported)
+		return;
+
+	if (@available(macOS 26.0, iOS 26.0, *)) {
+		[cmd_list_metal->_active_render_encoder setDepthTestMinBound:min_depth_bounds
+		                                                     maxBound:max_depth_bounds];
+	}
+}
+#endif // SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+
 void spudgpu_cmd_draw_indirect(
     spudgpu_command_list cmd,
     spudgpu_buffer buffer,

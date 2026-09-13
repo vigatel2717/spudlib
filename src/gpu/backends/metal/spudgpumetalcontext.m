@@ -8,7 +8,6 @@
 #include "spudgpumetal.h"
 
 SPUDRESULT spudgpu_create_instance(
-    SPUDGPU_NATIVE_API native_api,
     const char *application_name,
     uint32_t application_version,
     const char *engine_name,
@@ -22,7 +21,6 @@ SPUDRESULT spudgpu_create_instance(
 	(void) engine_name;
 	(void) engine_version;
 
-	if (native_api == SPUDGPU_NATIVE_API_NONE) return SPUDRESULT_INVALID_API;
 	if (!out_instance) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	spudgpu_instance_metal *instance = calloc(1, sizeof(spudgpu_instance_metal));
@@ -149,6 +147,10 @@ SPUDRESULT spudgpu_enumerate_devices(
 	for (uint32_t i = 0; i < deviceCount; i++) {
 		spudgpu_device_metal *device = calloc(1, sizeof(spudgpu_device_metal));
 		device->_device_mtl = [mtlDevices[i] retain];
+#if SPUDGPU_EXT_DEPTH_BOUNDS_TEST
+		device->_depth_bounds_test_supported =
+		    [device->_device_mtl supportsFamily:MTLGPUFamilyApple10];
+#endif
 		spudgpumetal___internal_make_device_properties(device);
 
 		SPUDRESULT queue_sr = spudgpumetal___internal_create_device_command_queues(device);
