@@ -240,6 +240,22 @@ static VkBufferImageCopy spudgpuvulkan___make_buffer_image_copy(
 	return region;
 }
 
+void spudgpu_cmd_copy_buffer(
+    spudgpu_command_list cmd,
+    spudgpu_buffer src_buffer,
+    spudgpu_buffer dst_buffer,
+    uint64_t src_offset,
+    uint64_t dst_offset,
+    uint64_t size) {
+	if (!cmd || !src_buffer || !dst_buffer)
+		return;
+	VkBufferCopy region = {0};
+	region.srcOffset    = (VkDeviceSize)src_offset;
+	region.dstOffset    = (VkDeviceSize)dst_offset;
+	region.size         = (VkDeviceSize)size;
+	vkCmdCopyBuffer(cmd->_command_buffer_vk, src_buffer->_buffer_vk, dst_buffer->_buffer_vk, 1, &region);
+}
+
 void spudgpu_cmd_copy_image_to_buffer(
     spudgpu_command_list cmd,
     spudgpu_image src_image,

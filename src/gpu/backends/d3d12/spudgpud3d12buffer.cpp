@@ -7,8 +7,18 @@ static CD3DX12_RESOURCE_DESC spudgpu_d3d12_create_resource_desc_from_buffer(
     const spudgpu_buffer_desc *desc) {
 	D3D12_RESOURCE_FLAGS d3dResourceFlags =
 	    spudgpu_d3d12_get_buffer_resource_flags(desc->usage, desc->buffer_flags);
+	// A CBV's SizeInBytes must be a 256-byte-aligned multiple
+	// (D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT), and CreateConstantBufferView
+	// rounds up to that regardless of the resource's real size -- so the backing
+	// resource itself has to be allocated at least that large or the CBV's declared
+	// range runs past the end of the resource. Padding is allocation-only: the
+	// caller-visible spudgpu_buffer_desc::size (returned by spudgpu_get_buffer_desc)
+	// is left exactly as requested.
+	uint64_t allocSize = desc->size;
+	if (desc->usage == SPUDGPU_BUFFER_USAGE_UNIFORM)
+		allocSize = (allocSize + 255) & ~(uint64_t)255;
 	CD3DX12_RESOURCE_DESC result =
-	    CD3DX12_RESOURCE_DESC::Buffer(desc->size, d3dResourceFlags);
+	    CD3DX12_RESOURCE_DESC::Buffer(allocSize, d3dResourceFlags);
 	return result;
 }
 
@@ -81,14 +91,20 @@ SPUDRESULT spudgpu_create_buffer_view(
 	pResult->_buffer = buffer;
 	pResult->_desc   = *desc;
 
-	switch (buffer->_desc.usage) {
-	case SPUDGPU_BUFFER_USAGE_VERTEX:
+	// spudgpu_buffer_desc::usage is a bitmask (a buffer can legitimately carry
+	// more than one usage, e.g. UNIFORM | VERTEX for a per-instance buffer
+	// also read by a compute pass) -- test membership, not exact equality,
+	// or a multi-usage buffer falls through to default below. VERTEX/INDEX
+	// are checked first since they're what spudgpu_create_buffer_view is
+	// actually for; a buffer's UNIFORM/STORAGE binding goes through
+	// spudgpu_write_descriptor_set instead and never reaches here in
+	// practice, but the case is kept for a caller that does.
+	if (buffer->_desc.usage & SPUDGPU_BUFFER_USAGE_VERTEX) {
 		pResult->_d3d_view._vb.BufferLocation =
 		    buffer->_d3d_gpu_address + desc->offset_from_parent_buffer;
 		pResult->_d3d_view._vb.StrideInBytes  = desc->stride;
 		pResult->_d3d_view._vb.SizeInBytes    = desc->size;
-		break;
-	case SPUDGPU_BUFFER_USAGE_INDEX:
+	} else if (buffer->_desc.usage & SPUDGPU_BUFFER_USAGE_INDEX) {
 		pResult->_d3d_view._ib.BufferLocation =
 		    buffer->_d3d_gpu_address + desc->offset_from_parent_buffer;
 		if (desc->stride == 4)
@@ -100,19 +116,16 @@ SPUDRESULT spudgpu_create_buffer_view(
 			return SPUDRESULT_GPU_INVALID_INDEX_STRIDE;
 		}
 		pResult->_d3d_view._ib.SizeInBytes = desc->size;
-		break;
-	case SPUDGPU_BUFFER_USAGE_UNIFORM:
+	} else if (buffer->_desc.usage & SPUDGPU_BUFFER_USAGE_UNIFORM) {
 		pResult->_d3d_view._cb.BufferLocation =
 		    buffer->_d3d_gpu_address + desc->offset_from_parent_buffer;
 		pResult->_d3d_view._cb.SizeInBytes    = desc->size;
-		break;
-	// case SPUDGPU_BUFFER_USAGE_STORAGE:
+	// } else if (buffer->_desc.usage & SPUDGPU_BUFFER_USAGE_STORAGE) {
 	//	pResult->_d3d_view._so.BufferLocation = desc->offset_from_parent_buffer;
 	//  TODO : D3D12_STREAM_OUTPUT_BUFFER_VIEW Buffer Filled Size Location
 	// pResult->_d3d_view._so.BufferFilledSizeLocation = desc->size;
 	//	pResult->_d3d_view._so.SizeInBytes = desc->size;
-	//	break;
-	default:
+	} else {
 		free(pResult);
 		return SPUDRESULT_GPU_INVALID_BUFFER_USAGE;
 	}
@@ -138,9 +151,10 @@ SPUDRESULT spudgpu_map_buffer(
     spudgpu_buffer buffer, uint64_t offset, uint64_t size, void **ppData) {
 	if (!buffer)
 		return SPUDRESULT_GPU_INVALID_BUFFER;
-	if (size == 0)
-		return SPUDRESULT_ZERO_SIZE;
-	CD3DX12_RANGE d3dRange = CD3DX12_RANGE(offset, offset + size);
+	// 0 means "map the entire buffer" per spudgpu.h's documented contract --
+	// matches the Vulkan backend's mapSize fallback (spudgpuvulkanbuffer.c).
+	uint64_t mapSize       = (size == 0) ? buffer->_desc.size : size;
+	CD3DX12_RANGE d3dRange = CD3DX12_RANGE(offset, offset + mapSize);
 	if (FAILED(buffer->_d3d_resource->Map(0, &d3dRange, ppData)))
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	return SPUD_SUCCESS;

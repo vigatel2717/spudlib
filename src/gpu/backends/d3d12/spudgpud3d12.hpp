@@ -120,6 +120,11 @@ typedef struct spudgpu_instance_t {
 
 #define SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS 4096
 
+// Forward declaration -- spudgpu_bindless_state_d3d12 below stores a pointer
+// to this before its full definition (with the rest of the descriptor-set
+// types) appears further down this file.
+typedef struct spudgpu_descriptor_set_layout_t spudgpu_descriptor_set_layout_d3d12;
+
 // Lazily created the first time bindless capabilities/registration is used on
 // a device. Safe to lazy-init here (unlike the Vulkan backend): every D3D12
 // struct above stores spudgpu_device_d3d12* by pointer, never by value, so
@@ -217,6 +222,13 @@ typedef struct spudgpu_command_list_t {
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> _rtv_heap;
 	UINT _rtv_heap_capacity;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> _dsv_heap;
+
+	// Set by spudgpu_cmd_begin_rendering, read by spudgpu_cmd_end_rendering:
+	// true if BeginRenderPass/EndRenderPass was used for this pass, false if
+	// the classic OMSetRenderTargets/Clear*View path was used instead (see
+	// spudgpu_cmd_begin_rendering's will_execute_bundles handling) -- the two
+	// don't mix, so end_rendering must match whichever begin_rendering chose.
+	bool _using_render_pass;
 } spudgpu_command_list_d3d12;
 
 typedef struct spudgpu_buffer_t {
@@ -248,6 +260,22 @@ typedef struct spudgpu_image_t {
 	Microsoft::WRL::ComPtr<ID3D12Resource2> _d3d_resource;
 	D3D12_RESOURCE_DESC _d3d_resource_desc;
 	D3D12_GPU_VIRTUAL_ADDRESS _d3d_gpu_address;
+
+	// The resource's actual current D3D12 state, kept in sync by every
+	// spudgpu_cmd_image_barrier* call (spudgpud3d12renderpass.cpp). Needed
+	// because SPUDGPU_IMAGE_LAYOUT_UNDEFINED (the Vulkan "don't care what it
+	// was" convention this API follows) has no real D3D12 equivalent --
+	// D3D12's strict before/after state tracking means the barrier's
+	// declared "before" state has to match whatever the resource is
+	// actually in, which for a freshly created image is its usage-implied
+	// initial state (not always D3D12_RESOURCE_STATE_COMMON -- see
+	// spudgpu_d3d12_get_initial_image_state) and for a recycled resource
+	// (a swap chain back buffer transitioning every frame) is whatever the
+	// last real transition left it at, not the creation-time value. Set at
+	// creation (spudgpu_create_image / swap chain back buffer wrapping) and
+	// updated after every barrier -- never re-derived from a static
+	// usage-based guess.
+	D3D12_RESOURCE_STATES _current_state;
 } spudgpu_image_d3d12;
 
 typedef struct spudgpu_image_view_t {
@@ -388,6 +416,26 @@ typedef struct spudgpu_swap_chain_t {
 	Microsoft::WRL::ComPtr<IDXGISwapChain4> _dxgi_swap_chain;
 	spudgpu_image_d3d12 *_back_buffer_images;
 	spudgpu_image_view_d3d12 *_back_buffer_image_views;
+
+	// Backs spudgpu_submit_command_lists_synced's "signals the in-flight
+	// fence" half of the Vulkan/Metal contract. The other two thirds of that
+	// contract have no D3D12 equivalent to wire up: flip-model DXGI swap
+	// chains hand back a buffer index synchronously (no Vulkan-style
+	// image_available acquire wait), and Present() is queued on the same
+	// command queue the render work was submitted to, so it's already
+	// ordered after that work with no separate render_finished signal
+	// needed. One monotonically increasing fence value per submit, rather
+	// than Vulkan/Metal's per-back-buffer-index tracking, because every
+	// sample built against this backend so far (see HelloTriangle) reuses a
+	// single command allocator/list across frames instead of one per
+	// back-buffer index -- so the only safe wait is against the
+	// immediately preceding submit, not the submit that last touched the
+	// current back-buffer index specifically (which can be a stale,
+	// already-satisfied value that under-waits relative to the shared
+	// allocator's real last use). See spudgpu_swap_chain_acquire_next_image
+	// (spudgpud3d12swapchain.cpp) for where this gets waited on.
+	Microsoft::WRL::ComPtr<ID3D12Fence1> _frame_fence;
+	uint64_t _frame_fence_next_value;
 } spudgpu_swap_chain_d3d12;
 
 #endif // SPUDGPU_COMPILE_D3D12_API

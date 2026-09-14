@@ -29,12 +29,28 @@ static D3D12_RESOURCE_STATES spudgpu_d3d12_layout_to_state(SPUDGPU_IMAGE_LAYOUT 
 	}
 }
 
+// The "before" state always comes from the image's own tracked
+// _current_state (spudgpud3d12.hpp), never from old_layout. old_layout
+// follows the Vulkan convention where SPUDGPU_IMAGE_LAYOUT_UNDEFINED means
+// "whatever it is right now, don't care" -- Vulkan can express that directly
+// (VK_IMAGE_LAYOUT_UNDEFINED), but D3D12's strict before/after state
+// tracking has no "don't care" transition, so the declared "before" state
+// has to be the resource's real current state or the debug layer flags a
+// BEFORE_AFTER_MISMATCH (and the bad transition can corrupt driver-side
+// state badly enough to crash, not just warn). A static usage-based guess
+// only gets this right for the first transition after creation; a resource
+// that's cycled through several transitions already (a swap chain back
+// buffer, every frame) needs the real current value, which is exactly what
+// _current_state holds. Trusting our own tracking over a caller-supplied
+// old_layout is strictly more robust, not a policy decision -- every state
+// change on a spudgpu_image goes through these functions, so the tracked
+// value is always accurate as long as the caller doesn't also mutate the
+// resource state via the native escape hatch (spudgpu_d3d12_natives.h).
 static void spudgpu_d3d12_resource_barrier(
     ID3D12GraphicsCommandList *cmdList,
-    ID3D12Resource *resource,
-    SPUDGPU_IMAGE_LAYOUT old_layout,
+    spudgpu_image_d3d12 *image,
     SPUDGPU_IMAGE_LAYOUT new_layout) {
-	D3D12_RESOURCE_STATES stateBefore = spudgpu_d3d12_layout_to_state(old_layout);
+	D3D12_RESOURCE_STATES stateBefore = image->_current_state;
 	D3D12_RESOURCE_STATES stateAfter  = spudgpu_d3d12_layout_to_state(new_layout);
 	if (stateBefore == stateAfter)
 		return;
@@ -42,11 +58,12 @@ static void spudgpu_d3d12_resource_barrier(
 	D3D12_RESOURCE_BARRIER barrier           = {};
 	barrier.Type                             = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	barrier.Flags                            = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-	barrier.Transition.pResource             = resource;
+	barrier.Transition.pResource             = image->_d3d_resource.Get();
 	barrier.Transition.StateBefore           = stateBefore;
 	barrier.Transition.StateAfter            = stateAfter;
 	barrier.Transition.Subresource           = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 	cmdList->ResourceBarrier(1, &barrier);
+	image->_current_state = stateAfter;
 }
 
 extern "C" {
@@ -56,12 +73,10 @@ void spudgpu_cmd_image_barrier(
     spudgpu_image image,
     SPUDGPU_IMAGE_LAYOUT old_layout,
     SPUDGPU_IMAGE_LAYOUT new_layout) {
+	(void)old_layout;
 	if (!cmd || !image)
 		return;
-	spudgpu_d3d12_resource_barrier(
-	    cmd->_d3d_cmd_list.Get(),
-	    image->_d3d_resource.Get(),
-	    old_layout, new_layout);
+	spudgpu_d3d12_resource_barrier(cmd->_d3d_cmd_list.Get(), image, new_layout);
 }
 
 void spudgpu_cmd_image_barrier_view(
@@ -69,12 +84,10 @@ void spudgpu_cmd_image_barrier_view(
     spudgpu_image_view image_view,
     SPUDGPU_IMAGE_LAYOUT old_layout,
     SPUDGPU_IMAGE_LAYOUT new_layout) {
+	(void)old_layout;
 	if (!cmd || !image_view || !image_view->_image)
 		return;
-	spudgpu_d3d12_resource_barrier(
-	    cmd->_d3d_cmd_list.Get(),
-	    image_view->_image->_d3d_resource.Get(),
-	    old_layout, new_layout);
+	spudgpu_d3d12_resource_barrier(cmd->_d3d_cmd_list.Get(), image_view->_image, new_layout);
 }
 
 void spudgpu_cmd_image_barrier_subresource(
@@ -83,10 +96,11 @@ void spudgpu_cmd_image_barrier_subresource(
     const spudgpu_image_view_desc_subresource_range *range,
     SPUDGPU_IMAGE_LAYOUT old_layout,
     SPUDGPU_IMAGE_LAYOUT new_layout) {
+	(void)old_layout;
 	if (!cmd || !image || !range)
 		return;
 
-	D3D12_RESOURCE_STATES stateBefore = spudgpu_d3d12_layout_to_state(old_layout);
+	D3D12_RESOURCE_STATES stateBefore = image->_current_state;
 	D3D12_RESOURCE_STATES stateAfter  = spudgpu_d3d12_layout_to_state(new_layout);
 	if (stateBefore == stateAfter)
 		return;
@@ -115,6 +129,10 @@ void spudgpu_cmd_image_barrier_subresource(
 
 	if (!barriers.empty())
 		cmd->_d3d_cmd_list->ResourceBarrier((UINT)barriers.size(), barriers.data());
+	// _current_state tracks the whole resource, matching this function's own
+	// existing simplification of one before/after pair for the whole queried
+	// range rather than true per-subresource tracking.
+	image->_current_state = stateAfter;
 }
 
 // Builds a D3D12_PLACED_SUBRESOURCE_FOOTPRINT describing the buffer-side
@@ -136,6 +154,20 @@ static D3D12_PLACED_SUBRESOURCE_FOOTPRINT spudgpu_d3d12_make_footprint(
 	footprint.Footprint.Depth    = desc->depth ? desc->depth : 1;
 	footprint.Footprint.RowPitch = (desc->buffer_row_length ? desc->buffer_row_length : desc->width) * bytesPerTexel;
 	return footprint;
+}
+
+void spudgpu_cmd_copy_buffer(
+    spudgpu_command_list cmd,
+    spudgpu_buffer src_buffer,
+    spudgpu_buffer dst_buffer,
+    uint64_t src_offset,
+    uint64_t dst_offset,
+    uint64_t size) {
+	if (!cmd || !src_buffer || !dst_buffer)
+		return;
+	cmd->_d3d_cmd_list->CopyBufferRegion(
+	    dst_buffer->_d3d_resource.Get(), dst_offset,
+	    src_buffer->_d3d_resource.Get(), src_offset, size);
 }
 
 void spudgpu_cmd_copy_buffer_to_image(
@@ -411,14 +443,53 @@ void spudgpu_cmd_begin_rendering(
 		    spudgpu_d3d12_store_op_to_ending_access(desc->depth_attachment.stencil_store_op);
 	}
 
+	// D3D12 disallows ExecuteBundle (and several other calls) between
+	// BeginRenderPass/EndRenderPass -- it's a documented, hard restriction of
+	// the render-pass API, not a policy choice. A pass that's going to
+	// execute a bundle has to fall back to the classic OMSetRenderTargets +
+	// ClearRenderTargetView/ClearDepthStencilView path instead, which has no
+	// such restriction. will_execute_bundles is exactly the signal Vulkan
+	// already uses for its own equivalent requirement (VK_SUBPASS_CONTENTS_
+	// SECONDARY_COMMAND_BUFFERS, see spudgpuvulkanrenderpass.c) -- this is
+	// D3D12's side of honoring the same caller-supplied fact.
+	if (desc->will_execute_bundles) {
+		cmdList->OMSetRenderTargets(colorCount, &rtvStart, TRUE, hasDepth ? &dsDesc.cpuDescriptor : nullptr);
+		for (UINT i = 0; i < colorCount; ++i) {
+			if (rtDescs[i].BeginningAccess.Type != D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
+				continue;
+			D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvStart;
+			rtvHandle.ptr += (SIZE_T)i * rtvInc;
+			cmdList->ClearRenderTargetView(rtvHandle, rtDescs[i].BeginningAccess.Clear.ClearValue.Color, 0, nullptr);
+		}
+		if (hasDepth) {
+			UINT clearFlags = 0;
+			if (dsDesc.DepthBeginningAccess.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
+				clearFlags |= D3D12_CLEAR_FLAG_DEPTH;
+			if (dsDesc.StencilBeginningAccess.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
+				clearFlags |= D3D12_CLEAR_FLAG_STENCIL;
+			if (clearFlags) {
+				cmdList->ClearDepthStencilView(
+				    dsDesc.cpuDescriptor, (D3D12_CLEAR_FLAGS)clearFlags,
+				    dsDesc.DepthBeginningAccess.Clear.ClearValue.DepthStencil.Depth,
+				    dsDesc.StencilBeginningAccess.Clear.ClearValue.DepthStencil.Stencil,
+				    0, nullptr);
+			}
+		}
+		cmd->_using_render_pass = false;
+		return;
+	}
+
 	cmdList->BeginRenderPass(
 	    colorCount, rtDescs,
 	    hasDepth ? &dsDesc : nullptr,
 	    D3D12_RENDER_PASS_FLAG_NONE);
+	cmd->_using_render_pass = true;
 }
 
 void spudgpu_cmd_end_rendering(spudgpu_command_list cmd) {
 	if (!cmd)
+		return;
+	if (!cmd->_using_render_pass)
 		return;
 	cmd->_d3d_cmd_list->EndRenderPass();
 }

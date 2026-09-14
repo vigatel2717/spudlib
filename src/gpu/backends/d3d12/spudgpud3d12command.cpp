@@ -61,6 +61,33 @@ SPUDRESULT spudgpu_submit_command_lists(
 	return SPUD_SUCCESS;
 }
 
+SPUDRESULT spudgpu_submit_command_lists_synced(
+    spudgpu_command_queue queue,
+    spudgpu_command_list *cmd_lists,
+    uint32_t cmd_list_count,
+    spudgpu_swap_chain swap_chain) {
+	if (!queue)
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+	if (!cmd_lists || !cmd_list_count)
+		return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+	if (!swap_chain)
+		return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
+
+	SPUDRESULT result = spudgpu_submit_command_lists(queue, cmd_lists, cmd_list_count);
+	if (SPUDFAIL(result))
+		return result;
+
+	// See spudgpu_swap_chain_d3d12 (spudgpud3d12.hpp) for why this is one
+	// monotonic value per submit rather than Vulkan/Metal's per-back-buffer
+	// bookkeeping, and spudgpu_swap_chain_acquire_next_image
+	// (spudgpud3d12swapchain.cpp) for where it gets waited on.
+	uint64_t value = ++swap_chain->_frame_fence_next_value;
+	if (FAILED(queue->_d3d_cmd_queue->Signal(swap_chain->_frame_fence.Get(), value)))
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+
+	return SPUD_SUCCESS;
+}
+
 SPUDRESULT spudgpu_create_command_allocator(
     spudgpu_device device,
     const spudgpu_command_allocator_desc *desc,
@@ -158,11 +185,20 @@ void spudgpu_cmd_set_scissor_rects(
     const SPUDGPU_SCISSOR_RECT *scissor_rects) {
 	if (!(cmd && scissor_rects && scissor_rect_count))
 		return;
-	// D3D12_RECT d3dRects;
+	// SPUDGPU_SCISSOR_RECT is {x, y, width, height} floats; D3D12_RECT is
+	// {left, top, right, bottom} LONGs -- not layout-compatible, needs a
+	// real per-rect conversion rather than a reinterpret_cast.
+	D3D12_RECT *d3dRects = (D3D12_RECT *)malloc(
+	    sizeof(D3D12_RECT) * scissor_rect_count);
+	for (uint32_t i = 0; i < scissor_rect_count; ++i) {
+		d3dRects[i].left   = (LONG)scissor_rects[i].x;
+		d3dRects[i].top    = (LONG)scissor_rects[i].y;
+		d3dRects[i].right  = (LONG)(scissor_rects[i].x + scissor_rects[i].width);
+		d3dRects[i].bottom = (LONG)(scissor_rects[i].y + scissor_rects[i].height);
+	}
 	cmd->_d3d_cmd_list->RSSetScissorRects(
-	    static_cast<UINT>(scissor_rect_count),
-	    reinterpret_cast<D3D12_RECT *>(
-	        const_cast<SPUDGPU_SCISSOR_RECT *>(scissor_rects)));
+	    static_cast<UINT>(scissor_rect_count), d3dRects);
+	free(d3dRects);
 }
 void spudgpu_cmd_set_vertex_buffers(
     spudgpu_command_list cmd,

@@ -131,6 +131,16 @@ static HRESULT spudgpu_d3d12_build_root_signature(
 			case SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
 				rt = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 				break;
+			case SPUDGPU_DESCRIPTOR_TYPE_SAMPLER:
+				// A sampler-only set (like this sample's sampler_layout)
+				// produces a single-range, sampler-only table here, which
+				// is valid. A layout that mixed SAMPLER with CBV/SRV/UAV
+				// bindings would need two root parameters (D3D12 tables
+				// can't span both the sampler heap and the CBV/SRV/UAV
+				// heap) -- not needed today, since no current layout mixes
+				// them, but worth knowing if one ever does.
+				rt = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+				break;
 			default:
 				continue;
 			}
@@ -169,8 +179,18 @@ static HRESULT spudgpu_d3d12_build_root_signature(
 		params[param_count].ParameterType =
 		    D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
 		params[param_count].Constants.ShaderRegister = 0; // b0
-		params[param_count].Constants.RegisterSpace =
-		    1; // space1 avoids set binding collision
+		// Descriptor sets occupy space0..space(set_count-1) (RegisterSpace = s
+		// above), so a hardcoded space1 only avoided collision when a
+		// pipeline used exactly one descriptor set -- with two or more (the
+		// first real case: SpudGPUMeshShaders' mesh-data set=0 + globals
+		// set=1), push constants at space1 collided directly with set 1's
+		// own bindings. SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS is always at
+		// least one past the highest space any actual set can use, so it's
+		// collision-free regardless of set_count -- this has to match
+		// set_root_constant_layouts' rc.space in spudgpu_create_shader_module
+		// exactly, since that's what the cross-compiled HLSL actually
+		// expects.
+		params[param_count].Constants.RegisterSpace = SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS;
 		params[param_count].Constants.Num32BitValues = total_pc_words;
 		params[param_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 		++param_count;
@@ -191,8 +211,18 @@ static HRESULT spudgpu_d3d12_build_root_signature(
 	Microsoft::WRL::ComPtr<ID3DBlob> error_blob;
 	HRESULT hr = D3D12SerializeRootSignature(
 	    &sigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig_blob, &error_blob);
-	if (FAILED(hr))
+	if (FAILED(hr)) {
+		// D3D12SerializeRootSignature reports the actual reason through
+		// error_blob, not the D3D12 debug layer/ID3D12InfoQueue -- without
+		// printing it, a failure here is silent (no debug-layer message at
+		// all), unlike every other failure path in this file.
+		if (error_blob)
+			printf("apricot: D3D12SerializeRootSignature failed: %s\n",
+			    (const char *)error_blob->GetBufferPointer());
+		else
+			printf("apricot: D3D12SerializeRootSignature failed: hr=0x%08lx\n", (unsigned long)hr);
 		return hr;
+	}
 
 	return device->CreateRootSignature(
 	    0, sig_blob->GetBufferPointer(), sig_blob->GetBufferSize(),
@@ -387,14 +417,18 @@ SPUDRESULT spudgpu_create_shader_module(
 	    (desc->stage == SPUDGPU_SHADER_STAGE_MESH || desc->stage == SPUDGPU_SHADER_STAGE_TASK) ? 65 : 60;
 	hlsl_compiler.set_hlsl_options(opts);
 
-	// Pin push constants to b0, space1 so they don't collide with descriptor
-	// set bindings (which occupy space0..spaceN). Matched in root signature.
+	// Pin push constants to b0, space SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS so
+	// they can't collide with descriptor set bindings (which occupy
+	// space0..space(set_count-1), and set_count can be as high as
+	// SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS itself) -- must match
+	// spudgpu_d3d12_build_root_signature's own RegisterSpace exactly, see its
+	// comment for why a plain space1 isn't safe.
 	auto rcVec = std::vector<spirv_cross::RootConstants>();
 	spirv_cross::RootConstants rc;
 	rc.start   = 0;
 	rc.end     = 0xFFFFFFFFu;
 	rc.binding = 0;
-	rc.space   = 1;
+	rc.space   = SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS;
 	rcVec.push_back(rc);
 	hlsl_compiler.set_root_constant_layouts(rcVec);
 
@@ -423,8 +457,18 @@ SPUDRESULT spudgpu_create_shader_module(
 
 	if (SUCCEEDED(hr))
 		result->GetStatus(&hr);
-	if (FAILED(hr))
+	if (FAILED(hr)) {
+		// Same issue as D3D12SerializeRootSignature above: DXC reports the
+		// actual reason through GetErrorBuffer, not the D3D12 debug layer,
+		// so without printing it a compile failure here is silent.
+		Microsoft::WRL::ComPtr<IDxcBlobEncoding> errors;
+		if (SUCCEEDED(result->GetErrorBuffer(&errors)) && errors && errors->GetBufferSize())
+			printf("apricot: DXC compile failed (%ls): %s\n", profile,
+			    (const char *)errors->GetBufferPointer());
+		else
+			printf("apricot: DXC compile failed (%ls): hr=0x%08lx\n", profile, (unsigned long)hr);
 		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
+	}
 
 	Microsoft::WRL::ComPtr<IDxcBlob> dxil_blob;
 	result->GetResult(&dxil_blob);

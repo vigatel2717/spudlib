@@ -43,8 +43,8 @@ static D3D12_CLEAR_VALUE
 spudgpu_d3d12_get_clear_value(const SPUDGPU_CLEAR_VALUE *c) {
 	D3D12_CLEAR_VALUE result = {};
 	result.Format            = spudgpu_d3d12_get_dxgi_format(c->format);
-	result.DepthStencil.Depth   = c->depth_stencil.Depth;
-	result.DepthStencil.Stencil = c->depth_stencil.Stencil;
+	result.DepthStencil.Depth   = c->depth_stencil.depth;
+	result.DepthStencil.Stencil = c->depth_stencil.stencil;
 	memcpy(&result.Color, &c->color, sizeof(float) * 4);
 	return result;
 }
@@ -101,6 +101,7 @@ SPUDRESULT spudgpu_create_image(
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
+	pResult->_current_state = d3dInitialState;
 
 	pResult->_d3d_gpu_address = pResult->_d3d_resource->GetGPUVirtualAddress();
 

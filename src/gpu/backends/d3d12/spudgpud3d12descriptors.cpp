@@ -429,18 +429,25 @@ void spudgpu_cmd_bind_descriptor_sets(
 		cmdList->SetDescriptorHeaps(heapCount, heaps);
 
 	// One root parameter per descriptor set: a descriptor table starting at
-	// the set's base GPU handle. Root parameter index = first_set + i.
-	if (pool->_cbv_srv_uav_heap) {
-		D3D12_GPU_DESCRIPTOR_HANDLE heapStart =
-		    pool->_cbv_srv_uav_heap->GetGPUDescriptorHandleForHeapStart();
-		uint32_t inc = pool->_cbv_srv_uav_increment;
-		for (uint32_t i = 0; i < set_count; ++i) {
-			spudgpu_descriptor_set_d3d12 *set =
-			    (spudgpu_descriptor_set_d3d12 *)sets[i];
-			D3D12_GPU_DESCRIPTOR_HANDLE table;
-			table.ptr = heapStart.ptr + (UINT64)set->_cbv_srv_uav_base * inc;
-			cmdList->SetGraphicsRootDescriptorTable(first_set + i, table);
+	// the set's base GPU handle. Root parameter index = first_set + i. A set
+	// is homogeneous today -- all-CBV/SRV/UAV or all-sampler, per its
+	// layout's _sampler_count (no current layout mixes both kinds in one
+	// set) -- so which heap/base pair to use is a per-set choice, not a
+	// once-per-call one.
+	for (uint32_t i = 0; i < set_count; ++i) {
+		spudgpu_descriptor_set_d3d12 *set =
+		    (spudgpu_descriptor_set_d3d12 *)sets[i];
+		D3D12_GPU_DESCRIPTOR_HANDLE table;
+		if (set->_layout->_sampler_count && pool->_sampler_heap) {
+			table = pool->_sampler_heap->GetGPUDescriptorHandleForHeapStart();
+			table.ptr += (UINT64)set->_sampler_base * pool->_sampler_increment;
+		} else if (pool->_cbv_srv_uav_heap) {
+			table = pool->_cbv_srv_uav_heap->GetGPUDescriptorHandleForHeapStart();
+			table.ptr += (UINT64)set->_cbv_srv_uav_base * pool->_cbv_srv_uav_increment;
+		} else {
+			continue;
 		}
+		cmdList->SetGraphicsRootDescriptorTable(first_set + i, table);
 	}
 }
 
@@ -470,17 +477,22 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
 	if (heapCount)
 		cmdList->SetDescriptorHeaps(heapCount, heaps);
 
-	if (pool->_cbv_srv_uav_heap) {
-		D3D12_GPU_DESCRIPTOR_HANDLE heapStart =
-		    pool->_cbv_srv_uav_heap->GetGPUDescriptorHandleForHeapStart();
-		uint32_t inc = pool->_cbv_srv_uav_increment;
-		for (uint32_t i = 0; i < set_count; ++i) {
-			spudgpu_descriptor_set_d3d12 *set =
-			    (spudgpu_descriptor_set_d3d12 *)sets[i];
-			D3D12_GPU_DESCRIPTOR_HANDLE table;
-			table.ptr = heapStart.ptr + (UINT64)set->_cbv_srv_uav_base * inc;
-			cmdList->SetComputeRootDescriptorTable(first_set + i, table);
+	// See spudgpu_cmd_bind_descriptor_sets above for why this is per-set
+	// rather than a single cbv_srv_uav-only branch.
+	for (uint32_t i = 0; i < set_count; ++i) {
+		spudgpu_descriptor_set_d3d12 *set =
+		    (spudgpu_descriptor_set_d3d12 *)sets[i];
+		D3D12_GPU_DESCRIPTOR_HANDLE table;
+		if (set->_layout->_sampler_count && pool->_sampler_heap) {
+			table = pool->_sampler_heap->GetGPUDescriptorHandleForHeapStart();
+			table.ptr += (UINT64)set->_sampler_base * pool->_sampler_increment;
+		} else if (pool->_cbv_srv_uav_heap) {
+			table = pool->_cbv_srv_uav_heap->GetGPUDescriptorHandleForHeapStart();
+			table.ptr += (UINT64)set->_cbv_srv_uav_base * pool->_cbv_srv_uav_increment;
+		} else {
+			continue;
 		}
+		cmdList->SetComputeRootDescriptorTable(first_set + i, table);
 	}
 }
 
@@ -528,14 +540,24 @@ static SPUDRESULT spudgpud3d12___ensure_bindless_state(spudgpu_device_d3d12 *dev
 	    SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL |
 	    SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION);
 
+	// HLSL's UAV ("u#") register space is shared between texture UAVs
+	// (STORAGE_IMAGE) and buffer UAVs (STORAGE_BUFFER) -- unlike Vulkan,
+	// where these are just independently numbered descriptor-set slots with
+	// no register-namespace concept at all. spudgpu_d3d12_build_root_signature
+	// maps each binding's .binding field straight to BaseShaderRegister, so
+	// with SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS-sized (4096) ranges, using
+	// sequential binding numbers (1, 2) here made the two UAV ranges overlap
+	// (u1..u4096 fully covers u2) -- D3D12SerializeRootSignature rejects
+	// that outright. SAMPLED_IMAGE (SRV, "t#") doesn't need to make room for
+	// either, since SRV and UAV are already separate register classes.
 	layout->_desc.bindings[0] = {
 	    0, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, allStages};
 	layout->_desc.bindings[1] = {
-	    1, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	    0, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, allStages};
 	layout->_desc.bindings[2] = {
-	    2, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, allStages};
 
 	auto *state = new spudgpu_bindless_state_d3d12();

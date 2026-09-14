@@ -93,6 +93,13 @@ SPUDRESULT spudgpu_create_swap_chain(
 		img._desc.type         = SPUDGPU_IMAGE_TYPE_2D;
 		img._desc.usage        = SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT;
 		img._d3d_resource_desc = img._d3d_resource->GetDesc();
+		// Swap chain back buffers start life in PRESENT (== COMMON, 0x0), not
+		// the RENDER_TARGET state SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT would
+		// otherwise imply for a freshly spudgpu_create_image'd resource --
+		// they're DXGI-provided, not created via CreateCommittedResource1, so
+		// spudgpu_d3d12_get_initial_image_state's usage-based guess doesn't
+		// apply here.
+		img._current_state     = D3D12_RESOURCE_STATE_PRESENT;
 
 		spudgpu_image_view_d3d12 &view = pResult->_back_buffer_image_views[i];
 		view._image                    = &img;
@@ -104,6 +111,15 @@ SPUDRESULT spudgpu_create_swap_chain(
 		view._d3d_view_desc._rtv.Texture2D.MipSlice   = 0;
 		view._d3d_view_desc._rtv.Texture2D.PlaneSlice = 0;
 	}
+
+	if (FAILED(device->_d3d_device->CreateFence(
+	        0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&pResult->_frame_fence)))) {
+		delete[] pResult->_back_buffer_image_views;
+		delete[] pResult->_back_buffer_images;
+		free(pResult);
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+	pResult->_frame_fence_next_value = 0;
 
 	*out_swap_chain = pResult;
 	return SPUD_SUCCESS;
@@ -120,6 +136,7 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 	}
 	if (swap_chain->_back_buffer_image_views)
 		delete[] swap_chain->_back_buffer_image_views;
+	swap_chain->_frame_fence.Reset();
 	swap_chain->_dxgi_swap_chain.Reset();
 	free(swap_chain);
 }
@@ -137,6 +154,22 @@ SPUDRESULT spudgpu_get_swap_chain_desc(
 uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 	if (!swap_chain)
 		return 0;
+
+	// The in-flight-fence half of spudgpu_submit_command_lists_synced's
+	// contract (see spudgpu_swap_chain_d3d12 in spudgpud3d12.hpp) -- block
+	// until the previously submitted frame's GPU work has completed before
+	// handing back a buffer index the caller is about to reuse a shared
+	// command allocator/list against.
+	uint64_t pending = swap_chain->_frame_fence_next_value;
+	if (pending != 0 && swap_chain->_frame_fence->GetCompletedValue() < pending) {
+		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		if (event) {
+			if (SUCCEEDED(swap_chain->_frame_fence->SetEventOnCompletion(pending, event)))
+				WaitForSingleObject(event, INFINITE);
+			CloseHandle(event);
+		}
+	}
+
 	return swap_chain->_dxgi_swap_chain->GetCurrentBackBufferIndex();
 }
 

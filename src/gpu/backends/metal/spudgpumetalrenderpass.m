@@ -76,6 +76,21 @@ void spudgpu_cmd_image_barrier_subresource(
 	// No-op - see the note above spudgpumetal___internal_layout_recognized.
 }
 
+void spudgpu_cmd_copy_buffer(
+    spudgpu_command_list cmd,
+    spudgpu_buffer src_buffer,
+    spudgpu_buffer dst_buffer,
+    uint64_t src_offset,
+    uint64_t dst_offset,
+    uint64_t size) {
+	if (!cmd || !src_buffer || !dst_buffer)
+		return;
+
+	// METAL API CODE - copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:
+	// via an MTLBlitCommandEncoder, matching the other copy/blit functions in
+	// this file (see the file comment above).
+}
+
 void spudgpu_cmd_copy_image_to_buffer(
     spudgpu_command_list cmd,
     spudgpu_image src_image,

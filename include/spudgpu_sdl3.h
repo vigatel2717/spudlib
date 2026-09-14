@@ -38,7 +38,10 @@ static inline spudgpu_surface spudgpu_create_surface_from_sdl3(
 #if SPUDGPU_COMPILE_D3D12_API
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>
-#include <windef.h>
+// windows.h, not a bare windef.h -- windef.h's own winnt.h include needs
+// _AMD64_/_X86_ already defined, which only windows.h's preamble does (it
+// translates the compiler's _M_AMD64/_M_IX86 before reaching windef.h).
+#include <windows.h>
 
 static inline spudgpu_surface spudgpu_create_surface_from_sdl3(
     spudgpu_instance instance,

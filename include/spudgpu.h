@@ -3121,6 +3121,42 @@ typedef struct spudgpu_image_buffer_copy_desc {
 } spudgpu_image_buffer_copy_desc;
 
 /**
+ * @brief Records a copy of size bytes from one buffer to another.
+ *
+ * src_buffer must have been created with SPUDGPU_BUFFER_USAGE_TRANSFER_SRC,
+ * dst_buffer with SPUDGPU_BUFFER_USAGE_TRANSFER_DST. The caller is
+ * responsible for any pipeline barrier dst_buffer needs after the copy
+ * before it's read/written in a later stage (see spudgpu_cmd_pipeline_barrier)
+ * -- this call performs no synchronization of its own beyond ordering the
+ * copy itself within the command list.
+ *
+ * The primary use is uploading initial data into a buffer whose usage bits
+ * are incompatible with a host-visible/mappable memory type on a given
+ * backend (e.g. SPUDGPU_BUFFER_USAGE_STORAGE + host-visible is invalid on
+ * D3D12 -- UAV-flagged resources can't live on an upload heap): create a
+ * small host-visible staging buffer with SPUDGPU_BUFFER_USAGE_TRANSFER_SRC,
+ * map/memcpy/unmap the data into it, then copy from the staging buffer into
+ * the real device-local buffer with this call.
+ *
+ * Maps to: vkCmdCopyBuffer (Vulkan), CopyBufferRegion (D3D12),
+ * copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size: (Metal).
+ *
+ * @param[in] cmd         The active recording command list.
+ * @param[in] src_buffer  The source buffer to read bytes from.
+ * @param[in] dst_buffer  The destination buffer to write bytes into.
+ * @param[in] src_offset  Byte offset into src_buffer to start reading from.
+ * @param[in] dst_offset  Byte offset into dst_buffer to start writing to.
+ * @param[in] size        Number of bytes to copy.
+ */
+void spudgpu_cmd_copy_buffer(
+    spudgpu_command_list cmd,
+    spudgpu_buffer src_buffer,
+    spudgpu_buffer dst_buffer,
+    uint64_t src_offset,
+    uint64_t dst_offset,
+    uint64_t size);
+
+/**
  * @brief Records a copy from an image subresource region into a buffer.
  *
  * The image must currently be in SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC. Use
