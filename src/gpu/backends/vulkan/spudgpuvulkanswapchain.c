@@ -56,7 +56,19 @@ void spudgpuvulkan___get_available_present_modes_internal(
 
 VkSurfaceFormatKHR spudgpuvulkan___choose_surface_format_internal(
 	VkSurfaceFormatKHR *pAvailableFormats,
-	uint32_t availableFormatCount) {
+	uint32_t availableFormatCount,
+	VkFormat requestedFormat) {
+	// The caller (pSwapChain->_desc.format) already decided which format it
+	// wants - e.g. so it matches the format a pipeline was created against
+	// (spudgpu_shader_pipeline_desc::color_attachment_format). Picking a
+	// different one here on the caller's behalf is exactly the kind of
+	// silent SpudLib-side default this backend must not make; only fall
+	// back to SRGB (still colorSpace-matched) if the exact request isn't
+	// actually present on this surface.
+	for (uint32_t i = 0; i < availableFormatCount; i++)
+		if (pAvailableFormats[i].format == requestedFormat &&
+		    pAvailableFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+			return pAvailableFormats[i];
 	for (uint32_t i = 0; i < availableFormatCount; i++)
 		if (pAvailableFormats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
 		    pAvailableFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
@@ -124,7 +136,9 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 		VkSurfaceFormatKHR *pSurfaceFormats = NULL;
 		uint32_t surfaceFormatCount = 0;
 		spudgpuvulkan___get_available_formats_internal(pSwapChain, &pSurfaceFormats, &surfaceFormatCount);
-		surfaceFormat = spudgpuvulkan___choose_surface_format_internal(pSurfaceFormats, surfaceFormatCount);
+		surfaceFormat = spudgpuvulkan___choose_surface_format_internal(
+			pSurfaceFormats, surfaceFormatCount,
+			convert_spud_to_vulkan_format(pSwapChain->_desc.format));
 		free(pSurfaceFormats);
 
 		VkPresentModeKHR *pPresentModes = NULL;

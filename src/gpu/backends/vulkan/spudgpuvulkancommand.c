@@ -96,8 +96,13 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
     submit.pWaitDstStageMask = &wait_stage;
     submit.commandBufferCount = cmd_list_count;
     submit.pCommandBuffers = buffers;
+    // render_finished_semaphores is indexed by swapchain IMAGE index, not by
+    // the frame-in-flight slot (see spudgpuvulkan___fences_semaphores_swapchain_creation_internal
+    // and spudgpu_swap_chain_present, which waits on this same array using
+    // _current_image_index) — signaling by `frame` here left every image
+    // besides image 0 with a signal semaphore that was never actually signaled.
     submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &swap_chain->_render_finished_semaphores[frame]._semaphore_vk;
+    submit.pSignalSemaphores = &swap_chain->_render_finished_semaphores[swap_chain->_current_image_index]._semaphore_vk;
 
     VkResult r = vkQueueSubmit(
         queue->_queue_vk, 1, &submit,

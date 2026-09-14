@@ -296,8 +296,18 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     uint32_t deviceExtensionCount = 1;
     if (meshShaderFeatureSupported) {
         deviceExtensions[deviceExtensionCount++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
-        // meshShader is the only bit this sample family needs; taskShader
-        // stays off since nothing here uses amplification shaders yet.
+        // meshShaderFeatures was just used as a vkGetPhysicalDeviceFeatures2
+        // query target, so every bit in it (not just meshShader) now reflects
+        // whatever the hardware happens to support - e.g. multiviewMeshShader
+        // or primitiveFragmentShadingRateMeshShader can come back VK_TRUE even
+        // though this backend never enables their prerequisite features
+        // (multiview / primitiveFragmentShadingRate). Reset to a clean struct
+        // before reusing it as the *enable* chain so only the bits actually
+        // requested below get turned on. meshShader is the only bit this
+        // sample family needs; taskShader stays off since nothing here uses
+        // amplification shaders yet.
+        meshShaderFeatures = (VkPhysicalDeviceMeshShaderFeaturesEXT){0};
+        meshShaderFeatures.sType      = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
         meshShaderFeatures.taskShader = VK_FALSE;
         meshShaderFeatures.meshShader = VK_TRUE;
         meshShaderFeatures.pNext      = vk13Features.pNext;
