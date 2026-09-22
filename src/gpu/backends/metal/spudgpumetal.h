@@ -198,6 +198,18 @@ typedef struct spudgpu_command_list_t {
 	id<MTLComputeCommandEncoder> _active_compute_encoder;
 	struct spudgpu_compute_pipeline_t *_bound_compute_pipeline;
 
+	// Blit counterpart to _active_render_encoder/_active_compute_encoder
+	// above, backing spudgpu_cmd_copy_buffer/_copy_buffer_to_image/
+	// _copy_image_to_buffer (spudgpumetalrenderpass.m) via an
+	// MTLBlitCommandEncoder. Same "Metal disallows two live encoders of
+	// different kinds on one command buffer at once" rule applies - opening
+	// this ends any active render/compute encoder first, and
+	// spudgpu_cmd_begin_rendering/spudgpumetal___internal_ensure_compute_encoder
+	// end this before opening theirs. Cleared by
+	// spudgpumetal___internal_end_active_blit_encoder (called from
+	// spudgpu_end_command_list and from those two encoder-open paths).
+	id<MTLBlitCommandEncoder> _active_blit_encoder;
+
 	// Push-constant scratch block - see SPUDGPU_METAL_PUSH_CONSTANTS_SIZE.
 	uint8_t _push_constants_scratch[SPUDGPU_METAL_PUSH_CONSTANTS_SIZE];
 	uint32_t _push_constants_extent; // High-water mark of bytes ever written.
@@ -215,6 +227,14 @@ MTLPixelFormat spudgpumetal___internal_image_pixel_format(SPUDGPU_FORMAT format)
 // two live encoders of different kinds on one command buffer at once) - see
 // _active_compute_encoder's comment above.
 void spudgpumetal___internal_end_active_compute_encoder(spudgpu_command_list_metal *cmd_list_metal);
+
+// Defined in spudgpumetalrenderpass.m - ends and releases cmd_list_metal's
+// _active_blit_encoder if one is active, else a no-op. Shared with
+// spudgpu_cmd_begin_rendering (spudgpumetalrenderpass.m) and
+// spudgpumetal___internal_ensure_compute_encoder (spudgpumetalcommand.m),
+// both of which must end any active blit encoder before opening their own -
+// see _active_blit_encoder's comment above.
+void spudgpumetal___internal_end_active_blit_encoder(spudgpu_command_list_metal *cmd_list_metal);
 
 typedef struct spudgpu_shader_module_t {
 #if _DEBUG

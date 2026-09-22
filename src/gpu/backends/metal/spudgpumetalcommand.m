@@ -303,10 +303,12 @@ void spudgpu_end_command_list(spudgpu_command_list cmd) {
 	// encoding simply stops once the last active encoder is ended, and the
 	// buffer is submittable as-is. Rendering already requires the caller to
 	// end it explicitly via spudgpu_cmd_end_rendering (there's no equivalent
-	// "end dispatch" call in the public API for compute, so this is the one
-	// place that's guaranteed to run before every commit - see
-	// spudgpu_cmd_dispatch/spudgpu_cmd_bind_compute_pipeline below).
+	// "end dispatch"/"end copy" call in the public API for compute or blit
+	// encoders, so this is the one place that's guaranteed to run before
+	// every commit - see spudgpu_cmd_dispatch/spudgpu_cmd_bind_compute_pipeline
+	// below and spudgpu_cmd_copy_buffer/etc in spudgpumetalrenderpass.m).
 	spudgpumetal___internal_end_active_compute_encoder((spudgpu_command_list_metal *)cmd);
+	spudgpumetal___internal_end_active_blit_encoder((spudgpu_command_list_metal *)cmd);
 }
 
 // Ends and releases _active_compute_encoder if one is active. Shared with
@@ -334,6 +336,7 @@ static id<MTLComputeCommandEncoder> spudgpumetal___internal_ensure_compute_encod
 		[cmd_list_metal->_active_render_encoder release];
 		cmd_list_metal->_active_render_encoder = nil;
 	}
+	spudgpumetal___internal_end_active_blit_encoder(cmd_list_metal);
 
 	id<MTLComputeCommandEncoder> encoder = [cmd_list_metal->_command_buffer_mtl computeCommandEncoder];
 	cmd_list_metal->_active_compute_encoder = [encoder retain];

@@ -1,8 +1,9 @@
 //
 // SpudGPU Metal backend - render pass / render pipeline descriptors.
-// spudgpu_cmd_begin_rendering/end_rendering are the one piece of this file
-// implemented against real Apple hardware; the copy/blit functions below
-// remain unimplemented placeholders (no caller needs them yet).
+// spudgpu_cmd_begin_rendering/end_rendering and the buffer/image copy
+// functions below (via MTLBlitCommandEncoder) are implemented against real
+// Apple hardware; spudgpu_cmd_blit_image remains an unimplemented placeholder
+// (no caller needs it yet).
 //
 
 #if SPUDGPU_COMPILE_METAL_API
@@ -76,6 +77,39 @@ void spudgpu_cmd_image_barrier_subresource(
 	// No-op - see the note above spudgpumetal___internal_layout_recognized.
 }
 
+// Ends and releases _active_blit_encoder if one is active. Shared with
+// spudgpu_cmd_begin_rendering below and
+// spudgpumetal___internal_ensure_compute_encoder (spudgpumetalcommand.m) -
+// see this function's declaration in spudgpumetal.h.
+void spudgpumetal___internal_end_active_blit_encoder(spudgpu_command_list_metal *cmd_list_metal) {
+	if (!cmd_list_metal || !cmd_list_metal->_active_blit_encoder)
+		return;
+	[cmd_list_metal->_active_blit_encoder endEncoding];
+	[cmd_list_metal->_active_blit_encoder release];
+	cmd_list_metal->_active_blit_encoder = nil;
+}
+
+// Returns the active blit encoder, lazily opening one (ending any active
+// render/compute encoder first - Metal disallows two live encoders of
+// different kinds on one command buffer at once, see _active_blit_encoder's
+// comment in spudgpumetal.h) if none exists yet.
+static id<MTLBlitCommandEncoder> spudgpumetal___internal_ensure_blit_encoder(
+    spudgpu_command_list_metal *cmd_list_metal) {
+	if (cmd_list_metal->_active_blit_encoder)
+		return cmd_list_metal->_active_blit_encoder;
+
+	if (cmd_list_metal->_active_render_encoder) {
+		[cmd_list_metal->_active_render_encoder endEncoding];
+		[cmd_list_metal->_active_render_encoder release];
+		cmd_list_metal->_active_render_encoder = nil;
+	}
+	spudgpumetal___internal_end_active_compute_encoder(cmd_list_metal);
+
+	id<MTLBlitCommandEncoder> encoder = [cmd_list_metal->_command_buffer_mtl blitCommandEncoder];
+	cmd_list_metal->_active_blit_encoder = [encoder retain];
+	return cmd_list_metal->_active_blit_encoder;
+}
+
 void spudgpu_cmd_copy_buffer(
     spudgpu_command_list cmd,
     spudgpu_buffer src_buffer,
@@ -86,9 +120,16 @@ void spudgpu_cmd_copy_buffer(
 	if (!cmd || !src_buffer || !dst_buffer)
 		return;
 
-	// METAL API CODE - copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:
-	// via an MTLBlitCommandEncoder, matching the other copy/blit functions in
-	// this file (see the file comment above).
+	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
+	spudgpu_buffer_metal *src_metal       = (spudgpu_buffer_metal *)src_buffer;
+	spudgpu_buffer_metal *dst_metal       = (spudgpu_buffer_metal *)dst_buffer;
+
+	id<MTLBlitCommandEncoder> encoder = spudgpumetal___internal_ensure_blit_encoder(cmd_metal);
+	[encoder copyFromBuffer:src_metal->_buffer_mtl
+	            sourceOffset:src_offset
+	                toBuffer:dst_metal->_buffer_mtl
+	       destinationOffset:dst_offset
+	                    size:size];
 }
 
 void spudgpu_cmd_copy_image_to_buffer(
@@ -99,7 +140,27 @@ void spudgpu_cmd_copy_image_to_buffer(
 	if (!cmd || !src_image || !dst_buffer || !desc)
 		return;
 
-	// METAL API CODE
+	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
+	spudgpu_image_metal *src_metal        = (spudgpu_image_metal *)src_image;
+	spudgpu_buffer_metal *dst_metal       = (spudgpu_buffer_metal *)dst_buffer;
+
+	uint64_t bytes_per_row = desc->buffer_row_length
+	                             ? (uint64_t) desc->buffer_row_length * (spudgpu_format_bit_count(src_metal->_desc.format) / 8)
+	                             : (uint64_t) desc->width * (spudgpu_format_bit_count(src_metal->_desc.format) / 8);
+	uint64_t bytes_per_image = bytes_per_row * (desc->buffer_image_height ? desc->buffer_image_height : desc->height);
+
+	id<MTLBlitCommandEncoder> encoder = spudgpumetal___internal_ensure_blit_encoder(cmd_metal);
+	for (uint32_t layer = 0; layer < desc->array_layer_count; layer++) {
+		[encoder copyFromTexture:src_metal->_texture_mtl
+		                  sourceSlice:desc->base_array_layer + layer
+		                  sourceLevel:desc->mip_level
+		                 sourceOrigin:MTLOriginMake(desc->image_x, desc->image_y, desc->image_z)
+		                   sourceSize:MTLSizeMake(desc->width, desc->height, desc->depth)
+		                     toBuffer:dst_metal->_buffer_mtl
+		            destinationOffset:desc->buffer_offset + layer * bytes_per_image
+		       destinationBytesPerRow:bytes_per_row
+		     destinationBytesPerImage:bytes_per_image];
+	}
 }
 
 void spudgpu_cmd_copy_buffer_to_image(
@@ -110,9 +171,33 @@ void spudgpu_cmd_copy_buffer_to_image(
 	if (!cmd || !src_buffer || !dst_image || !desc)
 		return;
 
-	// METAL API CODE
+	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
+	spudgpu_buffer_metal *src_metal       = (spudgpu_buffer_metal *)src_buffer;
+	spudgpu_image_metal *dst_metal        = (spudgpu_image_metal *)dst_image;
+
+	uint64_t bytes_per_row = desc->buffer_row_length
+	                             ? (uint64_t) desc->buffer_row_length * (spudgpu_format_bit_count(dst_metal->_desc.format) / 8)
+	                             : (uint64_t) desc->width * (spudgpu_format_bit_count(dst_metal->_desc.format) / 8);
+	uint64_t bytes_per_image = bytes_per_row * (desc->buffer_image_height ? desc->buffer_image_height : desc->height);
+
+	id<MTLBlitCommandEncoder> encoder = spudgpumetal___internal_ensure_blit_encoder(cmd_metal);
+	for (uint32_t layer = 0; layer < desc->array_layer_count; layer++) {
+		[encoder copyFromBuffer:src_metal->_buffer_mtl
+		             sourceOffset:desc->buffer_offset + layer * bytes_per_image
+		        sourceBytesPerRow:bytes_per_row
+		      sourceBytesPerImage:bytes_per_image
+		               sourceSize:MTLSizeMake(desc->width, desc->height, desc->depth)
+		                toTexture:dst_metal->_texture_mtl
+		         destinationSlice:desc->base_array_layer + layer
+		         destinationLevel:desc->mip_level
+		        destinationOrigin:MTLOriginMake(desc->image_x, desc->image_y, desc->image_z)];
+	}
 }
 
+// Metal has no row-pitch alignment requirement for buffer<->texture copies
+// (unlike D3D12's 256-byte footprint alignment) - this always reports the
+// tightly-packed size for the given mip level, matching the Vulkan backend's
+// own reasoning in spudgpuvulkanrenderpass.c.
 void spudgpu_get_image_buffer_copy_size(
     spudgpu_image image,
     uint32_t mip_level,
@@ -121,10 +206,19 @@ void spudgpu_get_image_buffer_copy_size(
 	if (!image || !out_row_pitch || !out_total_size)
 		return;
 
-	*out_row_pitch  = 0;
-	*out_total_size = 0;
+	spudgpu_image_metal *image_metal = (spudgpu_image_metal *)image;
 
-	// METAL API CODE
+	uint32_t mip_width  = image_metal->_desc.width >> mip_level;
+	uint32_t mip_height = image_metal->_desc.height >> mip_level;
+	uint32_t mip_depth  = image_metal->_desc.depth >> mip_level;
+	if (!mip_width) mip_width = 1;
+	if (!mip_height) mip_height = 1;
+	if (!mip_depth) mip_depth = 1;
+
+	uint64_t row_pitch = (uint64_t) mip_width * (spudgpu_format_bit_count(image_metal->_desc.format) / 8);
+
+	*out_row_pitch  = row_pitch;
+	*out_total_size = row_pitch * mip_height * mip_depth;
 }
 
 void spudgpu_cmd_blit_image(
@@ -162,10 +256,12 @@ void spudgpu_cmd_begin_rendering(
 	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
 
 	// Metal disallows two live encoders of different kinds on one command
-	// buffer at once - end any compute encoder left active by
-	// spudgpu_cmd_bind_compute_pipeline/spudgpu_cmd_dispatch before opening
-	// the render encoder below (spudgpumetalcommand.m).
+	// buffer at once - end any compute or blit encoder left active by
+	// spudgpu_cmd_bind_compute_pipeline/spudgpu_cmd_dispatch or
+	// spudgpu_cmd_copy_buffer/_copy_buffer_to_image/_copy_image_to_buffer
+	// before opening the render encoder below (spudgpumetalcommand.m).
 	spudgpumetal___internal_end_active_compute_encoder(cmd_metal);
+	spudgpumetal___internal_end_active_blit_encoder(cmd_metal);
 
 	MTLRenderPassDescriptor *pass_desc = [MTLRenderPassDescriptor renderPassDescriptor];
 

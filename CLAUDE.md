@@ -184,7 +184,15 @@ allocator, not a general allocator library.
   available to validate against. Swap chain creation/present is verified end-to-end
   on real hardware (Apple M5 Pro) via `spudgpusamples/Samples/HelloTriangle`; the
   natives-header asymmetries above were worked out ahead of the implementation and
-  held.
+  held. Buffer/image copy (`spudgpu_cmd_copy_buffer`/`_copy_buffer_to_image`/
+  `_copy_image_to_buffer`, `spudgpu_get_image_buffer_copy_size`) is also real now,
+  via a new `_active_blit_encoder` on the command list following the same
+  end-any-other-active-encoder-first pattern as `_active_compute_encoder` — verified
+  end-to-end via `spudgpusamples/Samples/HelloTexture`'s texture upload, which
+  silently rendered solid black until this landed (these were unimplemented
+  placeholders before, per the file comment in `spudgpumetalrenderpass.m`).
+  `spudgpu_cmd_blit_image` remains an unimplemented placeholder — no caller needs it
+  yet.
 
 ## Build system
 
@@ -249,3 +257,19 @@ one.
   once already is the zero-cost path there). Needs reconciling two different points in
   the object hierarchy: Vulkan's immutable samplers live on the descriptor-set-layout
   binding, D3D12's static samplers live on the pipeline/root-signature.
+- `SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` doesn't work on Metal.
+  Vulkan/D3D12 implement it; Metal's `spudgpumetaldescriptors.m` only ever
+  wrote the texture half into the argument buffer (see that file's header
+  comment), and cross-compiling a GLSL `sampler2D` confirms this isn't just
+  an unfinished write path: under SpudGPU's per-descriptor-set-argument-
+  buffer scheme, SPIRV-Cross's synthesized sampler member for a combined
+  sampler overlaps the texture's own binding slot, which SPIRV-Cross only
+  permits via "full mutable aliasing of argument buffer descriptors" on
+  Metal 3+ (`spirv_msl.cpp`). `spudgpusamples/Samples/HelloTexture` hit this
+  and works around it exactly the way `SpudGPUDynamicIndexing`'s bindless
+  design already had to — a separate `SAMPLED_IMAGE` + `SAMPLER` pair instead
+  of one combined descriptor. Fixing this for real means either targeting
+  Metal 3+ only for this one descriptor type, or restructuring the Metal
+  backend's argument-buffer layout so a combined descriptor's image and
+  sampler occupy distinct member slots instead of sharing the caller's single
+  binding number.
