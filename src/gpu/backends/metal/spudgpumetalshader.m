@@ -88,6 +88,10 @@ static SPUDRESULT spudgpumetal___internal_cross_compile_spirv_to_msl(
 	// the write-by-binding-index assumption every *_bind_descriptor_sets*
 	// function makes.
 	spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_ENABLE_DECORATION_BINDING, SPVC_TRUE);
+	// SpudGPU's clip space is Vulkan's: +Y points down the screen. Metal's
+	// points up (like D3D12's), so flip gl_Position.y to render the same image
+	// - and front-face winding - as Vulkan. Same fix as the D3D12 backend.
+	spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_FLIP_VERTEX_Y, SPVC_TRUE);
 	spvc_compiler_install_compiler_options(compiler, options);
 
 	// Pin every possible descriptor set's whole argument buffer to a fixed,

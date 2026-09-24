@@ -533,6 +533,23 @@ SPUDRESULT spudgpuvulkan___ensure_bindless_state(spudgpu_device device) {
     return SPUD_SUCCESS;
 }
 
+// Counterpart of spudgpuvulkan___ensure_bindless_state, called by
+// spudgpu_destroy_instance before it destroys the device.
+void spudgpuvulkan___destroy_bindless_state(spudgpu_device device) {
+    if (!device || !device->_bindless) return;
+    spudgpu_bindless_state_vulkan *state = device->_bindless;
+
+    // Destroying the pool frees the set allocated from it.
+    vkDestroyDescriptorPool(device->_logical_device_vk, state->pool_vk, NULL);
+    spudgpu_descriptor_set_layout_vulkan *layoutWrapper = (spudgpu_descriptor_set_layout_vulkan *) state->layout;
+    if (layoutWrapper) {
+        vkDestroyDescriptorSetLayout(device->_logical_device_vk, layoutWrapper->_layout_vk, NULL);
+        free(layoutWrapper);
+    }
+    free(state);
+    device->_bindless = NULL;
+}
+
 static SPUDRESULT spudgpuvulkan___bindless_alloc_index(
         uint32_t *next_unused,
         uint32_t *free_stack,

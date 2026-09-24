@@ -36,6 +36,12 @@ SPUDRESULT spudgpu_create_swap_chain(
 	scDesc.Stereo                = FALSE;
 	scDesc.SampleDesc            = {1, 0};
 	scDesc.BufferUsage           = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	// Copy source/destination needs no DXGI flag; D3D12 back buffers allow
+	// CopyTextureRegion either way.
+	if (desc->usage & SPUDGPU_IMAGE_USAGE_SAMPLED)
+		scDesc.BufferUsage |= DXGI_USAGE_SHADER_INPUT;
+	if (desc->usage & SPUDGPU_IMAGE_USAGE_STORAGE)
+		scDesc.BufferUsage |= DXGI_USAGE_UNORDERED_ACCESS;
 	scDesc.BufferCount           = desc->buffer_count;
 	scDesc.Scaling               = DXGI_SCALING_STRETCH;
 	scDesc.SwapEffect            = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -91,7 +97,7 @@ SPUDRESULT spudgpu_create_swap_chain(
 		img._desc.mip_levels   = 1;
 		img._desc.array_layers = 1;
 		img._desc.type         = SPUDGPU_IMAGE_TYPE_2D;
-		img._desc.usage        = SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT;
+		img._desc.usage        = SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT | desc->usage;
 		img._d3d_resource_desc = img._d3d_resource->GetDesc();
 		// Swap chain back buffers start life in PRESENT (== COMMON, 0x0), not
 		// the RENDER_TARGET state SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT would

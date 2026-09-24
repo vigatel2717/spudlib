@@ -147,6 +147,10 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 		presentMode = spudgpuvulkan___choose_present_mode_internal(pPresentModes, presentModeCount, pSwapChain->_desc.present_mode);
 		free(pPresentModes);
 		pSwapChain->_extent_vk = spudgpuvulkan___choose_extent_internal(capabilities, width, height);
+		// The surface can dictate the extent (currentExtent), overriding the
+		// requested size - report what the back buffers really are.
+		pSwapChain->_desc.width  = pSwapChain->_extent_vk.width;
+		pSwapChain->_desc.height = pSwapChain->_extent_vk.height;
 		pSwapChain->_format_vk = surfaceFormat.format;
 	}
 
@@ -183,6 +187,20 @@ VkResult spudgpuvulkan___create_swapchain_internal(
 	createInfo.imageExtent = pSwapChain->_extent_vk;
 	createInfo.imageArrayLayers = 1;
 	createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	{
+		SPUDGPU_IMAGE_USAGE usage = pSwapChain->_desc.usage;
+		if (usage & SPUDGPU_IMAGE_USAGE_TRANSFER_SRC)
+			createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		if (usage & SPUDGPU_IMAGE_USAGE_TRANSFER_DST)
+			createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		if (usage & SPUDGPU_IMAGE_USAGE_SAMPLED)
+			createInfo.imageUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+		if (usage & SPUDGPU_IMAGE_USAGE_STORAGE)
+			createInfo.imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
+		// The caller asked for these; fail rather than silently drop one.
+		if ((createInfo.imageUsage & capabilities.supportedUsageFlags) != createInfo.imageUsage)
+			return VK_ERROR_FEATURE_NOT_PRESENT;
+	}
 	createInfo.preTransform = capabilities.currentTransform;
 	createInfo.compositeAlpha = compositeAlpha;
 	createInfo.presentMode = presentMode;
@@ -328,6 +346,7 @@ VkResult spudgpuvulkan_create_image_views_internal(
 		spudgpu_image_vulkan *img = calloc(1, sizeof(spudgpu_image_vulkan));
 		img->_device = pSwapChain->_device;
 		img->_image_vk = pSwapChain->_swapchain_images_vk[i];
+		img->_format_vk = pSwapChain->_format_vk;
 		view->_desc.parent_image = (spudgpu_image) img;
 		result = vkCreateImageView(pSwapChain->_device._logical_device_vk, &createInfo, NULL,
 		                           &pSwapChain->_swapchain_image_views_vk[i]._image_view_vk);
@@ -349,7 +368,11 @@ SPUDRESULT spudgpu_create_surface(
 	spudgpu_surface *out_surface) {
 	if (!instance) return SPUDRESULT_GPU_INVALID_INSTANCE;
 	if (!window_handle) return SPUDRESULT_GPU_INVALID_WINDOW_HANDLE;
+#if !defined(SPUDLIB_PLATFORM_WIN32)
+	// Only Wayland/X11 surfaces need the display connection; Win32 has none
+	// (spudgpu.h: "Windows: unused (set to NULL)").
 	if (!display_handle) return SPUDRESULT_GPU_INVALID_DISPLAY_HANDLE;
+#endif
 	if (!out_surface) return SPUD_SUCCESS;
 
 	spudgpu_surface_vulkan result = {0};

@@ -417,6 +417,15 @@ SPUDRESULT spudgpu_create_shader_module(
 	    (desc->stage == SPUDGPU_SHADER_STAGE_MESH || desc->stage == SPUDGPU_SHADER_STAGE_TASK) ? 65 : 60;
 	hlsl_compiler.set_hlsl_options(opts);
 
+	// SpudGPU's clip space is Vulkan's (the reference backend, and SPIR-V's
+	// native convention): +Y points down the screen. D3D12's points up, so
+	// without this the same shader renders vertically mirrored here. Flipping
+	// gl_Position.y makes the final image - and so front-face winding -
+	// identical to Vulkan's.
+	spirv_cross::CompilerGLSL::Options common_opts = hlsl_compiler.get_common_options();
+	common_opts.vertex.flip_vert_y                  = true;
+	hlsl_compiler.set_common_options(common_opts);
+
 	// Pin push constants to b0, space SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS so
 	// they can't collide with descriptor set bindings (which occupy
 	// space0..space(set_count-1), and set_count can be as high as

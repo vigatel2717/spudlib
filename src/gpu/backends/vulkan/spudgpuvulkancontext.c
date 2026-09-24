@@ -464,6 +464,8 @@ SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance) {
     for (uint32_t i = 0; i < instance->_devices_count; i++) {
         spudgpu_device_vulkan *dev = (spudgpu_device_vulkan *) instance->_devices_pointer_array[i];
         if (!dev) continue;
+        // Created for every device in spudgpu_enumerate_devices.
+        spudgpuvulkan___destroy_bindless_state((spudgpu_device) dev);
         vkDestroyDevice(dev->_logical_device_vk, NULL);
         free(dev);
     }

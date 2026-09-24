@@ -290,6 +290,7 @@ VkFormat convert_spud_to_vulkan_format(SPUDGPU_FORMAT format);
 // every later snapshot observes a populated _bindless pointer rather than a
 // stale NULL from before lazy initialization.
 SPUDRESULT spudgpuvulkan___ensure_bindless_state(spudgpu_device device);
+void spudgpuvulkan___destroy_bindless_state(spudgpu_device device);
 
 #endif //SPUDLIB_SPUDGPUVULKAN_H
 

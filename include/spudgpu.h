@@ -1468,6 +1468,16 @@ typedef struct spudgpu_swap_chain_desc {
 	 * framework.
 	 */
 	SPUDGPU_FULLSCREEN_MODE fullscreen_mode;
+
+	/** * @brief Usages the back buffers need beyond being rendered into.
+	 * * Back buffers are always usable as a color attachment; this adds to
+	 * that, e.g. SPUDGPU_IMAGE_USAGE_TRANSFER_DST to copy/blit a finished
+	 * image into them with spudgpu_cmd_blit_image. Leave 0 for none.
+	 * spudgpu_create_swap_chain fails if the surface can't support a
+	 * requested usage.
+	 * @see SPUDGPU_IMAGE_USAGE
+	 */
+	SPUDGPU_IMAGE_USAGE usage;
 } spudgpu_swap_chain_desc;
 
 /**
@@ -1488,7 +1498,10 @@ SPUDRESULT spudgpu_create_swap_chain(
 void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain);
 
 /**
- * @brief Provide Docs
+ * @brief Returns the swap chain's configuration as actually created, which
+ * can differ from what was requested: width/height are the real back-buffer
+ * size (on Vulkan the surface can dictate it, e.g. a window still 1x1 before
+ * layout), and buffer_count the real image count where a backend reports it.
  */
 SPUDRESULT spudgpu_get_swap_chain_desc(
     spudgpu_swap_chain swap_chain,

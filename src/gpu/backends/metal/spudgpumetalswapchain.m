@@ -172,7 +172,9 @@ SPUDRESULT spudgpu_create_swap_chain(
 	swap_chain_metal->_metal_layer.device          = swap_chain_metal->_parent_device->_device_mtl;
 	swap_chain_metal->_metal_layer.pixelFormat     = pixel_format;
 	swap_chain_metal->_metal_layer.drawableSize    = CGSizeMake(desc->width, desc->height);
-	swap_chain_metal->_metal_layer.framebufferOnly = YES;
+	// framebufferOnly drawables can only be rendered into; any other usage
+	// (blit source/destination, sampling, storage) needs it off.
+	swap_chain_metal->_metal_layer.framebufferOnly = desc->usage == 0 ? YES : NO;
 
 	swap_chain_metal->_back_buffer_images      = calloc(1, sizeof(spudgpu_image_metal));
 	swap_chain_metal->_back_buffer_image_views = calloc(1, sizeof(spudgpu_image_view_metal));
@@ -181,7 +183,7 @@ SPUDRESULT spudgpu_create_swap_chain(
 		goto failedattempt;
 	}
 	swap_chain_metal->_back_buffer_images[0]._parent_device      = swap_chain_metal->_parent_device;
-	swap_chain_metal->_back_buffer_images[0]._desc.usage          = SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT;
+	swap_chain_metal->_back_buffer_images[0]._desc.usage          = SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT | desc->usage;
 	swap_chain_metal->_back_buffer_images[0]._desc.format          = desc->format;
 	swap_chain_metal->_back_buffer_images[0]._desc.width           = desc->width;
 	swap_chain_metal->_back_buffer_images[0]._desc.height          = desc->height;
