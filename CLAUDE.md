@@ -34,7 +34,7 @@ codes) rather than inventing its own error convention.
 | Module | Header | Prefix | Backends |
 |---|---|---|---|
 | SpudGPU | `spudgpu.h` | `spudgpu_` | Vulkan, D3D12, Metal |
-| SpudFiles | `spudfiles.h` | `sfs_` | Windows only |
+| SpudFiles | `spudfiles.h` | `sfs_` | Windows, Linux, macOS |
 | SpudMemory | `spudmemory.h` | `smem_` | Windows, Linux |
 | SpudNet | `spudnet.h` | `spudnet_` | Windows, Linux |
 | SpudCore | `spudcore.h` | `spud_` / `SPUDRESULT` | platform-agnostic |
@@ -240,7 +240,10 @@ one.
 
 ## Known gaps (don't re-flag as surprises)
 
-- SpudFiles has no Linux/macOS backend (Windows only).
+- SpudFiles' macOS backend (`spudfilesapple.c`) is plain C: file I/O is the same
+  POSIX code as Linux, and dialogs run `/usr/bin/osascript` (`choose file` /
+  `choose file name` / `choose folder`) rather than AppKit, so the save dialog
+  always prompts before overwriting regardless of `SFS_FILE_DIALOG_FLAG_OVERWRITE_PROMPT`.
 - No automated test suite/CTest target exists — verification in this repo has been
   manual smoke-testing, not committed tests.
 - No static/immutable sampler support. `spudgpu_sampler` (added alongside

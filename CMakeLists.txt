@@ -55,6 +55,11 @@ if(NOT TARGET spudlib)
             src/memory/backends/linux/spudmemorylinux.c
         )
     endif()
+    if(APPLE)
+        list(APPEND SPUDLIB_SOURCES
+            src/files/backends/apple/spudfilesapple.c
+        )
+    endif()
     if(WIN32 OR(UNIX AND NOT APPLE))
         # Append Vulkan sources if Vulkan API is selected for compile.
         if(GRAPHICS_BACKEND STREQUAL "Vulkan")
