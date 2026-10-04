@@ -94,34 +94,3 @@ SPUDRESULT smem_arena_pop_to(
 	return smem_arena_pop(arena, size);
 }
 void smem_arena_clear(smem_arena arena) { smem_arena_pop_to(arena, SMEM_ARENA_BASE_POS); }
-
-#if SPUDLIB_PLATFORM_WINDOWS
-#include <Windows.h>
-uint32_t smem_plat_get_pagesize(void) {
-	SYSTEM_INFO sysinfo = {0};
-	GetSystemInfo(&sysinfo);
-	return sysinfo.dwPageSize;
-}
-
-void *smem_plat_reserve(uint64_t size) { return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_READWRITE); }
-bool smem_plat_commit(
-    void *ptr,
-    uint64_t size) {
-	void *result = VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE);
-	return result != NULL;
-}
-bool smem_plat_decommit(
-    void *ptr,
-    uint64_t size) {
-	return VirtualFree(ptr, size, MEM_DECOMMIT);
-}
-bool smem_plat_release(
-    void *ptr,
-    uint64_t size) {
-	return VirtualFree(ptr, size, MEM_RELEASE);
-}
-#endif
-
-#ifdef __cplusplus
-}
-#endif
