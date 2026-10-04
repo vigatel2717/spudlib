@@ -110,6 +110,33 @@ uint64_t spudperf_get_current_time_milliseconds() {
 #endif
 }
 
+uint64_t spudperf_get_monotonic_time_ns(void) {
+#if SPUDLIB_PLATFORM_WIN32
+	// QueryPerformanceFrequency just reads a value fixed at boot, so it's
+	// queried each call rather than cached in a static.
+	LARGE_INTEGER frequency, counter;
+	QueryPerformanceFrequency(&frequency);
+	QueryPerformanceCounter(&counter);
+	// Split into whole seconds + remainder: a plain counter * 1e9 overflows
+	// uint64 after ~30 minutes of uptime at the usual 10 MHz frequency.
+	uint64_t freq  = (uint64_t)frequency.QuadPart;
+	uint64_t ticks = (uint64_t)counter.QuadPart;
+	return (ticks / freq) * 1000000000ULL + ((ticks % freq) * 1000000000ULL) / freq;
+#elif SPUDLIB_PLATFORM_APPLE
+	// Not CLOCK_MONOTONIC: on macOS that keeps counting through sleep, while
+	// CoreAudio's host time is mach_absolute_time, which doesn't.
+	// CLOCK_UPTIME_RAW is mach_absolute_time already converted to ns.
+	return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#elif SPUDLIB_PLATFORM_LINUX
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+#else
+#error "Unsupported platform"
+	return 0;
+#endif
+}
+
 #if __cplusplus
 }
 #endif

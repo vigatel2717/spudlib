@@ -27,6 +27,7 @@ message(STATUS "Selected Graphics Backend: ${GRAPHICS_BACKEND}")
 if(NOT TARGET spudlib)
     # Set initial SpudLib sources
     set(SPUDLIB_SOURCES
+        include/spudaudio.h
         include/spudcore.h
         include/spudfiles.h
         include/spudgpu.h
@@ -38,6 +39,7 @@ if(NOT TARGET spudlib)
         src/spudfiles.c
         src/spudperf.c
         src/spudnet.c
+        src/spudaudio.c
         src/gpu/spudgpuformat.c
     )
     # Determine which backend sources to append.
@@ -59,6 +61,54 @@ if(NOT TARGET spudlib)
         list(APPEND SPUDLIB_SOURCES
             src/files/backends/apple/spudfilesapple.c
         )
+    endif()
+
+    # SpudAudio: the target platform and the native audio APIs built for it,
+    # decided once here. They pick the sources and link libraries, and become
+    # the PUBLIC SPUDAUDIO_PLATFORM_<platform> / SPUDAUDIO_COMPILE_<api>
+    # definitions (after add_library), so SpudAudio's code and its hosts see
+    # the same answer. See the table in include/spudaudio.h.
+    set(SPUDAUDIO_PLATFORM "")
+    set(SPUDAUDIO_APIS "")
+    if(WIN32)
+        set(SPUDAUDIO_PLATFORM WINDOWS)
+        set(SPUDAUDIO_APIS WASAPI)
+    elseif(APPLE)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+            set(SPUDAUDIO_PLATFORM MACOS)
+            set(SPUDAUDIO_APIS COREAUDIO)
+        elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS") # iPhone and iPad
+            set(SPUDAUDIO_PLATFORM IOS)          # no backend yet (AVAudioSession + RemoteIO)
+        elseif(CMAKE_SYSTEM_NAME STREQUAL "watchOS")
+            set(SPUDAUDIO_PLATFORM WATCHOS)      # no backend yet
+        else()
+            message(FATAL_ERROR "SpudAudio: unsupported Apple platform '${CMAKE_SYSTEM_NAME}'")
+        endif()
+    elseif(UNIX)
+        set(SPUDAUDIO_PLATFORM LINUX)
+        set(SPUDAUDIO_APIS ALSA)
+    endif()
+    message(STATUS "SpudAudio: platform ${SPUDAUDIO_PLATFORM}, native APIs: ${SPUDAUDIO_APIS}")
+
+    if("WASAPI" IN_LIST SPUDAUDIO_APIS)
+        list(APPEND SPUDLIB_SOURCES src/audio/backends/windows/spudaudiowasapi.c)
+    endif()
+    if("ALSA" IN_LIST SPUDAUDIO_APIS)
+        list(APPEND SPUDLIB_SOURCES src/audio/backends/linux/spudaudioalsa.c)
+    endif()
+    if("COREAUDIO" IN_LIST SPUDAUDIO_APIS)
+        list(APPEND SPUDLIB_SOURCES src/audio/backends/apple/spudaudiocoreaudio.c)
+    endif()
+    if(SPUDAUDIO_PLATFORM MATCHES "^(MACOS|IOS|WATCHOS)$")
+        # Shared by every Apple audio backend; builds on all Apple OSes.
+        list(APPEND SPUDLIB_SOURCES
+            src/audio/backends/apple/spudaudioapple.h
+            src/audio/backends/apple/spudaudioapple.c
+        )
+    endif()
+    if(NOT SPUDAUDIO_APIS)
+        # No native API for this platform yet: argument checks only.
+        list(APPEND SPUDLIB_SOURCES src/audio/backends/stub/spudaudiostub.c)
     endif()
     if(WIN32 OR(UNIX AND NOT APPLE))
         # Append Vulkan sources if Vulkan API is selected for compile.
@@ -137,6 +187,33 @@ if(NOT TARGET spudlib)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_LINUX=1)
     elseif (APPLE)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_APPLE=1)
+    endif()
+
+    # SpudAudio definitions and libraries, from the choice made above.
+    if(SPUDAUDIO_PLATFORM)
+        target_compile_definitions(spudlib PUBLIC SPUDAUDIO_PLATFORM_${SPUDAUDIO_PLATFORM}=1)
+    endif()
+    foreach(api IN LISTS SPUDAUDIO_APIS)
+        target_compile_definitions(spudlib PUBLIC SPUDAUDIO_COMPILE_${api}=1)
+    endforeach()
+    if("WASAPI" IN_LIST SPUDAUDIO_APIS)
+        # ole32: COM (CoCreateInstance / CoIncrementMTAUsage).
+        # avrt: MMCSS (AvSetMmThreadCharacteristicsW) for the audio thread.
+        target_link_libraries(spudlib PRIVATE ole32 avrt)
+    endif()
+    if("ALSA" IN_LIST SPUDAUDIO_APIS)
+        # libasound2-dev / alsa-lib-devel, and pthreads for the audio thread.
+        find_package(ALSA REQUIRED)
+        find_package(Threads REQUIRED)
+        target_link_libraries(spudlib PRIVATE ALSA::ALSA Threads::Threads)
+    endif()
+    if("COREAUDIO" IN_LIST SPUDAUDIO_APIS)
+        # The HAL, and CoreFoundation for its CFString names.
+        target_link_libraries(spudlib PRIVATE "-framework CoreAudio" "-framework CoreFoundation")
+    endif()
+    if(SPUDAUDIO_PLATFORM MATCHES "^(MACOS|IOS)$")
+        # AudioToolbox expands channel-layout tags; the watchOS SDK has none.
+        target_link_libraries(spudlib PRIVATE "-framework AudioToolbox")
     endif()
 
     if(WIN32 OR(UNIX AND NOT APPLE))
@@ -301,4 +378,15 @@ if(NOT TARGET spudlib)
     target_precompile_headers(spudlib PRIVATE include/spudgpu.h)
 
     target_include_directories(spudlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+    # Hardware tests: each needs a real device (and spudaudio_sine a
+    # listener), so they're built but not registered with ctest.
+    option(SPUDLIB_BUILD_TESTS "Build SpudLib's hardware tests" ON)
+    if(SPUDLIB_BUILD_TESTS)
+        add_executable(spudaudio_sine tests/spudaudio_sine.c)
+        target_link_libraries(spudaudio_sine PRIVATE spudlib)
+        if(UNIX AND NOT APPLE)
+            target_link_libraries(spudaudio_sine PRIVATE m)
+        endif()
+    endif()
 endif()

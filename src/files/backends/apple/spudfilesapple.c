@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -205,6 +207,153 @@ sfs_file_set_pos(
 	if (lseek(file->fd, (off_t)offset, whence) < 0)
 		return SPUDRESULT_GENERAL_FAILURE;
 
+	return SPUD_SUCCESS;
+}
+
+// --------------------------------------------------------------------------
+// Flush / replace / map
+// --------------------------------------------------------------------------
+
+struct sfs_mapping_t {
+	void *base;         // what mmap returned - page-aligned, before [data]
+	uint64_t base_size; // what was mapped from [base]
+	const uint8_t *data;
+	uint64_t size;
+};
+
+// Flushes [fd] to [level] (DEVICE or MEDIA). fsync only hands data to the
+// drive, which may keep it in a volatile cache; F_FULLFSYNC asks the drive
+// to write it to the media.
+static SPUDRESULT sfs_sync_fd(int fd, SFS_FLUSH_LEVEL level) {
+	if (level == SFS_FLUSH_LEVEL_MEDIA) {
+		if (fcntl(fd, F_FULLFSYNC) == 0)
+			return SPUD_SUCCESS;
+		return (errno == ENOTSUP || errno == EINVAL || errno == ENOTTY) ? SPUDRESULT_SFS_FLUSH_LEVEL_NOT_SUPPORTED
+		                                                               : SPUDRESULT_GENERAL_FAILURE;
+	}
+	if (level != SFS_FLUSH_LEVEL_DEVICE)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	int r;
+	do {
+		r = fsync(fd);
+	} while (r != 0 && errno == EINTR);
+	return r == 0 ? SPUD_SUCCESS : SPUDRESULT_GENERAL_FAILURE;
+}
+
+SPUDRESULT sfs_file_flush(sfs_file file, SFS_FLUSH_LEVEL level) {
+	if (!file)
+		return SPUDRESULT_SFS_INVALID_FILE;
+	return sfs_sync_fd(file->fd, level);
+}
+
+// Makes a rename in [path]'s directory durable: the directory entry lives in
+// the directory, not the file, so it's the directory that's synced.
+static SPUDRESULT sfs_flush_parent_directory(const char *path, SFS_FLUSH_LEVEL level) {
+	char dir[PATH_MAX];
+	size_t len = strlen(path);
+	if (len >= sizeof(dir))
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	memcpy(dir, path, len + 1);
+
+	char *slash = strrchr(dir, '/');
+	if (!slash) {
+		dir[0] = '.';
+		dir[1] = '\0';
+	} else if (slash == dir) {
+		dir[1] = '\0'; // the root
+	} else {
+		*slash = '\0';
+	}
+
+	int fd = open(dir, O_RDONLY | O_DIRECTORY);
+	if (fd < 0)
+		return SPUDRESULT_GENERAL_FAILURE;
+	SPUDRESULT result = sfs_sync_fd(fd, level);
+	close(fd);
+	return result;
+}
+
+SPUDRESULT sfs_file_replace(
+    const char *source_path,
+    const char *target_path,
+    SFS_FLUSH_LEVEL level) {
+	if (!source_path || source_path[0] == '\0' || !target_path || target_path[0] == '\0')
+		return SPUDRESULT_SFS_NULL_PATH;
+
+	if (level != SFS_FLUSH_LEVEL_NONE && level != SFS_FLUSH_LEVEL_DEVICE && level != SFS_FLUSH_LEVEL_MEDIA)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+
+	if (rename(source_path, target_path) != 0)
+		return errno == EXDEV ? SPUDRESULT_SFS_DIFFERENT_VOLUME : SPUDRESULT_GENERAL_FAILURE;
+
+	if (level != SFS_FLUSH_LEVEL_NONE)
+		return sfs_flush_parent_directory(target_path, level);
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT sfs_file_map(
+    sfs_file file,
+    uint64_t offset,
+    uint64_t size,
+    sfs_mapping *out_mapping) {
+	if (!out_mapping)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	*out_mapping = NULL;
+	if (!file)
+		return SPUDRESULT_SFS_INVALID_FILE;
+	if (size == 0)
+		return SPUDRESULT_ZERO_SIZE;
+
+	int flags = fcntl(file->fd, F_GETFL);
+	if (flags < 0)
+		return SPUDRESULT_GENERAL_FAILURE;
+	if ((flags & O_ACCMODE) == O_WRONLY)
+		return SPUDRESULT_SFS_NOT_READABLE;
+
+	struct stat st;
+	if (fstat(file->fd, &st) != 0)
+		return SPUDRESULT_GENERAL_FAILURE;
+	uint64_t file_size = (uint64_t)st.st_size;
+	if (offset > file_size || size > file_size - offset)
+		return SPUDRESULT_INDEX_OUT_OF_RANGE;
+
+	// mmap offsets must be page-aligned: map from the page holding [offset].
+	uint64_t page    = (uint64_t)sysconf(_SC_PAGESIZE);
+	uint64_t aligned = offset - offset % page;
+	uint64_t lead    = offset - aligned;
+	if (size > (uint64_t)SIZE_MAX - lead)
+		return SPUDRESULT_INDEX_OUT_OF_RANGE; // more than the address space
+
+	void *base = mmap(NULL, (size_t)(lead + size), PROT_READ, MAP_SHARED, file->fd, (off_t)aligned);
+	if (base == MAP_FAILED)
+		return errno == ENOMEM ? SPUDRESULT_OUT_OF_MEMORY : SPUDRESULT_GENERAL_FAILURE;
+
+	struct sfs_mapping_t *m = (struct sfs_mapping_t *)malloc(sizeof(struct sfs_mapping_t));
+	if (!m) {
+		munmap(base, (size_t)(lead + size));
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	m->base      = base;
+	m->base_size = lead + size;
+	m->data      = (const uint8_t *)base + lead;
+	m->size      = size;
+	*out_mapping = m;
+	return SPUD_SUCCESS;
+}
+
+const void *sfs_mapping_get_data(sfs_mapping mapping) {
+	return mapping ? mapping->data : NULL;
+}
+
+uint64_t sfs_mapping_get_size(sfs_mapping mapping) {
+	return mapping ? mapping->size : 0;
+}
+
+SPUDRESULT sfs_mapping_release(sfs_mapping mapping) {
+	if (!mapping)
+		return SPUDRESULT_SFS_INVALID_MAPPING;
+	munmap(mapping->base, (size_t)mapping->base_size);
+	free(mapping);
 	return SPUD_SUCCESS;
 }
 

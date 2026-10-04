@@ -5,6 +5,7 @@
 #include <ShObjIdl_core.h>
 #include <Windows.h>
 #include <shlwapi.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -190,6 +191,139 @@ sfs_file_set_pos(sfs_file file, uint64_t offset, SFS_FILE_POS_ORIGIN origin) {
     if (!SetFilePointerEx(file->handle, li, NULL, move_method))
         return SPUDRESULT_GENERAL_FAILURE;
 
+    return SPUD_SUCCESS;
+}
+
+// --------------------------------------------------------------------------
+// Flush / replace / map
+// --------------------------------------------------------------------------
+
+struct sfs_mapping_t {
+    void          *base; // what MapViewOfFile returned - granularity-aligned, before [data]
+    const uint8_t *data;
+    uint64_t       size;
+};
+
+// FlushFileBuffers also flushes the drive's cache, so DEVICE and MEDIA are
+// the same call.
+SPUDRESULT sfs_file_flush(sfs_file file, SFS_FLUSH_LEVEL level) {
+    if (!file) return SPUDRESULT_SFS_INVALID_FILE;
+    if (level != SFS_FLUSH_LEVEL_DEVICE && level != SFS_FLUSH_LEVEL_MEDIA)
+        return SPUDRESULT_DESC_INVALID_PARAMETERS;
+    if (!FlushFileBuffers(file->handle))
+        return SPUDRESULT_GENERAL_FAILURE;
+    return SPUD_SUCCESS;
+}
+
+// UTF-8 to a malloc'd UTF-16 string, so paths outside the ANSI code page work.
+static SPUDRESULT sfs_utf8_to_wide(const char *utf8, wchar_t **out_wide) {
+    int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, NULL, 0);
+    if (count <= 0)
+        return SPUDRESULT_DESC_INVALID_PARAMETERS; // not valid UTF-8
+    wchar_t *wide = (wchar_t *)malloc((size_t)count * sizeof(wchar_t));
+    if (!wide)
+        return SPUDRESULT_OUT_OF_MEMORY;
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, wide, count);
+    *out_wide = wide;
+    return SPUD_SUCCESS;
+}
+
+SPUDRESULT sfs_file_replace(const char *source_path, const char *target_path, SFS_FLUSH_LEVEL level) {
+    if (!source_path || source_path[0] == '\0' || !target_path || target_path[0] == '\0')
+        return SPUDRESULT_SFS_NULL_PATH;
+    if (level != SFS_FLUSH_LEVEL_NONE && level != SFS_FLUSH_LEVEL_DEVICE && level != SFS_FLUSH_LEVEL_MEDIA)
+        return SPUDRESULT_DESC_INVALID_PARAMETERS;
+
+    wchar_t   *source = NULL;
+    wchar_t   *target = NULL;
+    SPUDRESULT result = sfs_utf8_to_wide(source_path, &source);
+    if (result == SPUD_SUCCESS)
+        result = sfs_utf8_to_wide(target_path, &target);
+
+    if (result == SPUD_SUCCESS) {
+        DWORD flags = MOVEFILE_REPLACE_EXISTING;
+        if (level != SFS_FLUSH_LEVEL_NONE)
+            flags |= MOVEFILE_WRITE_THROUGH;
+        if (!MoveFileExW(source, target, flags)) {
+            switch (GetLastError()) {
+            case ERROR_NOT_SAME_DEVICE:
+                result = SPUDRESULT_SFS_DIFFERENT_VOLUME;
+                break;
+            // A target that's open without FILE_SHARE_DELETE or mapped is
+            // reported as a sharing violation or as access denied.
+            case ERROR_SHARING_VIOLATION:
+            case ERROR_USER_MAPPED_FILE:
+            case ERROR_ACCESS_DENIED:
+                result = SPUDRESULT_SFS_IN_USE;
+                break;
+            default:
+                result = SPUDRESULT_GENERAL_FAILURE;
+                break;
+            }
+        }
+    }
+    free(source);
+    free(target);
+    return result;
+}
+
+SPUDRESULT sfs_file_map(sfs_file file, uint64_t offset, uint64_t size, sfs_mapping *out_mapping) {
+    if (!out_mapping) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+    *out_mapping = NULL;
+    if (!file)     return SPUDRESULT_SFS_INVALID_FILE;
+    if (size == 0) return SPUDRESULT_ZERO_SIZE;
+
+    LARGE_INTEGER file_size;
+    if (!GetFileSizeEx(file->handle, &file_size))
+        return SPUDRESULT_GENERAL_FAILURE;
+    if (offset > (uint64_t)file_size.QuadPart || size > (uint64_t)file_size.QuadPart - offset)
+        return SPUDRESULT_INDEX_OUT_OF_RANGE;
+
+    // View offsets must be multiples of the allocation granularity (64 KiB),
+    // not just the page size: map from the granule holding [offset].
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    uint64_t granularity = info.dwAllocationGranularity;
+    uint64_t aligned     = offset - offset % granularity;
+    uint64_t lead        = offset - aligned;
+    if (size > (uint64_t)SIZE_MAX - lead)
+        return SPUDRESULT_INDEX_OUT_OF_RANGE; // more than the address space
+
+    HANDLE section = CreateFileMappingW(file->handle, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!section)
+        return GetLastError() == ERROR_ACCESS_DENIED ? SPUDRESULT_SFS_NOT_READABLE : SPUDRESULT_GENERAL_FAILURE;
+
+    void *base = MapViewOfFile(
+        section, FILE_MAP_READ, (DWORD)(aligned >> 32), (DWORD)(aligned & 0xFFFFFFFFULL), (SIZE_T)(lead + size));
+    // The view keeps the section, and through it the file, alive on its own.
+    CloseHandle(section);
+    if (!base)
+        return GetLastError() == ERROR_NOT_ENOUGH_MEMORY ? SPUDRESULT_OUT_OF_MEMORY : SPUDRESULT_GENERAL_FAILURE;
+
+    struct sfs_mapping_t *m = (struct sfs_mapping_t *)malloc(sizeof(struct sfs_mapping_t));
+    if (!m) {
+        UnmapViewOfFile(base);
+        return SPUDRESULT_OUT_OF_MEMORY;
+    }
+    m->base      = base;
+    m->data      = (const uint8_t *)base + lead;
+    m->size      = size;
+    *out_mapping = m;
+    return SPUD_SUCCESS;
+}
+
+const void *sfs_mapping_get_data(sfs_mapping mapping) {
+    return mapping ? mapping->data : NULL;
+}
+
+uint64_t sfs_mapping_get_size(sfs_mapping mapping) {
+    return mapping ? mapping->size : 0;
+}
+
+SPUDRESULT sfs_mapping_release(sfs_mapping mapping) {
+    if (!mapping) return SPUDRESULT_SFS_INVALID_MAPPING;
+    UnmapViewOfFile(mapping->base);
+    free(mapping);
     return SPUD_SUCCESS;
 }
 

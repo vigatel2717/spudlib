@@ -17,6 +17,7 @@ extern "C" {
 typedef struct spudblob_t *spudblob;
 typedef struct sfs_file_t *sfs_file;
 typedef struct sfs_directory_t *sfs_directory;
+typedef struct sfs_mapping_t *sfs_mapping;
 
 typedef enum SFS_EFILE_ACCESS_MODE {        // EFileAccessMode
 	SFS_EFILE_ACCESS_MODE_READ,             // Read,
@@ -91,6 +92,67 @@ SPUDRESULT sfs_file_get_size(sfs_file file, uint64_t *out_size);
 SPUDRESULT sfs_file_get_pos(sfs_file file, uint64_t *out_pos);
 SPUDRESULT
 sfs_file_set_pos(sfs_file file, uint64_t offset, SFS_FILE_POS_ORIGIN origin);
+
+// How far sfs_file_flush() and sfs_file_replace() push data before
+// returning.
+typedef enum SFS_FLUSH_LEVEL {
+	// Nothing is waited for (sfs_file_replace only).
+	SFS_FLUSH_LEVEL_NONE,
+	// Handed to the drive: fsync on Linux and Apple, FlushFileBuffers on
+	// Windows. On Apple, drives may still hold it in a volatile cache.
+	SFS_FLUSH_LEVEL_DEVICE,
+	// On the storage media itself, past any drive cache: fcntl(F_FULLFSYNC)
+	// on Apple; the same calls as DEVICE on Linux and Windows, which already
+	// flush the drive cache there. Apple file systems that don't support
+	// F_FULLFSYNC (some network and FUSE volumes) fail with
+	// SPUDRESULT_SFS_FLUSH_LEVEL_NOT_SUPPORTED - fall back to DEVICE if that's
+	// acceptable.
+	SFS_FLUSH_LEVEL_MEDIA,
+} SFS_FLUSH_LEVEL;
+
+// Blocks until [file]'s written data and metadata reach [level] (DEVICE or
+// MEDIA).
+SPUDRESULT sfs_file_flush(sfs_file file, SFS_FLUSH_LEVEL level);
+
+// Atomically replaces [target_path] with [source_path]: anyone opening
+// [target_path] sees its old contents or the new ones, never a mix, and
+// [source_path] no longer exists afterwards. [target_path] needn't exist.
+// Both must be on the same volume (SPUDRESULT_SFS_DIFFERENT_VOLUME) - write
+// the source beside the target. Only the name is replaced: flush the source
+// with sfs_file_flush() first, or a crash can leave the target named but
+// empty.
+// [level] is how far the rename itself is pushed before returning: an
+// fsync (F_FULLFSYNC for MEDIA on Apple) of the target's directory on
+// Linux and Apple, MOVEFILE_WRITE_THROUGH on Windows. With NONE the rename
+// is still atomic, but a power loss shortly after can undo it - the old
+// target reappearing. If the rename succeeds but that flush fails, the
+// target already names the new contents and the result is the flush's.
+// On Windows the replace fails with SPUDRESULT_SFS_IN_USE while the target
+// is open without FILE_SHARE_DELETE (sfs_file_open never shares delete) or
+// mapped (sfs_file_map), by this process or another - Windows reports that
+// as access denied, so a target that's simply read-only gets the same
+// result. POSIX allows it, and existing handles and mappings keep seeing
+// the old contents.
+SPUDRESULT sfs_file_replace(
+    const char *source_path, const char *target_path, SFS_FLUSH_LEVEL level);
+
+// Maps [size] bytes of [file] from [offset] into memory, read-only. Pages
+// are read from disk as they're first touched and can be dropped again
+// under memory pressure. Any offset works (the alignment the platform
+// needs is handled here). [file] must have been opened with read access
+// (SPUDRESULT_SFS_NOT_READABLE), and the range must lie inside the file
+// (SPUDRESULT_INDEX_OUT_OF_RANGE; SPUDRESULT_ZERO_SIZE for size 0).
+// The mapping holds what it needs on its own: [file] may be released
+// before it. Shrinking the file while it's mapped makes touching the cut
+// pages fault (SIGBUS / EXCEPTION_IN_PAGE_ERROR) - don't map files
+// something else may truncate.
+SPUDRESULT sfs_file_map(
+    sfs_file file, uint64_t offset, uint64_t size, sfs_mapping *out_mapping);
+// The first mapped byte - the file's byte at the mapping's [offset].
+// NULL for a NULL mapping.
+const void *sfs_mapping_get_data(sfs_mapping mapping);
+uint64_t sfs_mapping_get_size(sfs_mapping mapping);
+SPUDRESULT sfs_mapping_release(sfs_mapping mapping);
 
 SPUDRESULT sfs_create_directory(const char *path);
 
