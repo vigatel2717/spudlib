@@ -190,6 +190,11 @@ SPUDRESULT spudgpu_create_swap_chain(
 	swap_chain_metal->_back_buffer_images[0]._desc.array_layers    = 1;
 	swap_chain_metal->_back_buffer_images[0]._desc.mip_levels      = 1;
 	swap_chain_metal->_back_buffer_image_views[0]._parent_image   = &swap_chain_metal->_back_buffer_images[0];
+	// What spudgpu_get_image_view_desc reports for the back buffer's view -
+	// the same as the D3D12 backend's, so a caller can get from the view to
+	// the image it copies into.
+	swap_chain_metal->_back_buffer_image_views[0]._desc.type         = SPUDGPU_IMAGE_VIEW_TYPE_2D;
+	swap_chain_metal->_back_buffer_image_views[0]._desc.parent_image = (spudgpu_image)&swap_chain_metal->_back_buffer_images[0];
 
 	// image_available: attach it to the struct before doing anything that
 	// can fail, so spudgpumetal___internal_destroy_swap_chain always finds
@@ -302,6 +307,15 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 	id<MTLTexture> texture                                       = drawable.texture;
 	swap_chain_metal->_back_buffer_images[0]._texture_mtl         = texture;
 	swap_chain_metal->_back_buffer_image_views[0]._texture_view_mtl = texture;
+
+	// The size this drawable really is, which spudgpu_get_swap_chain_desc
+	// reports (as on Vulkan, where the surface can dictate it): the layer
+	// sizes its drawables to its bounds when those change, which can be
+	// before the caller has recreated the swap chain at the new size.
+	swap_chain_metal->_desc.width                         = (uint32_t)texture.width;
+	swap_chain_metal->_desc.height                        = (uint32_t)texture.height;
+	swap_chain_metal->_back_buffer_images[0]._desc.width  = (uint32_t)texture.width;
+	swap_chain_metal->_back_buffer_images[0]._desc.height = (uint32_t)texture.height;
 
 	// Always 0: there is exactly one addressable image at a time on Metal,
 	// not a stable N-image array to index into - see

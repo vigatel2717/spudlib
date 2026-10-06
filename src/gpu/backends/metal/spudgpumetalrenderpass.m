@@ -229,7 +229,41 @@ void spudgpu_cmd_blit_image(
 	if (!cmd || !src_image || !dst_image || !desc)
 		return;
 
-	// METAL API CODE
+	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
+	spudgpu_image_metal *src_metal        = (spudgpu_image_metal *)src_image;
+	spudgpu_image_metal *dst_metal        = (spudgpu_image_metal *)dst_image;
+	if (!src_metal->_texture_mtl || !dst_metal->_texture_mtl)
+		return;
+
+	// Only a blit that is really a copy is implemented: regions of the same
+	// size and orientation, between textures of one pixel format, which
+	// MTLBlitCommandEncoder copies directly (desc->filter never applies).
+	// Resampling or converting needs the shader-based pass spudgpu.h
+	// describes for this backend, which doesn't exist yet - such a blit is
+	// reported and records nothing.
+	bool same_size = desc->src_x1 > desc->src_x0 && desc->src_y1 > desc->src_y0 && desc->src_z1 > desc->src_z0 &&
+	                 desc->src_x1 - desc->src_x0 == desc->dst_x1 - desc->dst_x0 &&
+	                 desc->src_y1 - desc->src_y0 == desc->dst_y1 - desc->dst_y0 &&
+	                 desc->src_z1 - desc->src_z0 == desc->dst_z1 - desc->dst_z0 &&
+	                 desc->dst_x1 > desc->dst_x0 && desc->dst_y1 > desc->dst_y0 && desc->dst_z1 > desc->dst_z0 &&
+	                 desc->src_array_layer_count == desc->dst_array_layer_count;
+	if (!same_size || src_metal->_texture_mtl.pixelFormat != dst_metal->_texture_mtl.pixelFormat) {
+		printf("spudgpu: spudgpu_cmd_blit_image - scaling, flipping and format-converting blits aren't implemented on Metal\n");
+		return;
+	}
+
+	id<MTLBlitCommandEncoder> encoder = spudgpumetal___internal_ensure_blit_encoder(cmd_metal);
+	for (uint32_t layer = 0; layer < desc->src_array_layer_count; layer++) {
+		[encoder copyFromTexture:src_metal->_texture_mtl
+		             sourceSlice:desc->src_base_array_layer + layer
+		             sourceLevel:desc->src_mip_level
+		            sourceOrigin:MTLOriginMake(desc->src_x0, desc->src_y0, desc->src_z0)
+		              sourceSize:MTLSizeMake(desc->src_x1 - desc->src_x0, desc->src_y1 - desc->src_y0, desc->src_z1 - desc->src_z0)
+		               toTexture:dst_metal->_texture_mtl
+		        destinationSlice:desc->dst_base_array_layer + layer
+		        destinationLevel:desc->dst_mip_level
+		       destinationOrigin:MTLOriginMake(desc->dst_x0, desc->dst_y0, desc->dst_z0)];
+	}
 }
 
 static MTLLoadAction spudgpumetal___internal_load_action(SPUDGPU_LOAD_OP op) {
