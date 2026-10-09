@@ -27,7 +27,10 @@ SPUDRESULT spudgpu_create_fence(
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	spudgpu_fence_d3d12 *pResult =
-	    (spudgpu_fence_d3d12 *)calloc(1, sizeof(spudgpu_fence_d3d12));
+	    (spudgpu_fence_d3d12 *)malloc(sizeof(spudgpu_fence_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult                       = new (pResult) spudgpu_fence_d3d12();
 	pResult->_device              = device;
 	pResult->flags                = flags;
 	pResult->signaled_on_creation = signaled_on_creation;
@@ -38,6 +41,7 @@ SPUDRESULT spudgpu_create_fence(
 	if (FAILED(device->_d3d_device->CreateFence(
 	        initial_value, spudgpu_d3d12_get_fence_flags(flags),
 	        IID_PPV_ARGS(&pResult->_d3d_fence)))) {
+		pResult->~spudgpu_fence_d3d12();
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
@@ -50,7 +54,10 @@ SPUDRESULT spudgpu_create_fence(
 void spudgpu_destroy_fence(spudgpu_fence fence) {
 	if (!fence)
 		return;
-	fence->_d3d_fence.Reset();
+#if _DEBUG
+	free((void *)fence->_debug_name);
+#endif
+	fence->~spudgpu_fence_d3d12();
 	free(fence);
 }
 
@@ -137,11 +144,15 @@ SPUDRESULT spudgpu_create_semaphore(
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	spudgpu_semaphore_d3d12 *pResult =
-	    (spudgpu_semaphore_d3d12 *)calloc(1, sizeof(spudgpu_semaphore_d3d12));
+	    (spudgpu_semaphore_d3d12 *)malloc(sizeof(spudgpu_semaphore_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult          = new (pResult) spudgpu_semaphore_d3d12();
 	pResult->_device = device;
 
 	if (FAILED(device->_d3d_device->CreateFence(
 	        0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&pResult->_d3d_fence)))) {
+		pResult->~spudgpu_semaphore_d3d12();
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
@@ -154,7 +165,10 @@ SPUDRESULT spudgpu_create_semaphore(
 void spudgpu_destroy_semaphore(spudgpu_semaphore semaphore) {
 	if (!semaphore)
 		return;
-	semaphore->_d3d_fence.Reset();
+#if _DEBUG
+	free((void *)semaphore->_debug_name);
+#endif
+	semaphore->~spudgpu_semaphore_d3d12();
 	free(semaphore);
 }
 }

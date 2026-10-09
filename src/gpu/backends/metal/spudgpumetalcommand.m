@@ -44,12 +44,13 @@ SPUDRESULT spudgpu_get_command_queue(
     spudgpu_command_queue *out_queue) {
 	if (!device)
 		return SPUDRESULT_GPU_INVALID_DEVICE;
-	if (type > SPUDGPU_COMMAND_LIST_TYPE_COMPUTE)
+	if (type != SPUDGPU_COMMAND_LIST_TYPE_DIRECT && type != SPUDGPU_COMMAND_LIST_TYPE_COPY &&
+	    type != SPUDGPU_COMMAND_LIST_TYPE_COMPUTE)
 		return SPUDRESULT_GPU_INVALID_COMMAND_LIST_TYPE;
-	if (!out_queue)
-		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (index >= SPUD_METAL_COMMAND_QUEUE_COUNT_PER_FAMILY)
 		return SPUDRESULT_INDEX_OUT_OF_RANGE;
+	if (!out_queue)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	spudgpu_device_metal *device_metal = (spudgpu_device_metal *)device;
 
@@ -77,8 +78,10 @@ SPUDRESULT spudgpu_submit_command_lists(
     uint32_t cmd_list_count) {
 	if (!queue)
 		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
-	if (!cmd_lists || cmd_list_count == 0)
+	if (!cmd_lists)
 		return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+	if (cmd_list_count == 0)
+		return SPUDRESULT_ZERO_SIZE;
 
 	// Metal command buffers are bound to the queue they were created from
 	// (see spudgpu_create_command_list) rather than submitted to an arbitrary
@@ -101,8 +104,10 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
     spudgpu_swap_chain swap_chain) {
 	if (!queue)
 		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
-	if (!cmd_lists || cmd_list_count == 0)
+	if (!cmd_lists)
 		return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+	if (cmd_list_count == 0)
+		return SPUDRESULT_ZERO_SIZE;
 	if (!swap_chain)
 		return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
 
@@ -233,6 +238,9 @@ void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator) {
 		// _parent_queue is a borrowed reference into the device's cached
 		// queue families (owned/released by spudgpu_destroy_instance) - not
 		// this allocator's to release.
+#if _DEBUG
+		free((void *)allocator_metal->_debug_name);
+#endif
 		free(allocator_metal);
 	}
 }
@@ -283,6 +291,9 @@ void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
 		if (cmd_list_metal->_command_buffer_mtl) {
 			[cmd_list_metal->_command_buffer_mtl release];
 		}
+#if _DEBUG
+		free((void *)cmd_list_metal->_debug_name);
+#endif
 		free(cmd_list_metal);
 	}
 }

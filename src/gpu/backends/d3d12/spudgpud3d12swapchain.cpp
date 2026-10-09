@@ -3,6 +3,33 @@
 
 #include "spudgpud3d12.hpp"
 
+// Releases a swap chain and its back buffer arrays. Either array may still
+// be null, which is how a swap chain that failed part-way through creation
+// arrives here.
+static void spudgpu_d3d12___release_swap_chain(spudgpu_swap_chain_d3d12 *swap_chain) {
+	if (swap_chain->_back_buffer_images) {
+		for (uint32_t i = 0; i < swap_chain->_desc.buffer_count; ++i) {
+#if _DEBUG
+			free((void *)swap_chain->_back_buffer_images[i]._debug_name);
+#endif
+			swap_chain->_back_buffer_images[i].~spudgpu_image_d3d12();
+		}
+		free(swap_chain->_back_buffer_images);
+	}
+#if _DEBUG
+	if (swap_chain->_back_buffer_image_views) {
+		for (uint32_t i = 0; i < swap_chain->_desc.buffer_count; ++i)
+			free((void *)swap_chain->_back_buffer_image_views[i]._debug_name);
+	}
+#endif
+	free(swap_chain->_back_buffer_image_views);
+#if _DEBUG
+	free((void *)swap_chain->_debug_name);
+#endif
+	swap_chain->~spudgpu_swap_chain_d3d12();
+	free(swap_chain);
+}
+
 extern "C" {
 
 SPUDRESULT spudgpu_create_swap_chain(
@@ -13,13 +40,18 @@ SPUDRESULT spudgpu_create_swap_chain(
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
-	if (!desc->queue)
-		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
 	if (!out_swap_chain)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!desc->surface)
+		return SPUDRESULT_GPU_INVALID_SURFACE;
+	if (!desc->queue)
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
 
 	spudgpu_swap_chain_d3d12 *pResult =
-	    (spudgpu_swap_chain_d3d12 *)calloc(1, sizeof(spudgpu_swap_chain_d3d12));
+	    (spudgpu_swap_chain_d3d12 *)malloc(sizeof(spudgpu_swap_chain_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult          = new (pResult) spudgpu_swap_chain_d3d12();
 	pResult->_device = device;
 	pResult->_desc   = *desc;
 
@@ -61,19 +93,35 @@ SPUDRESULT spudgpu_create_swap_chain(
 	    cmdQueue, hwnd, &scDesc, isExclusiveFullscreen ? &fsDesc : nullptr,
 	    nullptr, &dxgiSwapChain1);
 	if (FAILED(hr)) {
-		free(pResult);
+		spudgpu_d3d12___release_swap_chain(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 	hr = dxgiSwapChain1.As(&pResult->_dxgi_swap_chain);
 	if (FAILED(hr)) {
-		free(pResult);
+		spudgpu_d3d12___release_swap_chain(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 
-	pResult->_back_buffer_images =
-	    new spudgpu_image_d3d12[desc->buffer_count]();
-	pResult->_back_buffer_image_views =
-	    new spudgpu_image_view_d3d12[desc->buffer_count]();
+	// The image holds a ComPtr, so each element is constructed in place; the
+	// image view is plain and zeroed memory is its initial state. Every
+	// image is constructed before the first GetBuffer so that a failure
+	// below always finds buffer_count constructed images to release.
+	spudgpu_image_d3d12 *images = (spudgpu_image_d3d12 *)malloc(
+	    sizeof(spudgpu_image_d3d12) * desc->buffer_count);
+	if (!images) {
+		spudgpu_d3d12___release_swap_chain(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	for (uint32_t i = 0; i < desc->buffer_count; ++i)
+		new (&images[i]) spudgpu_image_d3d12();
+	pResult->_back_buffer_images = images;
+
+	pResult->_back_buffer_image_views = (spudgpu_image_view_d3d12 *)calloc(
+	    desc->buffer_count, sizeof(spudgpu_image_view_d3d12));
+	if (!pResult->_back_buffer_image_views) {
+		spudgpu_d3d12___release_swap_chain(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
 
 	DXGI_FORMAT fmt = spudgpu_d3d12_get_dxgi_format(desc->format);
 
@@ -81,14 +129,16 @@ SPUDRESULT spudgpu_create_swap_chain(
 		Microsoft::WRL::ComPtr<ID3D12Resource> resource;
 		hr = pResult->_dxgi_swap_chain->GetBuffer(i, IID_PPV_ARGS(&resource));
 		if (FAILED(hr)) {
-			delete[] pResult->_back_buffer_image_views;
-			delete[] pResult->_back_buffer_images;
-			free(pResult);
+			spudgpu_d3d12___release_swap_chain(pResult);
 			return SPUDRESULT_API_SPECIFIC_FAILURE;
 		}
 
 		spudgpu_image_d3d12 &img = pResult->_back_buffer_images[i];
-		resource.As(&img._d3d_resource);
+		hr = resource.As(&img._d3d_resource);
+		if (FAILED(hr)) {
+			spudgpu_d3d12___release_swap_chain(pResult);
+			return SPUDRESULT_API_SPECIFIC_FAILURE;
+		}
 		img._device            = device;
 		img._desc.format       = desc->format;
 		img._desc.width        = desc->width;
@@ -120,9 +170,7 @@ SPUDRESULT spudgpu_create_swap_chain(
 
 	if (FAILED(device->_d3d_device->CreateFence(
 	        0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&pResult->_frame_fence)))) {
-		delete[] pResult->_back_buffer_image_views;
-		delete[] pResult->_back_buffer_images;
-		free(pResult);
+		spudgpu_d3d12___release_swap_chain(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 	pResult->_frame_fence_next_value = 0;
@@ -134,17 +182,7 @@ SPUDRESULT spudgpu_create_swap_chain(
 void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 	if (!swap_chain)
 		return;
-	uint32_t count = swap_chain->_desc.buffer_count;
-	if (swap_chain->_back_buffer_images) {
-		for (uint32_t i = 0; i < count; ++i)
-			swap_chain->_back_buffer_images[i]._d3d_resource.Reset();
-		delete[] swap_chain->_back_buffer_images;
-	}
-	if (swap_chain->_back_buffer_image_views)
-		delete[] swap_chain->_back_buffer_image_views;
-	swap_chain->_frame_fence.Reset();
-	swap_chain->_dxgi_swap_chain.Reset();
-	free(swap_chain);
+	spudgpu_d3d12___release_swap_chain(swap_chain);
 }
 
 SPUDRESULT spudgpu_get_swap_chain_desc(
@@ -159,7 +197,7 @@ SPUDRESULT spudgpu_get_swap_chain_desc(
 
 uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 	if (!swap_chain)
-		return 0;
+		return SPUD_UINT32_MAX;
 
 	// The in-flight-fence half of spudgpu_submit_command_lists_synced's
 	// contract (see spudgpu_swap_chain_d3d12 in spudgpud3d12.hpp) -- block

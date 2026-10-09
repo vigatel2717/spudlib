@@ -8,19 +8,18 @@ Thin audio endpoint I/O: WASAPI (Windows), ALSA (Linux; PipeWire planned), CoreA
 
 > **Status: future intent — not implemented, and not part of SpudAudio.** Spatialization
 > is rendering policy, so under SpudLib's zero-policy rule it lives *above* SpudLib —
-> in a future ApricotFields `ApricotAudio` module or in Equate. SpudAudio's only part is
+> in whatever calls it. SpudAudio's only part is
 > reporting which speaker each device channel feeds
 > (`SPUDAUDIO_DEVICE_PROPERTIES.native_format.positions`, and the granted
 > `SPUDAUDIO_STREAM_CONFIG.format.positions`), so the layer above can render for the
 > real speaker layout.
 
-Motivating case: when a wall is drawn in Trellis, its sound effect plays from a
-direction relative to where the wall was placed in the viewport.
+Motivating case: an application plays a sound effect from a direction relative to
+where something happened in its viewport.
 
 1. **Direction** — the clicked point relative to the camera: azimuth (left/right),
    elevation (up/down), distance. Computed by whoever owns the camera and the clicked
-   geometry — ApricotFields, behind trellislib. Trellis only reports the intent
-   ("wall placed here").
+   geometry, above SpudLib.
 2. **Spatializer** — turns that direction into a signal per output channel, mixed into
    the stream callback's buffer:
 
@@ -43,8 +42,8 @@ Two practical constraints when this gets built:
   shared path (`IAudioClient3`) and small periods. `SPUDAUDIO_CALLBACK_INFO::host_time_ns`
   (same clock as `spudperf_get_monotonic_time_ns`) lets the mixer schedule the sound
   against the actual click time.
-- **It doubles as an accessibility feature** — hearing *where* geometry landed is the
-  kind of cue Equate exists for.
+- **It doubles as an accessibility feature** — hearing *where* something landed is a
+  cue in its own right.
 
 ### Why ambisonics isn't a channel position
 

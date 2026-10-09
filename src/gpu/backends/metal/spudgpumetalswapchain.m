@@ -41,22 +41,40 @@ static void spudgpumetal___internal_destroy_swap_chain(spudgpu_swap_chain_metal 
 		if (swap_chain_metal->_image_available_semaphore->_event_mtl) {
 			[swap_chain_metal->_image_available_semaphore->_event_mtl release];
 		}
+#if _DEBUG
+		free((void *)swap_chain_metal->_image_available_semaphore->_debug_name);
+#endif
 		free(swap_chain_metal->_image_available_semaphore);
 	}
 	if (swap_chain_metal->_render_finished_semaphore) {
 		if (swap_chain_metal->_render_finished_semaphore->_event_mtl) {
 			[swap_chain_metal->_render_finished_semaphore->_event_mtl release];
 		}
+#if _DEBUG
+		free((void *)swap_chain_metal->_render_finished_semaphore->_debug_name);
+#endif
 		free(swap_chain_metal->_render_finished_semaphore);
 	}
 	if (swap_chain_metal->_in_flight_fence) {
 		if (swap_chain_metal->_in_flight_fence->_shared_event_mtl) {
 			[swap_chain_metal->_in_flight_fence->_shared_event_mtl release];
 		}
+#if _DEBUG
+		free((void *)swap_chain_metal->_in_flight_fence->_debug_name);
+#endif
 		free(swap_chain_metal->_in_flight_fence);
 	}
+#if _DEBUG
+	if (swap_chain_metal->_back_buffer_images)
+		free((void *)swap_chain_metal->_back_buffer_images->_debug_name);
+	if (swap_chain_metal->_back_buffer_image_views)
+		free((void *)swap_chain_metal->_back_buffer_image_views->_debug_name);
+#endif
 	free(swap_chain_metal->_back_buffer_images);
 	free(swap_chain_metal->_back_buffer_image_views);
+#if _DEBUG
+	free((void *)swap_chain_metal->_debug_name);
+#endif
 	free(swap_chain_metal);
 }
 
@@ -100,6 +118,9 @@ failedattempt:
 void spudgpu_destroy_surface(spudgpu_surface surface) {
 	spudgpu_surface_metal *surface_metal = (spudgpu_surface_metal *)surface;
 	if (surface_metal) {
+#if _DEBUG
+		free((void *)surface_metal->_debug_name);
+#endif
 		free(surface_metal);
 	}
 }
@@ -287,7 +308,7 @@ SPUDRESULT spudgpu_get_swap_chain_desc(
 uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
 	if (!swap_chain_metal)
-		return 0;
+		return SPUD_UINT32_MAX;
 
 	// Blocks until a drawable is genuinely available - this is exactly what
 	// makes _image_available_semaphore a permanent no-op wait everywhere

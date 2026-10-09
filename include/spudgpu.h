@@ -1511,7 +1511,8 @@ SPUDRESULT spudgpu_get_swap_chain_desc(
  * Acquires the index of the next available backbuffer image.
  * This blocks if the GPU is falling too far behind.
  * @param swap_chain The swap chain to acquire from.
- * @return The index of the next backbuffer (e.g., 0, 1, or 2).
+ * @return The index of the next backbuffer (e.g., 0, 1, or 2), or
+ * SPUD_UINT32_MAX if swap_chain is NULL.
  */
 uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain);
 
@@ -1658,16 +1659,42 @@ typedef struct spudgpu_descriptor_set_layout_desc {
 } spudgpu_descriptor_set_layout_desc;
 
 /**
- * @brief Creates an immutable descriptor set layout (schema).
+ * @brief Creates a descriptor set layout: the fixed list of binding slots a
+ * descriptor set exposes to shaders.
  *
- * On Vulkan this allocates a VkDescriptorSetLayout. On Metal it creates an
- * MTLArgumentEncoder schema. The resulting handle is passed into the pipeline
- * desc to declare the expected binding shape.
+ * The layout cannot be changed after creation. Pass it to a pipeline desc to
+ * declare the binding shape the pipeline expects. The caller owns the returned
+ * layout and releases it with spudgpu_destroy_descriptor_set_layout().
  *
- * @param[in] device The GPU device to create this layout on.
- * @param[in] desc   Pointer to the binding slot configuration.
- * @param[out] out_layout The new Descriptor Set Layout.
- * @return SPUD_SUCCESS or another SPUDRESULT.
+ * Backend mapping:
+ * - Vulkan: creates a VkDescriptorSetLayout.
+ * - Metal: creates an MTLArgumentEncoder describing the bindings.
+ * - D3D12: creates no native object; records each binding's offset into the
+ *   set's CBV/SRV/UAV and sampler heap ranges.
+ *
+ * @note Immutable samplers are not supported. On Metal every texture binding
+ * is declared as a 2D texture.
+ *
+ * @param[in]  device     Device the layout is created on.
+ * @param[in]  desc       Binding slots to declare. The struct and its
+ *                        `debug_name` string are copied; neither needs to
+ *                        outlive the call.
+ * @param[out] out_layout Receives the new layout on success. Not written on
+ *                        failure.
+ *
+ * @retval SPUD_SUCCESS The layout was created.
+ * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL.
+ * @retval SPUDRESULT_NULL_DESC `desc` is NULL.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_layout` is NULL.
+ * @retval SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS `desc->binding_count`
+ *         exceeds SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET.
+ * @retval SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE A
+ *         binding's `descriptor_type` has no equivalent on the backend
+ *         (Vulkan and Metal only; D3D12 does not check).
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The native API failed to create the
+ *         object (Vulkan and Metal only).
+ *
+ * @see spudgpu_destroy_descriptor_set_layout()
  */
 SPUDRESULT spudgpu_create_descriptor_set_layout(
     spudgpu_device device,

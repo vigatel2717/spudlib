@@ -1,9 +1,9 @@
 # SpudLib
 
-Hardware Abstraction Layer (HAL) for the Apricot CAD/BIM stack. This is a from-scratch
-translation layer over GPU, file system, memory, and network primitives — a general HAL,
+Hardware Abstraction Layer (HAL). This is a from-scratch
+translation layer over GPU, file system, memory, network, and audio primitives — a general HAL,
 not a GPU library with utilities bolted on. See `../CLAUDE.md` (the `eqdev` workspace
-root) for how this repo fits into the larger Apricot architecture; this file covers
+root) for how this repo fits into the workspace; this file covers
 conventions specific to working inside `spudlib` itself.
 
 ## The one rule everything else follows
@@ -12,10 +12,10 @@ conventions specific to working inside `spudlib` itself.
 consistent C interface and stops there. It never makes a decision on the caller's
 behalf, never has a default that hides a choice, and holds no global state.
 
-- Expose enumeration/query functions so the caller (ApricotFields) can inspect and
+- Expose enumeration/query functions so the caller can inspect and
   decide — `spudgpu_enumerate_devices`, not `spudgpu_select_best_device`.
 - No "convenience" fallback that picks something for the caller. If a change feels
-  like it wants one, that decision belongs in ApricotFields, not here.
+  like it wants one, that decision belongs to the caller, not here.
 - Everything flows through explicit handles the caller owns and passes in — no
   library-owned globals.
 - If a bug turns out to be SpudLib silently defaulting instead of translating a
@@ -23,8 +23,10 @@ behalf, never has a default that hides a choice, and holds no global state.
   `VK_IMAGE_ASPECT_COLOR_BIT` regardless of what the caller asked for), that's a
   design-principle violation, not just a bug — fix it by passing the real parameter
   through, not by adding a special case.
-- When a fix spans SpudLib and ApricotFields, make the correct structural change on
+- When a fix spans SpudLib and its caller, make the correct structural change on
   both sides rather than working around a layering gap from one side only.
+- **SpudLib doesn't know who calls it.** Nothing here - code, comments, headers,
+  docs - names a caller or assumes which one it is. Write "the caller".
 
 ## Module map
 
@@ -36,7 +38,8 @@ codes) rather than inventing its own error convention.
 | SpudGPU | `spudgpu.h` | `spudgpu_` | Vulkan, D3D12, Metal |
 | SpudFiles | `spudfiles.h` | `sfs_` | Windows, Linux, macOS |
 | SpudMemory | `spudmemory.h` | `smem_` | Windows, Linux |
-| SpudNet | `spudnet.h` | `spudnet_` | Windows, Linux |
+| SpudNet | `spudnet.h` | `spudnet_` | TCP sockets: Winsock2, BSD sockets (Linux + Apple, one file). HTTP + WebSocket: WinHTTP, libcurl, NSURLSession |
+| SpudAudio | `spudaudio.h` | `spudaudio_` / `SPUDRESULT_SAUD_*` | WASAPI (Windows), ALSA (Linux), CoreAudio (macOS); an argument-checking stub where no API is compiled in (iOS, watchOS) |
 | SpudCore | `spudcore.h` | `spud_` / `SPUDRESULT` | platform-agnostic |
 | SpudPerf | `spudperf.h` | `spudperf_` | Windows, Linux |
 
@@ -44,8 +47,53 @@ SpudGPU dominates the codebase (92 functions across 20 opaque handles) and is wh
 most work happens. The others are small, focused translation shims — don't let their
 API surface grow beyond what they are: SpudNet is "move bytes," not a networking
 framework (message framing, snapshot/delta semantics, host authority are all
-ApricotFields'/Erethal's problem); SpudMemory is reserve/commit/decommit + an arena
-allocator, not a general allocator library.
+the caller's problem). All three parts share one shape, set out at the
+top of `spudnet.h` - `spudnet_<object>_<verb>` names, `_create`/`_destroy`, desc
+structs with no defaults, one meaning for `timeout_ms` (`SPUDNET_NO_WAIT` stands in
+for a non-blocking mode), `_abort` from any thread, and `SPUDRESULT_SPUDNET_*`
+results - so a new call follows it rather than the platform API it wraps. TCP
+addresses are numeric; name lookup is its own object (`spudnet_resolver`) because
+the system's lookup can't be time-limited or interrupted: `spudnet_resolver_run`
+blocks in it on a thread the caller supplies, `spudnet_resolver_wait` waits for
+the answer on another. SpudNet itself starts no thread, anywhere. The HTTP and WebSocket clients follow the same
+rule one level up: they translate the platform's own client stack (TLS, proxies and
+framing are the stack's) and carry one request or one message, with every call
+blocking on the caller's thread. HTTP is a streaming transfer
+(`spudnet_http_transfer`: start, send the body in pieces, receive the response,
+recv its body in pieces) - nothing of the caller's is buffered in SpudNet, and
+there is no one-shot request to add back. Each backend keeps the caller's time limit itself,
+as the whole call's allowance, with the stack's own timers switched off - don't hand
+a limit to WinHTTP/NSURLSession/libcurl, they each mean something different by it -
+and each blocking call can be ended from another thread
+(`spudnet_http_transfer_abort`, `spudnet_websocket_abort`). Which server
+certificates are accepted is the caller's, in a `spudnet_tls_desc` (trust mode,
+DER roots, host-name switch, SHA-256 public-key pins) given per HTTP client and
+per WebSocket connect; a zeroed one is the stack's own check. A failure's
+`SPUDRESULT` is portable and the platform's own number behind it is not, so
+each object keeps the latter in a `spudnet_error` for its `_get_error` - for
+logs, never for deciding what to do - and a backend records it at the point it
+returns the failure (`spudnet_error_record`). Waiting on several objects at
+once is a `spudnet_wait_set` (`src/net/spudnetwaitset.c`, one `poll()`-based file
+for every platform): it only says which objects are worth calling, and the
+caller still makes the ordinary calls with `SPUDNET_NO_WAIT`. No retry, no
+reconnect, no cookies, no keep-alive pings, and nothing that knows what a status
+code or a message means. What is the same on every stack is written once: the
+HTTP transfer's order of use, checks and header storage in
+`src/net/spudnethttp.c`, with each stack behind the `spudnet_http_backend_*`
+functions of `src/net/spudnetshared.h`; a new rule about a transfer goes in the
+front end, not in three backends. Parts a platform doesn't allow are compiled
+out by `SPUDNET_EXT_TCP` / `SPUDNET_EXT_WEBSOCKET` (both 0 on watchOS) - test
+those, never a platform's name. SpudMemory is
+reserve/commit/decommit + an arena allocator, not a general allocator library.
+SpudAudio is "move PCM frames to and from an endpoint," not an audio engine: no
+mixer, decoder, resampler, voices, spatialisation or volume policy (those are
+the caller's). It never picks a device - the OS defaults
+are reported as a property - and never silently converts a format: a stream the
+endpoint can't take fails with `SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED` unless the
+caller set `SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION`. Which native APIs are built
+in is decided in `CMakeLists.txt` and published as PUBLIC
+`SPUDAUDIO_PLATFORM_*` / `SPUDAUDIO_COMPILE_*` definitions, so a caller tests those
+at compile time; the table is at the top of `spudaudio.h`.
 
 ## SpudGPU conventions
 
@@ -58,22 +106,25 @@ allocator, not a general allocator library.
   (commit `e90f921`). Don't reintroduce a `VkRenderPass`/`VkFramebuffer`-style object
   into the public API as the default — D3D12's backend already emulates this begin/end
   shape on top of its native render-target-view binding, not the other way around.
+  **Designed, not built:** no `SPUDGPU_LEGACY_*` macro, `spudgpu_framebuffer` or
+  `spudgpu_cmd_begin_rendering_legacy` exists in the code yet; the rest of this
+  bullet is the plan for when one is needed.
   If/when SpudLib targets hardware that lacks Vulkan 1.3/`VK_KHR_dynamic_rendering`
   (older/low-end Android, Wear OS smartwatches), the classic `VkRenderPass`/
-  `VkFramebuffer` fallback this implies is reached only through `SPUDGPU_LEGACY_*`
+  `VkFramebuffer` fallback this implies would be reached only through `SPUDGPU_LEGACY_*`
   (see below) — `spudgpu_cmd_begin_rendering`/`spudgpu_rendering_begin_desc` keep an
-  identical calling convention on both paths, but the fallback itself is exposed as a
+  identical calling convention on both paths, but the fallback itself would be exposed as a
   small opaque `spudgpu_framebuffer` handle (`SPUDGPU_LEGACY_FRAMEBUFFER`-gated,
   paired with `spudgpu_cmd_begin_rendering_legacy`) rather than hidden entirely
   inside the Vulkan backend. That object needs a real owner for its lifetime
   (creation, caching, invalidation on resize) — a private SpudLib-side cache keyed on
   attachment sets would be exactly the hidden global state/hidden decision the
-  zero-policy rule above forbids. The owner is ApricotFields: an
-  `aprend_framebuffer`-shaped wrapper that holds raw image views on modern hardware
-  or a cached `spudgpu_framebuffer` on legacy hardware, presenting one uniform
-  begin/end call to the rest of Aprend's rendering code either way.
+  zero-policy rule above forbids. The owner is the caller: it holds raw image views
+  on modern hardware or a `spudgpu_framebuffer` it created and caches on legacy
+  hardware, and makes the same begin/end call either way.
 - **`SPUDGPU_EXT_*` gates a capability gap between backends; `SPUDGPU_LEGACY_*`
-  gates one extra caller-owned object for constrained hardware within a backend.**
+  (designed, not built) gates one extra caller-owned object for constrained hardware
+  within a backend.**
   Both are compile-time macros in `spudgpu.h`, computed once and gated on everywhere
   else — never scatter a raw `#if !SPUDGPU_COMPILE_<BACKEND>` check across call
   sites; if a second backend later lacks the same thing, that should be a one-line
@@ -170,6 +221,196 @@ allocator, not a general allocator library.
     CPU or across command queues, and belongs in `spudgpu_cmd_pipeline_barrier`'s
     implementation instead, not in fence/semaphore.
 
+## Code conventions
+
+- **Argument checks are one `if` per distinct return.** They sit at the top of
+  the function, in parameter order, before any allocation or platform call, and
+  each returns the `SPUDRESULT` that names exactly what was wrong:
+
+  ```c
+  if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
+  if (!desc) return SPUDRESULT_NULL_DESC;
+  ```
+
+  Conditions that would return different values are never joined. A joined check
+  can only return one code, so the caller can't tell which argument failed, and
+  SpudLib's job is to report the fact, not a summary of it.
+- **Conditions may be joined with `||` when every one of them leads to the same
+  return** - the same `SPUDRESULT`, or the same `bool`, null or plain `return`
+  from a `void` function:
+
+  ```c
+  // device null: stops at !device, device->_bindless is never read.
+  if (!device || !device->_bindless) return;
+  // path null: stops at !path, path[0] is never read.
+  if (!path || !path[0]) return false;
+  ```
+
+  `||` evaluates left to right and stops at the first true condition, in every C
+  and C++ standard, so a later condition may rely on an earlier one: put the
+  pointer check before the check that dereferences it.
+- **Conditions may be joined with `&&` when the branch needs all of them to
+  hold.** `&&` evaluates left to right as well and stops at the first false
+  condition, so each condition guards the ones after it:
+
+  ```cpp
+  // result null: stops at result, GetErrorBuffer is never called.
+  // GetErrorBuffer fails: stops there, errors is never read.
+  // errors null: stops at errors, GetBufferSize is never called.
+  if (result && SUCCEEDED(result->GetErrorBuffer(&errors)) && errors && errors->GetBufferSize())
+  	printf("spudgpu: DXC compile failed (%ls): %s\n", profile,
+  	    (const char *)errors->GetBufferPointer());
+  else
+  	printf("spudgpu: DXC compile failed (%ls): hr=0x%08lx\n", profile, (unsigned long)hr);
+  ```
+
+  Any condition being false takes the same `else`, which is what makes joining
+  them correct. If two of them need different handling, they are separate `if`s.
+- The shared return must be the right one for each condition on its own. Don't
+  choose a vaguer code so that two checks can share a line; if one of them later
+  earns a more specific code, split the line then.
+- Some existing code joins checks that should return different codes. Split one
+  only when you are already changing that function.
+- **A function returns the same value for the same condition in every backend.**
+  The header declares it once and the caller cannot see which backend is linked,
+  so a null argument, a zero count or an out-of-range index gets the same result
+  from all of them. That means the same checks, returning the same codes, in the
+  same order - order matters, because it decides which code comes back when two
+  arguments are wrong at once.
+
+  ```c
+  // spudgpu_submit_command_lists_synced, identical in Vulkan, D3D12 and Metal.
+  if (!queue) return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+  if (!cmd_lists) return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+  if (cmd_list_count == 0) return SPUDRESULT_ZERO_SIZE;
+  if (!swap_chain) return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
+  ```
+
+  This covers every kind of return, not only `SPUDRESULT`: where one backend
+  returns `false`, null or 0 for a condition, the others do too, and a `void`
+  function that returns early in one returns early in all.
+- A check is changed in every backend in the same change. If the backends
+  already disagree, decide which answer is correct and move all of them to it;
+  the reference backend is the one to build against first, not the one that wins
+  a disagreement.
+- What may differ is what only one platform can produce: a failed platform call
+  (`SPUDRESULT_API_SPECIFIC_FAILURE`), or a feature a backend doesn't have,
+  which is reported through the result code or capability query the header
+  documents for it.
+- **Check the handle, not what is inside it.** A create call either returns a
+  fully formed object or fails and returns none: every native object the handle
+  needs is created, and its result checked, before the handle is handed out. A
+  function that takes a handle checks the handle argument and then uses its
+  members directly.
+
+  ```cpp
+  if (!cmd) return;
+  cmd->_d3d_cmd_list->SetGraphicsRoot32BitConstants(...);
+  ```
+
+  Don't add `if (!cmd->_d3d_cmd_list)` at the point of use. It can only be null
+  if the create call let a half-built object out, and a check there hides that
+  bug instead of reporting it. Fix the create call.
+- Where it helps to state the invariant, assert it:
+  `assert(cmd->_d3d_cmd_list);`. An assert documents what create guarantees and
+  compiles out of release builds; it is not a substitute for checking the handle
+  argument.
+- The exception is a member that is created lazily, after the handle exists (in
+  the D3D12 backend: `_rtv_heap`, `_dsv_heap`, `_bindless`, the indirect command
+  signatures). Null is a valid state for those, so the function that uses one
+  checks it and creates it there.
+- **No allocating `new` and no `delete` in the C++ backends: allocate and free by
+  hand.** Which allocator depends on whether the object's type has a constructor.
+- **A type with a constructor:** `malloc`, check the pointer, then construct the
+  object in place in that memory. `malloc`, not `calloc`, because the constructor
+  is what initialises it. The in-place form needs `<new>`.
+
+  ```cpp
+  spudgpu_buffer_d3d12 *object = (spudgpu_buffer_d3d12 *)malloc(sizeof(spudgpu_buffer_d3d12));
+  if (!object) return SPUDRESULT_OUT_OF_MEMORY;
+  object = new (object) spudgpu_buffer_d3d12();
+  ```
+
+  It is destroyed the same two steps in reverse: the destructor called explicitly,
+  then `free`.
+
+  ```cpp
+  object->~spudgpu_buffer_d3d12();
+  free(object);
+  ```
+- **A type with no constructor:** `calloc`, check the pointer, and that is all.
+  The zeroed memory is its initial state, and nothing is constructed. It is
+  destroyed with `free` alone.
+
+  ```cpp
+  spudgpu_buffer_view_d3d12 *object = (spudgpu_buffer_view_d3d12 *)calloc(1, sizeof(spudgpu_buffer_view_d3d12));
+  if (!object) return SPUDRESULT_OUT_OF_MEMORY;
+  ```
+- "Has a constructor" includes a type that only has members which do: a struct
+  holding a `std::vector` or a `ComPtr` must be constructed in place and have its
+  destructor called, or those members are never set up or released. In the D3D12
+  backend that is most handle structs (instance, device, queue, allocator, command
+  list, buffer, image, shader module, both pipelines, fence, semaphore, descriptor
+  pool, swap chain). The plain ones are the buffer view, image view, sampler,
+  descriptor set layout, descriptor set and surface.
+- Every allocation has exactly one matching release, on every failure path as well
+  as in the destroy call.
+- A failed allocation is then a null pointer the function turns into a
+  `SPUDRESULT`, where an allocating `new` would throw, and no exception may cross
+  SpudLib's C boundary.
+- The D3D12 backend follows this throughout: no allocating `new`, `delete` or
+  `delete[]` is left in it, and every `malloc`/`calloc` is checked. Keep both ends
+  of an allocation in step - memory from an allocating `new` must never reach
+  `free`, nor `malloc` memory reach `delete`.
+- Objects with no destroy call of their own are released by their owner: a
+  device, its command queues and its bindless state by `spudgpu_destroy_instance`;
+  descriptor sets by their pool, on reset and on destroy; a swap chain's back
+  buffer images and views by the swap chain.
+- What is left: `std::vector` and `std::string` (function locals in
+  `spudgpud3d12context.cpp`, `spudgpud3d12command.cpp`, `spudgpud3d12renderpass.cpp`
+  and `spudgpud3d12shader.cpp`, and the bindless free stacks) still allocate
+  through the standard allocator, which reports failure by throwing.
+- **In a debug build, a debug name is copied, never kept as the caller's
+  pointer.** `debug_name` fields and the name member of a handle exist only
+  under `#if _DEBUG`. Every handle that carries a name has it as its first
+  member (`_debug_name` in SpudGPU, `debug_name` in SpudAudio, SpudNet and
+  SpudFiles), and that member is either null or a copy SpudLib allocated. The
+  caller may free or reuse its own string as soon as the call that took it
+  returns. Storing the pointer (`pResult->_debug_name = desc->debug_name;`)
+  ties the object to memory SpudLib does not own.
+- **`spud_debug_name_set` (`spudcore.c`) is the one place a name is copied.**
+  It frees the name the object had, stores a copy of the new one, and returns
+  `SPUDRESULT_OUT_OF_MEMORY` if the copy fails. A create call whose desc has a
+  `debug_name` calls it; so does a caller renaming an object later.
+
+  ```c
+  #if _DEBUG
+  	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+  		spudgpu_destroy_buffer(pResult);
+  		return SPUDRESULT_OUT_OF_MEMORY;
+  	}
+  	pResult->_desc.debug_name = pResult->_debug_name;
+  #endif
+  ```
+- A null `debug_name` stays null: there is nothing to copy and it is not an
+  error.
+- The copy is the last step of the create call, after every native object
+  exists, so a failed copy releases the finished object through its own destroy
+  call and returns `SPUDRESULT_OUT_OF_MEMORY`.
+- A handle that also keeps the caller's desc (`_desc = *desc`) points
+  `_desc.debug_name` at the handle's copy. The struct copy alone still carries
+  the caller's pointer, and a `spudgpu_get_*_desc` call would hand it back.
+- **Because the setter frees the old name, a handle's name member must be null
+  from the moment the handle exists.** Allocate with `calloc`, or copy from a
+  zeroed struct, or value-initialise (`new (p) T()`); a handle from a bare
+  `malloc` sets the member to null itself.
+- **Whatever frees a handle frees its name first:** the destroy call, or the
+  owner for a handle with no destroy call of its own (a device and its queues,
+  descriptor sets, a swap chain's images, views, semaphores and fences). In C++
+  the name is freed before the destructor is called.
+- A name that is only passed to a platform call during the create call, and not
+  stored, needs no copy.
+
 ## Backend status
 
 - **Vulkan** — reference backend, plain C23, complete. Build against this first;
@@ -203,8 +444,8 @@ allocator, not a general allocator library.
 - `CMAKE_MSVC_RUNTIME_LIBRARY` is **not** set here — it must already be force-set by
   the parent `eqdev` root `CMakeLists.txt` before `add_subdirectory(spudlib)` runs (see
   `../CLAUDE.md`). If you're building `spudlib` standalone rather than through the
-  workspace root, set it yourself before configuring, matching whatever ApricotFields/
-  Erethal will use, or Debug builds will fail to link once combined.
+  workspace root, set it yourself before configuring, matching whatever
+  it will be linked with uses, or Debug builds will fail to link once combined.
 - SDL3 integration is header-only glue (`spudgpu_sdl3.h`) — one inline
   `spudgpu_create_surface_from_sdl3` per backend (wraps `SDL_Vulkan_CreateSurface` on
   Vulkan, reads the raw `HWND` off SDL's window properties on D3D12). Don't grow this
@@ -240,12 +481,45 @@ one.
 
 ## Known gaps (don't re-flag as surprises)
 
+- The debug name rule (see "In a debug build, a debug name is copied") was
+  applied to every module on 2026-10-09. Two kinds of Vulkan handle have no
+  release path at all, so a name given to one is never freed either: the queue
+  `spudgpu_get_graphics_queue` returns, and the sets from
+  `spudgpu_create_descriptor_sets`.
+- Cross-backend return values (see "A function returns the same value for the
+  same condition in every backend") were aligned across SpudGPU and SpudAudio on
+  2026-10-09; SpudFiles, SpudMemory and SpudNet already matched. What still
+  differs in SpudGPU, each a gap in one backend and not a choice:
+  - Vulkan has no `spudgpu_get_command_queue`, `spudgpu_get_max_queue_count`,
+    `spudgpu_get_fence_value` or `spudgpu_signal_fence`; Metal has no
+    `spudgpu_get_shader_pipeline_desc`, bundle or bindless calls; D3D12 has no
+    `spudgpu_create_surface_from_callback` or swap chain semaphore/fence getters.
+  - D3D12's `spudgpu_cmd_begin_rendering` returns early without a colour
+    attachment, so a depth-only pass renders on Vulkan and Metal only.
+  - Metal's `spudgpu_create_swap_chain` rejects `buffer_count != 1` and
+    `SPUDGPU_PRESENT_MODE_MAILBOX`, and its pipeline rejects geometry and
+    tessellation modules.
 - SpudFiles' macOS backend (`spudfilesapple.c`) is plain C: file I/O is the same
   POSIX code as Linux, and dialogs run `/usr/bin/osascript` (`choose file` /
   `choose file name` / `choose folder`) rather than AppKit, so the save dialog
   always prompts before overwriting regardless of `SFS_FILE_DIALOG_FLAG_OVERWRITE_PROMPT`.
-- No automated test suite/CTest target exists — verification in this repo has been
-  manual smoke-testing, not committed tests.
+- SpudNet was written on 2026-10-07 and its header reworked, and every backend
+  rewritten to it, on 2026-10-08: streaming HTTP transfers, TLS and proxy
+  descs, error detail, a resolver, a wait set. The Apple side compiles clean
+  with the `macos-metal` preset and passes `tests/spudnet_test` (run it with
+  `tests/run_spudnet_test.sh build-macos-metal/spudnet_test`; it needs Python 3
+  and `openssl`). The Windows and Linux backends have never been built with
+  their own toolchains and have never run. `SPUDNET_TODO.md` lists what each
+  part assumes and what the macOS run settled. Only TCP and the resolver have
+  a caller outside this repo so far; HTTP and WebSocket are exercised by
+  `tests/spudnet_test` alone. On Linux, WebSocket needs libcurl 8.11+ (older ones
+  return `SPUDRESULT_SPUDNET_UNSUPPORTED`; HTTP works regardless).
+- No CTest target exists. `tests/` holds two hardware tests, built behind
+  `SPUDLIB_BUILD_TESTS` but deliberately not registered with ctest because each
+  needs something real: `spudaudio_sine` (an audio device and someone listening)
+  and `spudnet_test` (a local server, started by `tests/run_spudnet_test.sh`).
+  SpudGPU, SpudFiles, SpudMemory and SpudPerf have no committed tests; SpudGPU is
+  verified by running the `spudgpusamples` samples.
 - No static/immutable sampler support. `spudgpu_sampler` (added alongside
   `SpudGPUDynamicIndexing`) only covers the dynamic, descriptor-bound case — a real
   `VkSampler` written into a descriptor set on Vulkan, a heap-slot `CreateSampler` on

@@ -38,6 +38,9 @@ static void spudgpumetal___internal_destroy_command_queue_family(
 		if (queue->_command_queue_mtl) {
 			[queue->_command_queue_mtl release];
 		}
+#if _DEBUG
+		free((void *)queue->_debug_name);
+#endif
 		free(queue);
 	}
 }
@@ -54,9 +57,15 @@ SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance) {
 		spudgpumetal___internal_destroy_command_queue_family(device->_cmd_queues_copy);
 		spudgpumetal___internal_destroy_command_queue_family(device->_cmd_queues_compute);
 		[device->_device_mtl release];
+#if _DEBUG
+		free((void *)device->_debug_name);
+#endif
 		free(device);
 	}
 	free(instance->_devices_pointer_array);
+#if _DEBUG
+	free((void *)instance->_debug_name);
+#endif
 	free(instance);
 	return SPUD_SUCCESS;
 }

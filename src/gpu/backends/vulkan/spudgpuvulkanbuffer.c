@@ -66,7 +66,7 @@ SPUDRESULT spudgpu_create_buffer(
     spudgpu_buffer *out_buffer) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!desc) return SPUDRESULT_NULL_DESC;
-    if (!out_buffer) return SPUD_SUCCESS;
+    if (!out_buffer) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     // Validate desc
     {
@@ -165,6 +165,14 @@ SPUDRESULT spudgpu_create_buffer(
     // If all successful, return a memcpy'ed heap pointer
     spudgpu_buffer_vulkan *pResult = malloc(sizeof(spudgpu_buffer_vulkan));
     memcpy(pResult, &result, sizeof(spudgpu_buffer_vulkan));
+#if _DEBUG
+    if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+        spudgpu_destroy_buffer(pResult);
+        return SPUDRESULT_OUT_OF_MEMORY;
+    }
+    pResult->_desc.debug_name = pResult->_debug_name;
+#endif
+
     *out_buffer = pResult;
     return SPUD_SUCCESS;
 }
@@ -173,7 +181,8 @@ SPUDRESULT spudgpu_get_buffer_desc(
     spudgpu_buffer buffer,
     spudgpu_buffer_desc *out_desc) {
     if (!buffer) return SPUDRESULT_GPU_INVALID_BUFFER;
-    if (out_desc) *out_desc = buffer->_desc;
+    if (!out_desc) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+    *out_desc = buffer->_desc;
     return SPUD_SUCCESS;
 }
 
@@ -181,6 +190,9 @@ void spudgpu_destroy_buffer(spudgpu_buffer buffer) {
     if (!buffer) return;
     vkDestroyBuffer(buffer->_device._logical_device_vk, buffer->_buffer_vk, NULL);
     vkFreeMemory(buffer->_device._logical_device_vk, buffer->_memory_vk, NULL);
+#if _DEBUG
+    free((void *)buffer->_debug_name);
+#endif
     free(buffer);
 }
 
@@ -190,7 +202,7 @@ SPUDRESULT spudgpu_create_buffer_view(
     spudgpu_buffer_view *out_view) {
     if (!buffer) return SPUDRESULT_GPU_INVALID_BUFFER;
     if (!desc) return SPUDRESULT_NULL_DESC;
-    if (!out_view) return SPUD_SUCCESS;
+    if (!out_view) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	// Validate desc
 	if (desc->size == 0)
@@ -222,7 +234,8 @@ SPUDRESULT spudgpu_get_buffer_view_desc(
     spudgpu_buffer_view buffer_view,
     spudgpu_buffer_view_desc *out_desc) {
     if (!buffer_view) return SPUDRESULT_GPU_INVALID_BUFFER_VIEW;
-    if (out_desc) *out_desc = buffer_view->_desc;
+    if (!out_desc) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+    *out_desc = buffer_view->_desc;
     return SPUD_SUCCESS;
 }
 
@@ -231,6 +244,9 @@ void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer_view) {
 	vkDestroyBufferView(
 	    buffer_view->_desc.parent_buffer->_device._logical_device_vk,
 	    buffer_view->_buffer_view_vk, NULL);
+#if _DEBUG
+	free((void *)buffer_view->_debug_name);
+#endif
 	free(buffer_view);
 }
 
@@ -242,6 +258,7 @@ SPUDRESULT spudgpu_map_buffer(
     if (!buffer) return SPUDRESULT_GPU_INVALID_BUFFER;
     //if (!size) return SPUDRESULT_GPU_ZERO_BUFFER_SIZE;
     if (offset + size > buffer->_desc.size) return SPUDRESULT_GPU_MAP_OUT_OF_RANGE;
+    if (!ppData) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     // Guard: must have been allocated with HOST_VISIBLE
     if (!(buffer->_desc.memory_flags & SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE))
@@ -290,7 +307,7 @@ SPUDRESULT spudgpu_invalidate_buffer(
     spudgpu_buffer buffer,
     uint64_t offset,
     uint64_t size) {
-    if (!buffer) return SPUD_SUCCESS;
+    if (!buffer) return SPUDRESULT_GPU_INVALID_BUFFER;
 
     VkMappedMemoryRange range = {0};
     range.pNext = NULL;

@@ -203,7 +203,7 @@ void spudgpu_get_image_buffer_copy_size(
     uint32_t mip_level,
     uint64_t *out_row_pitch,
     uint64_t *out_total_size) {
-	if (!image || !out_row_pitch || !out_total_size)
+	if (!image)
 		return;
 
 	spudgpu_image_metal *image_metal = (spudgpu_image_metal *)image;
@@ -217,8 +217,10 @@ void spudgpu_get_image_buffer_copy_size(
 
 	uint64_t row_pitch = (uint64_t) mip_width * (spudgpu_format_bit_count(image_metal->_desc.format) / 8);
 
-	*out_row_pitch  = row_pitch;
-	*out_total_size = row_pitch * mip_height * mip_depth;
+	if (out_row_pitch)
+		*out_row_pitch = row_pitch;
+	if (out_total_size)
+		*out_total_size = row_pitch * mip_height * mip_depth;
 }
 
 void spudgpu_cmd_blit_image(
@@ -409,6 +411,8 @@ void spudgpu_cmd_clear_depth_attachment(
     uint32_t width,
     uint32_t height) {
 	if (!cmd || !attachment)
+		return;
+	if (!clear_depth && !clear_stencil)
 		return;
 
 	spudgpu_rendering_begin_desc desc = {0};

@@ -19,7 +19,7 @@ extern "C" {
  * Moves PCM frames between the caller and an audio endpoint — a translation
  * of the platform audio API, nothing more. No mixer, no decoder, no
  * resampler, no voice/sound objects, no 3D spatialisation, no volume policy.
- * All of that is the caller's problem (ApricotFields), the same way SpudGPU
+ * All of that is the caller's problem, the same way SpudGPU
  * never decides what to draw.
  *
  * - Never picks a device. The OS default endpoints are reported as a

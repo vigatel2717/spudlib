@@ -196,7 +196,7 @@ SPUDRESULT spudgpu_create_image(
 		return SPUDRESULT_NULL_DESC;
 	if (!out_image)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
-	if (!(desc->width && desc->height && desc->depth && desc->array_layers && desc->mip_levels))
+	if (!desc->width || !desc->height || !desc->depth || !desc->array_layers || !desc->mip_levels)
 		return SPUDRESULT_DESC_INVALID_PARAMETERS;
 	if (desc->usage == SPUDGPU_IMAGE_USAGE_NONE)
 		return SPUDRESULT_GPU_INVALID_IMAGE_USAGE;
@@ -275,6 +275,14 @@ SPUDRESULT spudgpu_create_image(
 	// texture resources, and the Vulkan backend never populates this field
 	// for images either) - there's nothing dishonest to fill in here.
 
+#if _DEBUG
+	if (spud_debug_name_set(image_metal, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_image((spudgpu_image)image_metal);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	image_metal->_desc.debug_name = image_metal->_debug_name;
+#endif
+
 	*out_image = (spudgpu_image)image_metal;
 
 	return sr;
@@ -290,6 +298,9 @@ void spudgpu_destroy_image(spudgpu_image image) {
 		if (image_metal->_texture_mtl) {
 			[image_metal->_texture_mtl release];
 		}
+#if _DEBUG
+		free((void *)image_metal->_debug_name);
+#endif
 		free(image_metal);
 	}
 }
@@ -399,6 +410,9 @@ void spudgpu_destroy_image_view(spudgpu_image_view image_view) {
 		if (view_metal->_texture_view_mtl) {
 			[view_metal->_texture_view_mtl release];
 		}
+#if _DEBUG
+		free((void *)view_metal->_debug_name);
+#endif
 		free(view_metal);
 	}
 }

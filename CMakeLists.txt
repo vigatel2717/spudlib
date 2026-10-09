@@ -34,11 +34,14 @@ if(NOT TARGET spudlib)
         include/spudmemory.h
         include/spudnet.h
         include/spudperf.h
+        src/net/spudnetshared.h
         src/spudcore.c
         src/spudmemory.c
         src/spudfiles.c
         src/spudperf.c
         src/spudnet.c
+        src/net/spudnethttp.c
+        src/net/spudnetwaitset.c
         src/spudaudio.c
         src/gpu/spudgpuformat.c
     )
@@ -47,19 +50,26 @@ if(NOT TARGET spudlib)
         list(APPEND SPUDLIB_SOURCES
             src/files/backends/windows/spudfileswindows.c
             src/net/backends/windows/spudnetwindows.c
+            src/net/backends/windows/spudnetwinhttp.c
             src/memory/backends/windows/spudmemorywindows.c
         )
     endif()
     if(UNIX AND NOT APPLE)
         list(APPEND SPUDLIB_SOURCES
             src/files/backends/linux/spudfileslinux.c
-            src/net/backends/linux/spudnetlinux.c
+            src/net/backends/posix/spudnetsockets.c
+            src/net/backends/linux/spudnetcurl.c
             src/memory/backends/linux/spudmemorylinux.c
         )
     endif()
     if(APPLE)
+        # SpudNet's HTTP/WebSocket backend is Objective-C (NSURLSession), on
+        # every graphics backend. Must enable OBJC before add_library() below.
+        enable_language(OBJC)
         list(APPEND SPUDLIB_SOURCES
             src/files/backends/apple/spudfilesapple.c
+            src/net/backends/posix/spudnetsockets.c
+            src/net/backends/apple/spudneturlsession.m
         )
     endif()
 
@@ -182,11 +192,39 @@ if(NOT TARGET spudlib)
     if(WIN32)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_WIN32=1)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_WINDOWS=1)
-        target_link_libraries(spudlib PRIVATE shlwapi ws2_32)
+        # winhttp: SpudNet's HTTP and WebSocket clients. crypt32: their
+        # certificate checks against a caller's own roots and pins.
+        target_link_libraries(spudlib PRIVATE shlwapi ws2_32 winhttp crypt32)
     elseif (UNIX AND NOT APPLE)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_LINUX=1)
+        # SpudNet's HTTP and WebSocket clients (and its instance): libcurl4-openssl-dev /
+        # libcurl-devel, and pthreads for the WebSocket's lock. All of SpudNet
+        # needs libcurl 7.84 or later: a spudnet_instance may be made while
+        # other threads run, and libcurl's global init is only safe then from
+        # that version on. It also has to have been built thread-safe, which
+        # only the library itself can say; spudnet_instance_create asks it at
+        # run time. WebSocket needs 8.11 or later and otherwise compiles to
+        # entry points that return SPUDRESULT_SPUDNET_UNSUPPORTED.
+        find_package(CURL 7.84 REQUIRED)
+        find_package(Threads REQUIRED)
+        target_link_libraries(spudlib PRIVATE CURL::libcurl Threads::Threads)
+        if(CURL_VERSION_STRING VERSION_LESS "8.11")
+            message(WARNING "SpudNet: libcurl ${CURL_VERSION_STRING} is older than 8.11 - spudnet_websocket_* will return SPUDRESULT_SPUDNET_UNSUPPORTED.")
+        endif()
     elseif (APPLE)
         target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_APPLE=1)
+        # SPUDLIB_PLATFORM_APPLE is every Apple system. SpudNet has to tell
+        # Apple Watch apart: the system refuses TCP sockets and WebSockets to
+        # an ordinary application there, and spudnet.h leaves both out
+        # (SPUDNET_EXT_TCP, SPUDNET_EXT_WEBSOCKET) - and stops the build if
+        # this is missing from a watchOS one. The TCP and wait-set sources
+        # stay in the list above; with both parts out they compile to nothing.
+        if(CMAKE_SYSTEM_NAME STREQUAL "watchOS")
+            target_compile_definitions(spudlib PUBLIC SPUDLIB_PLATFORM_WATCHOS=1)
+        endif()
+        # Foundation: NSURLSession, for SpudNet's HTTP and WebSocket clients.
+        # Security: SecTrust, for their certificate checks.
+        target_link_libraries(spudlib PRIVATE "-framework Foundation" "-framework Security")
     endif()
 
     # SpudAudio definitions and libraries, from the choice made above.
@@ -387,6 +425,17 @@ if(NOT TARGET spudlib)
         target_link_libraries(spudaudio_sine PRIVATE spudlib)
         if(UNIX AND NOT APPLE)
             target_link_libraries(spudaudio_sine PRIVATE m)
+        endif()
+
+        # SpudNet against a real network stack. It needs the server in
+        # tests/spudnet_test_server.py running beside it (Python 3 and the
+        # openssl command), which tests/run_spudnet_test.sh sees to, so it
+        # isn't registered with ctest either.
+        add_executable(spudnet_test tests/spudnet_test.c)
+        target_link_libraries(spudnet_test PRIVATE spudlib)
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            target_link_libraries(spudnet_test PRIVATE Threads::Threads)
         endif()
     endif()
 endif()

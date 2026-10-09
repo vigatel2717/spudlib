@@ -235,11 +235,17 @@ SPUDRESULT spudaudio_destroy_instance(spudaudio_instance instance) {
 	struct spudaudio_device_t *dev = instance->devices;
 	while (dev) {
 		struct spudaudio_device_t *next = dev->next;
+#if _DEBUG
+		free((void *)dev->debug_name);
+#endif
 		free(dev);
 		dev = next;
 	}
 	free(instance->enumerated[0]);
 	free(instance->enumerated[1]);
+#if _DEBUG
+	free((void *)instance->debug_name);
+#endif
 	free(instance);
 	return SPUD_SUCCESS;
 }
@@ -681,6 +687,9 @@ static void ca_free_stream(struct spudaudio_stream_t *s) {
 		dispatch_release(s->listener_queue);
 	free(s->planes);
 	free(s->scratch);
+#if _DEBUG
+	free((void *)s->debug_name);
+#endif
 	free(s);
 }
 

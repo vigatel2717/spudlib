@@ -373,7 +373,7 @@ SPUDRESULT spudgpu_create_surface(
 	// (spudgpu.h: "Windows: unused (set to NULL)").
 	if (!display_handle) return SPUDRESULT_GPU_INVALID_DISPLAY_HANDLE;
 #endif
-	if (!out_surface) return SPUD_SUCCESS;
+	if (!out_surface) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	spudgpu_surface_vulkan result = {0};
 	result._instance = *instance;
@@ -418,6 +418,9 @@ void spudgpu_destroy_surface(spudgpu_surface surface) {
 	vkDestroySurfaceKHR(
 		surface->_instance._instance_vk,
 		surface->_surface_vk, NULL);
+#if _DEBUG
+	free((void *)surface->_debug_name);
+#endif
 	free(surface);
 }
 
@@ -425,7 +428,7 @@ spudgpu_surface spudgpu_create_surface_from_callback(
 	spudgpu_instance instance,
 	void *user_data,
 	spudgpu_surface_create_fn create_fn) {
-	if (!(instance && create_fn)) return NULL;
+	if (!instance || !create_fn) return NULL;
 
 	spudgpu_surface_vulkan *result = calloc(1, sizeof(spudgpu_surface_vulkan));
 	if (!result) return NULL;
@@ -452,8 +455,9 @@ SPUDRESULT spudgpu_create_swap_chain(
 	spudgpu_swap_chain *out_swap_chain) {
 	if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc) return SPUDRESULT_NULL_DESC;
+	if (!out_swap_chain) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!desc->surface) return SPUDRESULT_GPU_INVALID_SURFACE;
 	if (!desc->queue) return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
-	if (!out_swap_chain) return SPUD_SUCCESS;
 
 	spudgpu_swap_chain_vulkan result = {0};
 	result._device = *((spudgpu_device_vulkan *) device);
@@ -490,17 +494,29 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 	for (uint32_t i = 0; i < swap_chain->_max_frames_in_flight; i++) {
 		vkDestroySemaphore(dev, swap_chain->_image_available_semaphores[i]._semaphore_vk, NULL);
 		vkDestroyFence(dev, swap_chain->_in_flight_fences[i]._fence_vk, NULL);
+#if _DEBUG
+		free((void *)swap_chain->_image_available_semaphores[i]._debug_name);
+		free((void *)swap_chain->_in_flight_fences[i]._debug_name);
+#endif
 	}
 	// render_finished_semaphores is sized/indexed by swapchain image count, not
 	// _max_frames_in_flight — see spudgpuvulkan___fences_semaphores_swapchain_creation_internal.
 	for (uint32_t i = 0; i < swap_chain->_swapchain_images_count; i++) {
 		vkDestroySemaphore(dev, swap_chain->_render_finished_semaphores[i]._semaphore_vk, NULL);
+#if _DEBUG
+		free((void *)swap_chain->_render_finished_semaphores[i]._debug_name);
+#endif
 	}
 	free(swap_chain->_image_available_semaphores);
 	free(swap_chain->_render_finished_semaphores);
 	free(swap_chain->_in_flight_fences);
 
 	for (uint32_t i = 0; i < swap_chain->_swapchain_image_views_count; i++) {
+#if _DEBUG
+		if (swap_chain->_swapchain_image_views_vk[i]._desc.parent_image)
+			free((void *)swap_chain->_swapchain_image_views_vk[i]._desc.parent_image->_debug_name);
+		free((void *)swap_chain->_swapchain_image_views_vk[i]._debug_name);
+#endif
 		free(swap_chain->_swapchain_image_views_vk[i]._desc.parent_image);
 		vkDestroyImageView(dev, swap_chain->_swapchain_image_views_vk[i]._image_view_vk, NULL);
 	}
@@ -512,6 +528,9 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 	if (swap_chain->_swapchain_vk != VK_NULL_HANDLE)
 		vkDestroySwapchainKHR(dev, swap_chain->_swapchain_vk, NULL);
 
+#if _DEBUG
+	free((void *)swap_chain->_debug_name);
+#endif
 	free(swap_chain);
 }
 
@@ -520,7 +539,7 @@ SPUDRESULT spudgpu_get_swap_chain_desc(
 	spudgpu_swap_chain swap_chain,
 	spudgpu_swap_chain_desc *out_desc) {
 	if (!swap_chain) return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
-	if (!out_desc) return SPUDRESULT_NULL_DESC;
+	if (!out_desc) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	*out_desc = ((spudgpu_swap_chain_vulkan *) swap_chain)->_desc;
 	return SPUD_SUCCESS;
 }
@@ -548,7 +567,7 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 		// Caller should handle swap chain recreation on VK_ERROR_OUT_OF_DATE_KHR.
 		// Do NOT reset the fence here: _current_frame only advances on a
 		// successful present (see below), so a caller that bails out on a
-		// failed acquire (as Erethal's app_render does) submits nothing that
+		// failed acquire submits nothing that
 		// would ever re-signal this fence. Resetting it unconditionally,
 		// before knowing the acquire would succeed, left it permanently
 		// unsignaled the moment a resize made the swap chain go out of

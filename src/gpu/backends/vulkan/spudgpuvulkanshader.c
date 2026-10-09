@@ -90,17 +90,17 @@ SPUDRESULT spudgpu_create_shader_module(
     spudgpu_device device,
     const spudgpu_shader_module_desc *desc,
     spudgpu_shader_module *out_module) {
-	if (!(device && desc))
+	if (!device)
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
-	if (!(desc->spirv_code && desc->spirv_size))
+	if (!out_module)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!desc->spirv_code || desc->spirv_size == 0)
 		return SPUDRESULT_GPU_NULL_SPIRV;
 	if (desc->spirv_size % 4 != 0)
 		return SPUDRESULT_GPU_INVALID_SPIRV_ALIGNMENT; // SPIR-V must be 4-byte
 		                                               // aligned
-	if (!out_module)
-		return SPUD_SUCCESS;
 
 	spudgpu_shader_module_vulkan result = {0};
 	result._device                      = *((spudgpu_device_vulkan *)device);
@@ -119,6 +119,13 @@ SPUDRESULT spudgpu_create_shader_module(
 	spudgpu_shader_module_vulkan *pResult =
 	    malloc(sizeof(spudgpu_shader_module_vulkan));
 	memcpy(pResult, &result, sizeof(spudgpu_shader_module_vulkan));
+#if _DEBUG
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_shader_module(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+#endif
+
 	*out_module = pResult;
 	return SPUD_SUCCESS;
 }
@@ -129,6 +136,9 @@ void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module) {
 	vkDestroyShaderModule(
 	    shader_module->_device._logical_device_vk,
 	    shader_module->_shader_module_vk, NULL);
+#if _DEBUG
+	free((void *)shader_module->_debug_name);
+#endif
 	free(shader_module);
 }
 
@@ -141,13 +151,13 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
 	if (!out_pipeline)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	// Validate: at minimum a fragment shader plus either a vertex module
 	// (classic pipeline) or a mesh module (SPUDGPU_EXT_MESH_SHADING - mesh
 	// pipelines have no vertex-fetch/input-assembly stage at all, see
 	// spudgpu.h) is required. The two are mutually exclusive.
-	if (!((desc->vertex_module || desc->mesh_module) && desc->fragment_module))
+	if ((!desc->vertex_module && !desc->mesh_module) || !desc->fragment_module)
 		return SPUDRESULT_GPU_VERTEX_AND_FRAGMENT_SHADER_REQUIRED;
 	if (desc->vertex_module && desc->mesh_module)
 		return SPUDRESULT_GPU_INVALID_SHADER_STAGE;
@@ -520,6 +530,14 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	spudgpu_shader_pipeline_vulkan *pResult =
 	    malloc(sizeof(spudgpu_shader_pipeline_vulkan));
 	memcpy(pResult, &result, sizeof(spudgpu_shader_pipeline_vulkan));
+#if _DEBUG
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_shader_pipeline(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
+#endif
+
 	*out_pipeline = pResult;
 	return SPUD_SUCCESS;
 }
@@ -532,6 +550,9 @@ void spudgpu_destroy_shader_pipeline(spudgpu_shader_pipeline pipeline) {
 	VkDevice vk_device = vkPipeline->_device._logical_device_vk;
 	vkDestroyPipeline(vk_device, vkPipeline->_pipeline_vk, NULL);
 	vkDestroyPipelineLayout(vk_device, vkPipeline->_pipeline_layout_vk, NULL);
+#if _DEBUG
+	free((void *)vkPipeline->_debug_name);
+#endif
 	free(vkPipeline);
 }
 
@@ -540,7 +561,7 @@ SPUDRESULT spudgpu_get_shader_pipeline_desc(
 	if (!pipeline)
 		return SPUDRESULT_GPU_INVALID_SHADER_PIPELINE;
 	if (!out_desc)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	*out_desc = pipeline->_desc;
 	return SPUD_SUCCESS;
 }
@@ -553,10 +574,10 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
+	if (!out_pipeline)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (!desc->compute_module)
 		return SPUDRESULT_GPU_INVALID_COMPUTE_MODULE;
-	if (!out_pipeline)
-		return SPUD_SUCCESS;
 
 	spudgpu_compute_pipeline_vulkan result = {0};
 	result._device                         = *device;
@@ -618,6 +639,14 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 	spudgpu_compute_pipeline_vulkan *pResult =
 	    malloc(sizeof(spudgpu_compute_pipeline_vulkan));
 	memcpy(pResult, &result, sizeof(spudgpu_compute_pipeline_vulkan));
+#if _DEBUG
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_compute_pipeline(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
+#endif
+
 	*out_pipeline = pResult;
 	return SPUD_SUCCESS;
 }
@@ -630,6 +659,9 @@ void spudgpu_destroy_compute_pipeline(spudgpu_compute_pipeline pipeline) {
 	VkDevice vk_device = vkPipeline->_device._logical_device_vk;
 	vkDestroyPipeline(vk_device, vkPipeline->_pipeline_vk, NULL);
 	vkDestroyPipelineLayout(vk_device, vkPipeline->_pipeline_layout_vk, NULL);
+#if _DEBUG
+	free((void *)vkPipeline->_debug_name);
+#endif
 	free(vkPipeline);
 }
 
@@ -637,7 +669,7 @@ SPUDRESULT spudgpu_get_compute_pipeline_desc(
     spudgpu_compute_pipeline pipeline,
     spudgpu_compute_pipeline_desc *out_desc) {
     if (!pipeline) return SPUDRESULT_GPU_INVALID_COMPUTE_PIPELINE;
-    if (!out_desc) return SPUD_SUCCESS;
+    if (!out_desc) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
     *out_desc = pipeline->_desc;
     return SPUD_SUCCESS;
 }

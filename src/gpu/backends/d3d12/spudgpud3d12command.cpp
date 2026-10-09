@@ -13,6 +13,12 @@ spudgpu_command_queue spudgpu_get_graphics_queue(spudgpu_device device) {
 
 uint32_t spudgpu_get_max_queue_count(
     spudgpu_device device, SPUDGPU_COMMAND_LIST_TYPE type) {
+	if (!device)
+		return 0;
+	// Bundles aren't submitted to a queue directly, so they have no queues.
+	if (type != SPUDGPU_COMMAND_LIST_TYPE_DIRECT && type != SPUDGPU_COMMAND_LIST_TYPE_COPY &&
+	    type != SPUDGPU_COMMAND_LIST_TYPE_COMPUTE)
+		return 0;
 	return SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY;
 }
 
@@ -23,10 +29,13 @@ SPUDRESULT spudgpu_get_command_queue(
     spudgpu_command_queue *out_queue) {
 	if (!device)
 		return SPUDRESULT_GPU_INVALID_DEVICE;
+	if (type != SPUDGPU_COMMAND_LIST_TYPE_DIRECT && type != SPUDGPU_COMMAND_LIST_TYPE_COPY &&
+	    type != SPUDGPU_COMMAND_LIST_TYPE_COMPUTE)
+		return SPUDRESULT_GPU_INVALID_COMMAND_LIST_TYPE;
 	if (index >= SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY)
 		return SPUDRESULT_INDEX_OUT_OF_RANGE;
 	if (!out_queue)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	switch (type) {
 	case SPUDGPU_COMMAND_LIST_TYPE_DIRECT:
 		*out_queue = device->_cmd_queues_direct[index];
@@ -49,10 +58,14 @@ SPUDRESULT spudgpu_submit_command_lists(
     uint32_t cmd_list_count) {
 	if (!queue)
 		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
-	if (!cmd_lists || !cmd_list_count)
-		return SPUD_SUCCESS;
+	if (!cmd_lists)
+		return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+	if (cmd_list_count == 0)
+		return SPUDRESULT_ZERO_SIZE;
 	ID3D12CommandList **d3dLists =
 	    (ID3D12CommandList **)malloc(sizeof(ID3D12CommandList *) * cmd_list_count);
+	if (!d3dLists)
+		return SPUDRESULT_OUT_OF_MEMORY;
 	for (uint32_t i = 0; i < cmd_list_count; ++i)
 		d3dLists[i] = cmd_lists[i]->_d3d_cmd_list.Get();
 	queue->_d3d_cmd_queue->ExecuteCommandLists(
@@ -68,8 +81,10 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
     spudgpu_swap_chain swap_chain) {
 	if (!queue)
 		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
-	if (!cmd_lists || !cmd_list_count)
+	if (!cmd_lists)
 		return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+	if (cmd_list_count == 0)
+		return SPUDRESULT_ZERO_SIZE;
 	if (!swap_chain)
 		return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
 
@@ -97,15 +112,19 @@ SPUDRESULT spudgpu_create_command_allocator(
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
 	if (!out_allocator)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	spudgpu_command_allocator_d3d12 *pResult =
-	    (spudgpu_command_allocator_d3d12 *)calloc(
-	        1, sizeof(spudgpu_command_allocator_d3d12));
+	    (spudgpu_command_allocator_d3d12 *)malloc(
+	        sizeof(spudgpu_command_allocator_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult          = new (pResult) spudgpu_command_allocator_d3d12();
 	pResult->_device = device;
     pResult->_d3d_cmd_list_type = spudgpu_d3d12_get_command_list_type(desc->type);
 	if (FAILED(device->_d3d_device->CreateCommandAllocator(
 	        pResult->_d3d_cmd_list_type,
 	        IID_PPV_ARGS(&pResult->_d3d_cmd_allocator)))) {
+		pResult->~spudgpu_command_allocator_d3d12();
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
@@ -116,7 +135,10 @@ SPUDRESULT spudgpu_create_command_allocator(
 void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator) {
 	if (!allocator)
 		return;
-	allocator->_d3d_cmd_allocator.Reset();
+#if _DEBUG
+	free((void *)allocator->_debug_name);
+#endif
+	allocator->~spudgpu_command_allocator_d3d12();
 	free(allocator);
 }
 
@@ -134,13 +156,17 @@ SPUDRESULT spudgpu_create_command_list(
 	if (!allocator)
 		return SPUDRESULT_GPU_INVALID_COMMAND_ALLOCATOR;
     if (!out_cmd_list)
-        return SPUD_SUCCESS;
-    spudgpu_command_list_d3d12 *pResult = (spudgpu_command_list_d3d12 *) calloc(1, sizeof(spudgpu_command_list_d3d12));
+        return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+    spudgpu_command_list_d3d12 *pResult = (spudgpu_command_list_d3d12 *) malloc(sizeof(spudgpu_command_list_d3d12));
+    if (!pResult)
+        return SPUDRESULT_OUT_OF_MEMORY;
+    pResult = new (pResult) spudgpu_command_list_d3d12();
     pResult->_allocator = allocator;
     if (FAILED(pResult->_allocator->_device->_d3d_device->CreateCommandList1(
         1, allocator->_d3d_cmd_list_type, D3D12_COMMAND_LIST_FLAG_NONE,
         IID_PPV_ARGS(&pResult->_d3d_cmd_list)
     ))) {
+        pResult->~spudgpu_command_list_d3d12();
         free(pResult);
         return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
@@ -149,9 +175,10 @@ SPUDRESULT spudgpu_create_command_list(
 }
 void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
     if (!cmd) return;
-    cmd->_rtv_heap.Reset();
-    cmd->_dsv_heap.Reset();
-    cmd->_d3d_cmd_list.Reset();
+#if _DEBUG
+    free((void *)cmd->_debug_name);
+#endif
+    cmd->~spudgpu_command_list_d3d12();
     free(cmd);
 }
 void spudgpu_begin_command_list(spudgpu_command_list cmd)
@@ -170,7 +197,7 @@ void spudgpu_cmd_set_viewports(
     uint32_t first_viewport,
     uint32_t viewport_count,
     const SPUDGPU_VIEWPORT *viewports) {
-	if (!(cmd && viewports && viewport_count))
+	if (!cmd || !viewports || !viewport_count)
 		return;
 	//D3D12_VIEWPORT *d3dViewports;
 	cmd->_d3d_cmd_list->RSSetViewports(
@@ -183,13 +210,15 @@ void spudgpu_cmd_set_scissor_rects(
     uint32_t first_scissor_rect,
     uint32_t scissor_rect_count,
     const SPUDGPU_SCISSOR_RECT *scissor_rects) {
-	if (!(cmd && scissor_rects && scissor_rect_count))
+	if (!cmd || !scissor_rects || !scissor_rect_count)
 		return;
 	// SPUDGPU_SCISSOR_RECT is {x, y, width, height} floats; D3D12_RECT is
 	// {left, top, right, bottom} LONGs -- not layout-compatible, needs a
 	// real per-rect conversion rather than a reinterpret_cast.
 	D3D12_RECT *d3dRects = (D3D12_RECT *)malloc(
 	    sizeof(D3D12_RECT) * scissor_rect_count);
+	if (!d3dRects)
+		return;
 	for (uint32_t i = 0; i < scissor_rect_count; ++i) {
 		d3dRects[i].left   = (LONG)scissor_rects[i].x;
 		d3dRects[i].top    = (LONG)scissor_rects[i].y;
@@ -205,10 +234,12 @@ void spudgpu_cmd_set_vertex_buffers(
     uint32_t start_slot,
     uint32_t view_count,
     spudgpu_buffer_view *buffer_views) {
-	if (!(cmd && view_count && buffer_views))
+	if (!cmd || !view_count || !buffer_views)
 		return;
 	D3D12_VERTEX_BUFFER_VIEW *d3dVbViews = (D3D12_VERTEX_BUFFER_VIEW *)malloc(
 	    sizeof(D3D12_VERTEX_BUFFER_VIEW) * view_count);
+	if (!d3dVbViews)
+		return;
 	for (uint32_t i = 0; i < view_count; ++i)
 		d3dVbViews[i] = buffer_views[i]->_d3d_view._vb;
 	cmd->_d3d_cmd_list->IASetVertexBuffers(
@@ -221,7 +252,7 @@ void spudgpu_cmd_set_vertex_buffers(
 void spudgpu_cmd_set_index_buffer(
     spudgpu_command_list cmd,
     spudgpu_buffer_view buffer_view) {
-	if (!(cmd && buffer_view))
+	if (!cmd || !buffer_view)
 		return;
 	cmd->_d3d_cmd_list->IASetIndexBuffer(&buffer_view->_d3d_view._ib);
 }
@@ -482,14 +513,18 @@ void spudgpu_cmd_pipeline_barrier(
 }
 void spudgpu_queue_submit(
     spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
-	if (!(queue && desc && desc->cmd_list_count > 0))
+	if (!queue || !desc || desc->cmd_list_count == 0)
+		return;
+	// Allocated before the waits are queued, so a failed allocation leaves
+	// the queue untouched.
+	ID3D12CommandList **d3dLists =
+	    (ID3D12CommandList **)malloc(sizeof(ID3D12CommandList *) * desc->cmd_list_count);
+	if (!d3dLists)
 		return;
 	for (uint32_t i = 0; i < desc->wait_semaphore_count; ++i) {
 		spudgpu_semaphore sem = desc->wait_semaphores[i];
 		queue->_d3d_cmd_queue->Wait(sem->_d3d_fence.Get(), sem->_signal_value);
 	}
-	ID3D12CommandList **d3dLists =
-	    (ID3D12CommandList **)malloc(sizeof(ID3D12CommandList *) * desc->cmd_list_count);
 	for (uint32_t i = 0; i < desc->cmd_list_count; ++i)
 		d3dLists[i] = desc->cmd_lists[i]->_d3d_cmd_list.Get();
 	queue->_d3d_cmd_queue->ExecuteCommandLists(
@@ -525,7 +560,8 @@ void spudgpu_begin_bundle_command_list(
     spudgpu_command_list bundle, const spudgpu_bundle_inheritance_desc *desc) {
 	// D3D12 bundles need no attachment info up front - they inherit whatever
 	// render targets are bound on the direct list that executes them.
-	(void)desc;
+	if (!bundle || !desc)
+		return;
 	spudgpu_begin_command_list(bundle);
 }
 

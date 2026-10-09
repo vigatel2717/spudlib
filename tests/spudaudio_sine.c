@@ -5,7 +5,7 @@
  * The first test of SpudAudio against hardware: it exercises enumeration,
  * device properties, timing caps, the probe/suggestion loop, stream
  * creation, the callback, status polling, stop/restart and teardown, in the
- * order ApAudio will use them. Everything this program picks (device,
+ * order a caller would use them. Everything this program picks (device,
  * format, period, thread mechanism) is its own choice as SpudAudio's
  * caller, printed so a failure says what was asked for.
  *

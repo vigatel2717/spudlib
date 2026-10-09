@@ -33,10 +33,17 @@ SPUDRESULT spudgpu_create_buffer(
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
 	if (!out_buffer)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (desc->size == 0)
+		return SPUDRESULT_GPU_ZERO_BUFFER_SIZE;
+	if (desc->usage == SPUDGPU_BUFFER_USAGE_NONE)
+		return SPUDRESULT_GPU_INVALID_BUFFER_USAGE;
 
 	spudgpu_buffer_d3d12 *pResult =
-	    (spudgpu_buffer_d3d12 *)calloc(1, sizeof(spudgpu_buffer_d3d12));
+	    (spudgpu_buffer_d3d12 *)malloc(sizeof(spudgpu_buffer_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult          = new (pResult) spudgpu_buffer_d3d12();
 	pResult->_device = device;
 	pResult->_desc   = *desc;
 
@@ -52,10 +59,19 @@ SPUDRESULT spudgpu_create_buffer(
 	        &d3dHeapProperties, d3dHeapFlags, &pResult->_d3d_resource_desc,
 	        d3dInitialState, nullptr,
 	        IID_PPV_ARGS(&pResult->_d3d_resource))) {
+		pResult->~spudgpu_buffer_d3d12();
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 	pResult->_d3d_gpu_address = pResult->_d3d_resource->GetGPUVirtualAddress();
+
+#if _DEBUG
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_buffer(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
+#endif
 
 	*out_buffer = pResult;
 	return SPUD_SUCCESS;
@@ -63,15 +79,19 @@ SPUDRESULT spudgpu_create_buffer(
 void spudgpu_destroy_buffer(spudgpu_buffer buffer) {
 	if (!buffer)
 		return;
-	buffer->_d3d_resource.Reset();
+#if _DEBUG
+	free((void *)buffer->_debug_name);
+#endif
+	buffer->~spudgpu_buffer_d3d12();
 	free(buffer);
 }
 SPUDRESULT
 spudgpu_get_buffer_desc(spudgpu_buffer buffer, spudgpu_buffer_desc *out_desc) {
 	if (!buffer)
 		return SPUDRESULT_GPU_INVALID_BUFFER;
-	if (out_desc)
-		*out_desc = buffer->_desc;
+	if (!out_desc)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	*out_desc = buffer->_desc;
 	return SPUD_SUCCESS;
 }
 
@@ -84,10 +104,16 @@ SPUDRESULT spudgpu_create_buffer_view(
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
 	if (!out_buffer_view)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (desc->size == 0)
+		return SPUDRESULT_GPU_ZERO_BUFFER_SIZE;
+	if (desc->offset_from_parent_buffer + desc->size > buffer->_desc.size)
+		return SPUDRESULT_GPU_BUFFER_OR_IMAGE_VIEW_RANGE_OUT_OF_SCOPE;
 
 	spudgpu_buffer_view_d3d12 *pResult = (spudgpu_buffer_view_d3d12 *)calloc(
 	    1, sizeof(spudgpu_buffer_view_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->_buffer = buffer;
 	pResult->_desc   = *desc;
 
@@ -134,16 +160,20 @@ SPUDRESULT spudgpu_create_buffer_view(
 	return SPUD_SUCCESS;
 }
 void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer) {
-	// Nothing to do in D3D12 here.
-	// if (!buffer) return;
+	if (!buffer)
+		return;
+#if _DEBUG
+	free((void *)buffer->_debug_name);
+#endif
 	free(buffer);
 }
 SPUDRESULT spudgpu_get_buffer_view_desc(
     spudgpu_buffer_view view, spudgpu_buffer_view_desc *out_desc) {
 	if (!view)
 		return SPUDRESULT_GPU_INVALID_BUFFER_VIEW;
-	if (out_desc)
-		*out_desc = view->_desc;
+	if (!out_desc)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	*out_desc = view->_desc;
 	return SPUD_SUCCESS;
 }
 
@@ -151,6 +181,12 @@ SPUDRESULT spudgpu_map_buffer(
     spudgpu_buffer buffer, uint64_t offset, uint64_t size, void **ppData) {
 	if (!buffer)
 		return SPUDRESULT_GPU_INVALID_BUFFER;
+	if (offset + size > buffer->_desc.size)
+		return SPUDRESULT_GPU_MAP_OUT_OF_RANGE;
+	if (!ppData)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!(buffer->_desc.memory_flags & SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE))
+		return SPUDRESULT_GPU_INVALID_MEMORY_FLAGS;
 	// 0 means "map the entire buffer" per spudgpu.h's documented contract --
 	// matches the Vulkan backend's mapSize fallback (spudgpuvulkanbuffer.c).
 	uint64_t mapSize       = (size == 0) ? buffer->_desc.size : size;
@@ -174,8 +210,8 @@ void spudgpu_unmap_buffer(spudgpu_buffer buffer) {
 void spudgpu_flush_buffer(spudgpu_buffer buffer, uint64_t offset, uint64_t size) {
 }
 SPUDRESULT spudgpu_invalidate_buffer(spudgpu_buffer buffer, uint64_t offset, uint64_t size) {
-	// SPUD_SUCCESS unconditionally, including for a null buffer — matches the
-	// Vulkan backend's null-buffer behavior for cross-backend parity.
+	if (!buffer)
+		return SPUDRESULT_GPU_INVALID_BUFFER;
 	return SPUD_SUCCESS;
 }
 }

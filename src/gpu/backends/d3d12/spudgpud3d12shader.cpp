@@ -217,10 +217,10 @@ static HRESULT spudgpu_d3d12_build_root_signature(
 		// printing it, a failure here is silent (no debug-layer message at
 		// all), unlike every other failure path in this file.
 		if (error_blob)
-			printf("apricot: D3D12SerializeRootSignature failed: %s\n",
+			printf("spudgpu: D3D12SerializeRootSignature failed: %s\n",
 			    (const char *)error_blob->GetBufferPointer());
 		else
-			printf("apricot: D3D12SerializeRootSignature failed: hr=0x%08lx\n", (unsigned long)hr);
+			printf("spudgpu: D3D12SerializeRootSignature failed: hr=0x%08lx\n", (unsigned long)hr);
 		return hr;
 	}
 
@@ -269,7 +269,7 @@ struct spudgpu_d3d12_mesh_pipeline_stream {
 	CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimitiveTopologyType;
 };
 
-// Takes ownership of pResult on both success and failure (deletes it on
+// Takes ownership of pResult on both success and failure (releases it on
 // failure, hands it to *out_pipeline on success) - matches every other
 // pipeline-creation path in this file. Called only after
 // spudgpu_create_shader_pipeline has already built pResult's root
@@ -371,7 +371,8 @@ static SPUDRESULT spudgpu_d3d12___create_mesh_shader_pipeline(
 	HRESULT hr = device->_d3d_device->CreatePipelineState(
 	    &streamDesc, IID_PPV_ARGS(&pResult->_d3d_pipeline_state));
 	if (FAILED(hr)) {
-		delete pResult;
+		pResult->~spudgpu_shader_pipeline_d3d12();
+		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 
@@ -382,7 +383,11 @@ static SPUDRESULT spudgpu_d3d12___create_mesh_shader_pipeline(
 	// its zero-initialized value.
 
 #if _DEBUG
-	pResult->_debug_name = desc->debug_name;
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_shader_pipeline(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
 #endif
 
 	*out_pipeline = pResult;
@@ -401,6 +406,10 @@ SPUDRESULT spudgpu_create_shader_module(
 		return SPUDRESULT_NULL_DESC;
 	if (!out_module)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!desc->spirv_code || desc->spirv_size == 0)
+		return SPUDRESULT_GPU_NULL_SPIRV;
+	if (desc->spirv_size % 4 != 0)
+		return SPUDRESULT_GPU_INVALID_SPIRV_ALIGNMENT;
 
 	auto *pDev = (spudgpu_device_d3d12 *)device;
 
@@ -448,14 +457,17 @@ SPUDRESULT spudgpu_create_shader_module(
 		return SPUDRESULT_GPU_INVALID_SHADER_STAGE;
 
 	Microsoft::WRL::ComPtr<IDxcLibrary> dxc_lib;
-	DxcCreateInstance(CLSID_DxcLibrary, IID_PPV_ARGS(&dxc_lib));
+	if (FAILED(DxcCreateInstance(CLSID_DxcLibrary, IID_PPV_ARGS(&dxc_lib))))
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
 
 	Microsoft::WRL::ComPtr<IDxcCompiler> dxc_compiler;
-	DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&dxc_compiler));
+	if (FAILED(DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&dxc_compiler))))
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
 
 	Microsoft::WRL::ComPtr<IDxcBlobEncoding> src_blob;
-	dxc_lib->CreateBlobWithEncodingFromPinned(
-	    hlsl_src.c_str(), (UINT32)hlsl_src.size(), CP_UTF8, &src_blob);
+	if (FAILED(dxc_lib->CreateBlobWithEncodingFromPinned(
+	        hlsl_src.c_str(), (UINT32)hlsl_src.size(), CP_UTF8, &src_blob)))
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
 
 	LPCWSTR args[] = {L"-Zpr"};
 
@@ -471,29 +483,44 @@ SPUDRESULT spudgpu_create_shader_module(
 		// actual reason through GetErrorBuffer, not the D3D12 debug layer,
 		// so without printing it a compile failure here is silent.
 		Microsoft::WRL::ComPtr<IDxcBlobEncoding> errors;
-		if (SUCCEEDED(result->GetErrorBuffer(&errors)) && errors && errors->GetBufferSize())
-			printf("apricot: DXC compile failed (%ls): %s\n", profile,
+		// result is null when Compile itself failed, as opposed to the
+		// compile it ran reporting errors.
+		if (result && SUCCEEDED(result->GetErrorBuffer(&errors)) && errors && errors->GetBufferSize())
+			printf("spudgpu: DXC compile failed (%ls): %s\n", profile,
 			    (const char *)errors->GetBufferPointer());
 		else
-			printf("apricot: DXC compile failed (%ls): hr=0x%08lx\n", profile, (unsigned long)hr);
+			printf("spudgpu: DXC compile failed (%ls): hr=0x%08lx\n", profile, (unsigned long)hr);
 		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
 	}
 
+	// The blob is fetched and converted before the module is allocated, so
+	// a module that exists always has a _d3d_blob.
 	Microsoft::WRL::ComPtr<IDxcBlob> dxil_blob;
-	result->GetResult(&dxil_blob);
+	if (FAILED(result->GetResult(&dxil_blob)))
+		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
+	if (!dxil_blob)
+		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
+	Microsoft::WRL::ComPtr<ID3DBlob> d3d_blob;
+	if (FAILED(dxil_blob.As(&d3d_blob)))
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
 
 	spudgpu_shader_module_d3d12 *pResult =
-	    (spudgpu_shader_module_d3d12 *)calloc(
-	        1, sizeof(spudgpu_shader_module_d3d12));
+	    (spudgpu_shader_module_d3d12 *)malloc(
+	        sizeof(spudgpu_shader_module_d3d12));
 	if (!pResult)
 		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult = new (pResult) spudgpu_shader_module_d3d12();
 
 	pResult->_desc   = *desc;
 	pResult->_device = pDev;
-	dxil_blob.As(&pResult->_d3d_blob);
+	pResult->_d3d_blob = d3d_blob;
 
 #if _DEBUG
-	pResult->_debug_name = desc->debug_name;
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_shader_module(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
 #endif
 
 	*out_module = (spudgpu_shader_module)pResult;
@@ -503,7 +530,10 @@ SPUDRESULT spudgpu_create_shader_module(
 void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module) {
 	if (!shader_module)
 		return;
-	shader_module->_d3d_blob.Reset();
+#if _DEBUG
+	free((void *)shader_module->_debug_name);
+#endif
+	shader_module->~spudgpu_shader_module_d3d12();
 	free(shader_module);
 }
 
@@ -518,11 +548,19 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	if (!out_pipeline)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
+	// A fragment shader plus either a vertex module or a mesh module is
+	// required; the two are mutually exclusive.
+	if ((!desc->vertex_module && !desc->mesh_module) || !desc->fragment_module)
+		return SPUDRESULT_GPU_VERTEX_AND_FRAGMENT_SHADER_REQUIRED;
 	if (desc->vertex_module && desc->mesh_module)
 		return SPUDRESULT_GPU_INVALID_SHADER_STAGE;
 
 	spudgpu_shader_pipeline_d3d12 *pResult =
-	    new spudgpu_shader_pipeline_d3d12();
+	    (spudgpu_shader_pipeline_d3d12 *)malloc(
+	        sizeof(spudgpu_shader_pipeline_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult                   = new (pResult) spudgpu_shader_pipeline_d3d12();
 	pResult->_device          = device;
 	pResult->_desc            = *desc;
 	pResult->_is_mesh_pipeline = desc->mesh_module != nullptr;
@@ -539,7 +577,8 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	        : D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
 	    &pResult->_d3d_root_signature);
 	if (FAILED(hr)) {
-		delete pResult;
+		pResult->~spudgpu_shader_pipeline_d3d12();
+		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 
@@ -695,14 +734,19 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	hr = device->_d3d_device->CreatePipelineState(
 	    &streamDesc, IID_PPV_ARGS(&pResult->_d3d_pipeline_state));
 	if (FAILED(hr)) {
-		delete pResult;
+		pResult->~spudgpu_shader_pipeline_d3d12();
+		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 
 	pResult->_d3d_primitive_topology = topology;
 
 #if _DEBUG
-	pResult->_debug_name = desc->debug_name;
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_shader_pipeline(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
 #endif
 
 	*out_pipeline = pResult;
@@ -712,9 +756,11 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 void spudgpu_destroy_shader_pipeline(spudgpu_shader_pipeline pipeline) {
 	if (!pipeline)
 		return;
-	pipeline->_d3d_pipeline_state.Reset();
-	pipeline->_d3d_root_signature.Reset();
-	delete pipeline;
+#if _DEBUG
+	free((void *)pipeline->_debug_name);
+#endif
+	pipeline->~spudgpu_shader_pipeline_d3d12();
+	free(pipeline);
 }
 
 SPUDRESULT spudgpu_get_shader_pipeline_desc(
@@ -780,9 +826,15 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 		return SPUDRESULT_NULL_DESC;
 	if (!out_pipeline)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!desc->compute_module)
+		return SPUDRESULT_GPU_INVALID_COMPUTE_MODULE;
 
 	spudgpu_compute_pipeline_d3d12 *pResult =
-	    new spudgpu_compute_pipeline_d3d12();
+	    (spudgpu_compute_pipeline_d3d12 *)malloc(
+	        sizeof(spudgpu_compute_pipeline_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult          = new (pResult) spudgpu_compute_pipeline_d3d12();
 	pResult->_device = device;
 	pResult->_desc   = *desc;
 
@@ -792,7 +844,8 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 	    desc->push_constant_range_count, desc->push_constant_ranges,
 	    D3D12_ROOT_SIGNATURE_FLAG_NONE, &pResult->_d3d_root_signature);
 	if (FAILED(hr)) {
-		delete pResult;
+		pResult->~spudgpu_compute_pipeline_d3d12();
+		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 
@@ -809,12 +862,17 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 	hr = device->_d3d_device->CreateComputePipelineState(
 	    &psoDesc, IID_PPV_ARGS(&pResult->_d3d_pipeline_state));
 	if (FAILED(hr)) {
-		delete pResult;
+		pResult->~spudgpu_compute_pipeline_d3d12();
+		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 
 #if _DEBUG
-	pResult->_debug_name = desc->debug_name;
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_compute_pipeline(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
 #endif
 
 	*out_pipeline = pResult;
@@ -824,9 +882,11 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 void spudgpu_destroy_compute_pipeline(spudgpu_compute_pipeline pipeline) {
 	if (!pipeline)
 		return;
-	pipeline->_d3d_pipeline_state.Reset();
-	pipeline->_d3d_root_signature.Reset();
-	delete pipeline;
+#if _DEBUG
+	free((void *)pipeline->_debug_name);
+#endif
+	pipeline->~spudgpu_compute_pipeline_d3d12();
+	free(pipeline);
 }
 
 SPUDRESULT spudgpu_get_compute_pipeline_desc(

@@ -54,6 +54,22 @@ static D3D12_FILTER spudgpu_d3d12_filter(
 	return D3D12_FILTER_MIN_MAG_MIP_LINEAR;
 }
 
+// Frees the pool's sets from the head of its list down to, but not
+// including, `until`. Sets are pushed at the head, so passing the head a
+// call started from frees exactly the sets that call allocated; nullptr
+// frees them all.
+static void spudgpu_d3d12___free_descriptor_sets(
+    spudgpu_descriptor_pool_d3d12 *pool, spudgpu_descriptor_set_d3d12 *until) {
+	while (pool->_sets != until) {
+		spudgpu_descriptor_set_d3d12 *set = pool->_sets;
+		pool->_sets                       = set->_next;
+#if _DEBUG
+		free((void *)set->_debug_name);
+#endif
+		free(set);
+	}
+}
+
 extern "C" {
 
 SPUDRESULT spudgpu_create_sampler(
@@ -65,9 +81,12 @@ SPUDRESULT spudgpu_create_sampler(
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
 	if (!out_sampler)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
-	spudgpu_sampler_d3d12 *pResult = new spudgpu_sampler_d3d12();
+	spudgpu_sampler_d3d12 *pResult =
+	    (spudgpu_sampler_d3d12 *)calloc(1, sizeof(spudgpu_sampler_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->_d3d_desc.Filter = spudgpu_d3d12_filter(
 	    desc->min_filter, desc->mag_filter, desc->mipmap_filter, desc->max_anisotropy);
 	pResult->_d3d_desc.AddressU       = spudgpu_d3d12_address_mode(desc->address_mode_u);
@@ -79,12 +98,24 @@ SPUDRESULT spudgpu_create_sampler(
 	pResult->_d3d_desc.MinLOD         = desc->min_lod;
 	pResult->_d3d_desc.MaxLOD         = desc->max_lod;
 
+#if _DEBUG
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_sampler(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+#endif
+
 	*out_sampler = pResult;
 	return SPUD_SUCCESS;
 }
 
 void spudgpu_destroy_sampler(spudgpu_sampler sampler) {
-	delete sampler;
+	if (!sampler)
+		return;
+#if _DEBUG
+	free((void *)sampler->_debug_name);
+#endif
+	free(sampler);
 }
 
 SPUDRESULT spudgpu_create_descriptor_set_layout(
@@ -95,14 +126,16 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
-	if (desc->binding_count > SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET)
-		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS;
 	if (!out_layout)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (desc->binding_count > SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET)
+		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS;
 
 	spudgpu_descriptor_set_layout_d3d12 *pResult =
 	    (spudgpu_descriptor_set_layout_d3d12 *)calloc(
 	        1, sizeof(spudgpu_descriptor_set_layout_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->_device = device;
 	pResult->_desc   = *desc;
 
@@ -130,7 +163,11 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 	pResult->_sampler_count     = sampler_cursor;
 
 #if _DEBUG
-	pResult->_debug_name = desc->debug_name;
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_descriptor_set_layout(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
 #endif
 
 	*out_layout = pResult;
@@ -138,6 +175,11 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 }
 
 void spudgpu_destroy_descriptor_set_layout(spudgpu_descriptor_set_layout layout) {
+	if (!layout)
+		return;
+#if _DEBUG
+	free((void *)layout->_debug_name);
+#endif
 	free(layout);
 }
 
@@ -149,10 +191,10 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
-	if (desc->pool_size_count > SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES)
-		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_POOLS;
 	if (!out_pool)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (desc->pool_size_count > SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES)
+		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_POOLS;
 
 	// Sum capacities per heap type.
 	uint32_t csvCapacity     = 0;
@@ -170,7 +212,11 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 	}
 
 	spudgpu_descriptor_pool_d3d12 *pResult =
-	    new spudgpu_descriptor_pool_d3d12();
+	    (spudgpu_descriptor_pool_d3d12 *)malloc(
+	        sizeof(spudgpu_descriptor_pool_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult                        = new (pResult) spudgpu_descriptor_pool_d3d12();
 	pResult->_device               = device;
 	pResult->_desc                 = *desc;
 	pResult->_cbv_srv_uav_capacity = csvCapacity;
@@ -188,7 +234,8 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 		heapDesc.NodeMask       = 0;
 		if (FAILED(d3dDevice->CreateDescriptorHeap(
 		        &heapDesc, IID_PPV_ARGS(&pResult->_cbv_srv_uav_heap)))) {
-			delete pResult;
+			pResult->~spudgpu_descriptor_pool_d3d12();
+			free(pResult);
 			return SPUDRESULT_API_SPECIFIC_FAILURE;
 		}
 		pResult->_cbv_srv_uav_increment =
@@ -204,7 +251,8 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 		heapDesc.NodeMask       = 0;
 		if (FAILED(d3dDevice->CreateDescriptorHeap(
 		        &heapDesc, IID_PPV_ARGS(&pResult->_sampler_heap)))) {
-			delete pResult;
+			pResult->~spudgpu_descriptor_pool_d3d12();
+			free(pResult);
 			return SPUDRESULT_API_SPECIFIC_FAILURE;
 		}
 		pResult->_sampler_increment =
@@ -213,7 +261,11 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 	}
 
 #if _DEBUG
-	pResult->_debug_name = desc->debug_name;
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_descriptor_pool(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
 #endif
 
 	*out_pool = pResult;
@@ -223,7 +275,9 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 void spudgpu_reset_descriptor_pool(spudgpu_descriptor_pool pool) {
 	if (!pool)
 		return;
-	// Reset allocation cursors; existing descriptor set handles become invalid.
+	// Release every set and reset the allocation cursors; existing
+	// descriptor set handles become invalid.
+	spudgpu_d3d12___free_descriptor_sets(pool, nullptr);
 	pool->_cbv_srv_uav_cursor = 0;
 	pool->_sampler_cursor     = 0;
 }
@@ -232,9 +286,12 @@ void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool) {
 	if (!pool)
 		return;
 	spudgpu_descriptor_pool_d3d12 *p = (spudgpu_descriptor_pool_d3d12 *)pool;
-	p->_cbv_srv_uav_heap.Reset();
-	p->_sampler_heap.Reset();
-	delete p;
+	spudgpu_d3d12___free_descriptor_sets(p, nullptr);
+#if _DEBUG
+	free((void *)p->_debug_name);
+#endif
+	p->~spudgpu_descriptor_pool_d3d12();
+	free(p);
 }
 
 SPUDRESULT spudgpu_create_descriptor_sets(
@@ -245,6 +302,8 @@ SPUDRESULT spudgpu_create_descriptor_sets(
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
+	if (!out_sets)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (!desc->pool)
 		return SPUDRESULT_GPU_INVALID_DESCRIPTOR_POOL;
 	if (!desc->set_count)
@@ -255,33 +314,62 @@ SPUDRESULT spudgpu_create_descriptor_sets(
 	spudgpu_descriptor_pool_d3d12 *pool =
 	    (spudgpu_descriptor_pool_d3d12 *)desc->pool;
 
+	// The pool as this call found it. A failure part-way through puts it
+	// back: the sets this call allocated are freed and their heap ranges
+	// returned, so the call allocates every set or none.
+	spudgpu_descriptor_set_d3d12 *firstSet = pool->_sets;
+	uint32_t firstCsvCursor                = pool->_cbv_srv_uav_cursor;
+	uint32_t firstSamplerCursor            = pool->_sampler_cursor;
+	SPUDRESULT sr                          = SPUD_SUCCESS;
+
 	for (uint32_t i = 0; i < desc->set_count; ++i) {
-		if (!desc->set_layouts[i])
-			return SPUDRESULT_NULL_DESC;
+		if (!desc->set_layouts[i]) {
+			sr = SPUDRESULT_NULL_DESC;
+			break;
+		}
 
 		spudgpu_descriptor_set_layout_d3d12 *layout =
 		    (spudgpu_descriptor_set_layout_d3d12 *)desc->set_layouts[i];
 
 		// Check pool has capacity.
 		if (pool->_cbv_srv_uav_cursor + layout->_cbv_srv_uav_count >
-		    pool->_cbv_srv_uav_capacity)
-			return SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
+		    pool->_cbv_srv_uav_capacity) {
+			sr = SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
+			break;
+		}
 		if (pool->_sampler_cursor + layout->_sampler_count >
-		    pool->_sampler_capacity)
-			return SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
+		    pool->_sampler_capacity) {
+			sr = SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
+			break;
+		}
 
 		spudgpu_descriptor_set_d3d12 *pSet =
 		    (spudgpu_descriptor_set_d3d12 *)calloc(
 		        1, sizeof(spudgpu_descriptor_set_d3d12));
+		if (!pSet) {
+			sr = SPUDRESULT_OUT_OF_MEMORY;
+			break;
+		}
 		pSet->_pool             = pool;
 		pSet->_layout           = layout;
 		pSet->_cbv_srv_uav_base = pool->_cbv_srv_uav_cursor;
 		pSet->_sampler_base     = pool->_sampler_cursor;
+		pSet->_next             = pool->_sets;
+		pool->_sets             = pSet;
 
 		pool->_cbv_srv_uav_cursor += layout->_cbv_srv_uav_count;
 		pool->_sampler_cursor     += layout->_sampler_count;
 
 		out_sets[i] = (spudgpu_descriptor_set)pSet;
+	}
+
+	if (sr != SPUD_SUCCESS) {
+		spudgpu_d3d12___free_descriptor_sets(pool, firstSet);
+		pool->_cbv_srv_uav_cursor = firstCsvCursor;
+		pool->_sampler_cursor     = firstSamplerCursor;
+		for (uint32_t i = 0; i < desc->set_count; ++i)
+			out_sets[i] = nullptr;
+		return sr;
 	}
 
 	return SPUD_SUCCESS;
@@ -406,7 +494,7 @@ void spudgpu_cmd_bind_descriptor_sets(
     uint32_t first_set,
     const spudgpu_descriptor_set *sets,
     uint32_t set_count) {
-	if (!cmd || !sets || !set_count)
+	if (!cmd || !pipeline || !sets || !set_count)
 		return;
 	if (set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
 		return;
@@ -457,7 +545,7 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
     uint32_t first_set,
     const spudgpu_descriptor_set *sets,
     uint32_t set_count) {
-	if (!cmd || !sets || !set_count)
+	if (!cmd || !pipeline || !sets || !set_count)
 		return;
 	if (set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
 		return;
@@ -530,7 +618,7 @@ static SPUDRESULT spudgpud3d12___ensure_bindless_state(spudgpu_device_d3d12 *dev
 	auto *layout = (spudgpu_descriptor_set_layout_d3d12 *)
 	    calloc(1, sizeof(spudgpu_descriptor_set_layout_d3d12));
 	if (!layout)
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
+		return SPUDRESULT_OUT_OF_MEMORY;
 	layout->_device              = device;
 	layout->_desc.binding_count  = 3;
 
@@ -560,7 +648,15 @@ static SPUDRESULT spudgpud3d12___ensure_bindless_state(spudgpu_device_d3d12 *dev
 	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 	    SPUDGPU_BINDLESS_MAX_SLOTS_PER_CLASS, allStages};
 
-	auto *state = new spudgpu_bindless_state_d3d12();
+	// Both are released with the device (spudgpud3d12context.cpp).
+	spudgpu_bindless_state_d3d12 *state =
+	    (spudgpu_bindless_state_d3d12 *)malloc(
+	        sizeof(spudgpu_bindless_state_d3d12));
+	if (!state) {
+		free(layout);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	state       = new (state) spudgpu_bindless_state_d3d12();
 	state->heap = heap;
 	state->increment = d3dDevice->GetDescriptorHandleIncrementSize(
 	    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -591,7 +687,7 @@ SPUDRESULT spudgpu_get_bindless_capabilities(
 	if (!device)
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!out_caps)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	*out_caps = {};
 	// Lazily attempted on first call, unlike Vulkan's device-creation-time
@@ -623,7 +719,7 @@ SPUDRESULT spudgpu_bindless_register_sampled_image(
 	if (!view)
 		return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
 	if (!out_index)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
 		return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
 
@@ -661,7 +757,7 @@ SPUDRESULT spudgpu_bindless_register_storage_image(
 	if (!view)
 		return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
 	if (!out_index)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
 		return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
 
@@ -700,7 +796,7 @@ SPUDRESULT spudgpu_bindless_register_storage_buffer(
 	if (!view)
 		return SPUDRESULT_GPU_INVALID_BUFFER_VIEW;
 	if (!out_index)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (spudgpud3d12___ensure_bindless_state(device) != SPUD_SUCCESS)
 		return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
 

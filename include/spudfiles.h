@@ -136,6 +136,11 @@ SPUDRESULT sfs_file_flush(sfs_file file, SFS_FLUSH_LEVEL level);
 SPUDRESULT sfs_file_replace(
     const char *source_path, const char *target_path, SFS_FLUSH_LEVEL level);
 
+// Removes the file at [file_path]: unlink on Linux and Apple, DeleteFileW on
+// Windows. SPUDRESULT_SFS_INVALID_FILE if there's no file there (or it's a
+// directory); on Windows, SPUDRESULT_SFS_IN_USE while it's open or mapped.
+SPUDRESULT sfs_file_remove(const char *file_path);
+
 // Maps [size] bytes of [file] from [offset] into memory, read-only. Pages
 // are read from disk as they're first touched and can be dropped again
 // under memory pressure. Any offset works (the alignment the platform

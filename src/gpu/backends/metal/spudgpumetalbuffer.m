@@ -81,6 +81,14 @@ SPUDRESULT spudgpu_create_buffer(
 	// equivalent is -[MTLBuffer gpuAddress], valid for any storage mode.
 	buffer_metal->_desc.gpu_address_location = buffer_metal->_buffer_mtl.gpuAddress;
 
+#if _DEBUG
+	if (spud_debug_name_set(buffer_metal, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_buffer((spudgpu_buffer)buffer_metal);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	buffer_metal->_desc.debug_name = buffer_metal->_debug_name;
+#endif
+
 	*out_buffer = (spudgpu_buffer)buffer_metal;
 
 	return sr;
@@ -95,6 +103,9 @@ void spudgpu_destroy_buffer(spudgpu_buffer buffer) {
 		if (buffer_metal->_buffer_mtl) {
 			[buffer_metal->_buffer_mtl release];
 		}
+#if _DEBUG
+		free((void *)buffer_metal->_debug_name);
+#endif
 		free(buffer_metal);
 	}
 }
@@ -145,7 +156,14 @@ failedattempt:
 	return sr;
 }
 
-void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer_view) { free(buffer_view); }
+void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer_view) {
+	if (!buffer_view)
+		return;
+#if _DEBUG
+	free((void *)buffer_view->_debug_name);
+#endif
+	free(buffer_view);
+}
 SPUDRESULT spudgpu_get_buffer_view_desc(
     spudgpu_buffer_view buffer_view,
     spudgpu_buffer_view_desc *out_desc) {
@@ -164,10 +182,12 @@ SPUDRESULT spudgpu_map_buffer(
     void **ppData) {
 	if (!buffer)
 		return SPUDRESULT_GPU_INVALID_BUFFER;
-	if (!ppData)
-		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	spudgpu_buffer_metal *buffer_metal = (spudgpu_buffer_metal *)buffer;
+	if (offset + size > buffer_metal->_desc.size)
+		return SPUDRESULT_GPU_MAP_OUT_OF_RANGE;
+	if (!ppData)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	// Only a Shared-storage buffer (SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE) has a
 	// CPU-visible pointer at all - see spudgpumetal___internal_buffer_resource_options.

@@ -5,7 +5,9 @@
 #include "spudgpu.h"
 #include "spudgpu_d3d12_natives.h"
 #include <array>
+#include <cstdlib>
 #include <dxgi1_6.h>
+#include <new>
 #include <vector>
 #include <wrl/client.h>
 
@@ -174,8 +176,9 @@ typedef struct spudgpu_device_t {
 
 	// Lazily allocated by the first spudgpu_get_bindless_capabilities /
 	// spudgpu_bindless_register_* / spudgpu_get_bindless_descriptor_set_layout
-	// call. nullptr until then; this device struct is calloc'd (see
-	// spudgpud3d12context.cpp), so it starts nullptr for free.
+	// call. nullptr until then; this device struct is value-initialised
+	// when it is constructed in place (see spudgpud3d12context.cpp), so it
+	// starts nullptr for free. Released with the device.
 	spudgpu_bindless_state_d3d12 *_bindless;
 
 	// Lazily created by the first spudgpu_cmd_draw_indirect /
@@ -183,9 +186,8 @@ typedef struct spudgpu_device_t {
 	// (nullptr) command signatures describing only a single DRAW/DRAW_INDEXED
 	// argument — the layout is fixed by spudgpu_draw_indirect_args /
 	// spudgpu_draw_indexed_indirect_args, never per-caller, so one signature
-	// per device covers every indirect draw ever issued against it. This
-	// device struct is calloc'd, so both ComPtrs start empty (nullptr) for
-	// free, same as _bindless above.
+	// per device covers every indirect draw ever issued against it. Both
+	// ComPtrs start empty (nullptr) from the device's constructor.
 	Microsoft::WRL::ComPtr<ID3D12CommandSignature> _draw_indirect_command_signature;
 	Microsoft::WRL::ComPtr<ID3D12CommandSignature> _draw_indexed_indirect_command_signature;
 } spudgpu_device_d3d12;
@@ -387,6 +389,10 @@ typedef struct spudgpu_descriptor_pool_t {
 	uint32_t _sampler_cursor;
 	uint32_t _cbv_srv_uav_increment;
 	uint32_t _sampler_increment;
+	// Head of the list of every set allocated from this pool, linked through
+	// spudgpu_descriptor_set_d3d12::_next. There is no per-set destroy call,
+	// so the pool is what releases them, on reset and on destroy.
+	struct spudgpu_descriptor_set_t *_sets;
 } spudgpu_descriptor_pool_d3d12;
 
 typedef struct spudgpu_descriptor_set_t {
@@ -397,6 +403,7 @@ typedef struct spudgpu_descriptor_set_t {
 	spudgpu_descriptor_set_layout_d3d12 *_layout;
 	uint32_t _cbv_srv_uav_base; // base slot index in pool's CBV/SRV/UAV heap
 	uint32_t _sampler_base;     // base slot index in pool's sampler heap
+	struct spudgpu_descriptor_set_t *_next; // next set in _pool's _sets list
 } spudgpu_descriptor_set_d3d12;
 
 typedef struct spudgpu_surface_t {

@@ -15,7 +15,7 @@ SPUDRESULT spudgpu_create_fence(
 	bool signaled_on_creation,
 	spudgpu_fence *out_fence) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
-    if (!out_fence) return SPUD_SUCCESS;
+    if (!out_fence) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
     
     VkFenceCreateInfo info = {0};
     info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -38,6 +38,9 @@ SPUDRESULT spudgpu_create_fence(
 void spudgpu_destroy_fence(spudgpu_fence fence) {
     if (!fence) return;
     vkDestroyFence(fence->_device_vk, fence->_fence_vk, NULL);
+#if _DEBUG
+    free((void *)fence->_debug_name);
+#endif
     free(fence);
 }
 
@@ -48,7 +51,8 @@ SPUDRESULT spudgpu_wait_for_fences(
     bool wait_all,
     uint64_t timeout_ns) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
-    if (!fences || fence_count == 0) return SPUDRESULT_GPU_INVALID_FENCE;
+    if (!fences) return SPUDRESULT_GPU_INVALID_FENCE;
+    if (fence_count == 0) return SPUDRESULT_ZERO_SIZE;
 
     VkFence *vk_fences = malloc(fence_count * sizeof(VkFence));
     if (!vk_fences) return SPUDRESULT_GENERAL_FAILURE;
@@ -68,7 +72,7 @@ SPUDRESULT spudgpu_wait_for_fences(
 }
 
 void spudgpu_reset_fences(spudgpu_device device, spudgpu_fence *fences, uint32_t fence_count) {
-    if (!device || (!fences || fence_count == 0)) return;
+    if (!device || !fences || fence_count == 0) return;
 
     VkFence *vk_fences = malloc(fence_count * sizeof(VkFence));
     if (!vk_fences) return;
@@ -88,7 +92,7 @@ SPUDRESULT spudgpu_create_semaphore(
     spudgpu_device device,
     spudgpu_semaphore *out_semaphore) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
-    if (!out_semaphore) return SPUD_SUCCESS;
+    if (!out_semaphore) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     VkSemaphoreCreateInfo info = {0};
     info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -110,6 +114,9 @@ SPUDRESULT spudgpu_create_semaphore(
 void spudgpu_destroy_semaphore(spudgpu_semaphore semaphore) {
     if (!semaphore) return;
     vkDestroySemaphore(semaphore->_device_vk, semaphore->_semaphore_vk, NULL);
+#if _DEBUG
+    free((void *)semaphore->_debug_name);
+#endif
     free(semaphore);
 }
 

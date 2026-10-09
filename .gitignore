@@ -68,3 +68,6 @@ bindings/swift/.swiftpm/
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# macOS Finder metadata
+.DS_Store

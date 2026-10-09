@@ -149,6 +149,8 @@ void spudgpu_cmd_image_barrier(
     spudgpu_image image,
     SPUDGPU_IMAGE_LAYOUT old_layout,
     SPUDGPU_IMAGE_LAYOUT new_layout) {
+	if (!cmd || !image)
+		return;
 
 	VkImageLayout vk_old = spud_layout_to_vk(old_layout);
 	VkImageLayout vk_new = spud_layout_to_vk(new_layout);
@@ -173,6 +175,8 @@ void spudgpu_cmd_image_barrier_view(
     spudgpu_image_view image_view,
     SPUDGPU_IMAGE_LAYOUT old_layout,
     SPUDGPU_IMAGE_LAYOUT new_layout) {
+	if (!cmd || !image_view)
+		return;
 	spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *)cmd;
 	spudgpu_image_view_vulkan *view = (spudgpu_image_view_vulkan *)image_view;
 

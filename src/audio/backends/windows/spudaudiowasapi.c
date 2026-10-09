@@ -595,6 +595,9 @@ SPUDRESULT spudaudio_destroy_instance(spudaudio_instance instance) {
 	while (dev) {
 		struct spudaudio_device_t *next = dev->next;
 		IMMDevice_Release(dev->mm_device);
+#if _DEBUG
+		free((void *)dev->debug_name);
+#endif
 		free(dev);
 		dev = next;
 	}
@@ -602,6 +605,9 @@ SPUDRESULT spudaudio_destroy_instance(spudaudio_instance instance) {
 	free(instance->enumerated[1]);
 	IMMDeviceEnumerator_Release(instance->enumerator);
 	CoDecrementMTAUsage(instance->mta_cookie);
+#if _DEBUG
+	free((void *)instance->debug_name);
+#endif
 	free(instance);
 	return SPUD_SUCCESS;
 }
@@ -894,6 +900,9 @@ static void wasapi_free_stream(struct spudaudio_stream_t *s) {
 	if (s->startup_event)
 		CloseHandle(s->startup_event);
 	free(s->silence);
+#if _DEBUG
+	free((void *)s->debug_name);
+#endif
 	free(s);
 }
 
@@ -1273,9 +1282,10 @@ SPUDRESULT spudaudio_stream_get_latency_frames(
 // The shared-mode rate is a user setting (Sound control panel) with no
 // API; exclusive streams carry their own rate in their format.
 SPUDRESULT spudaudio_set_device_sample_rate(spudaudio_device device, uint32_t sample_rate) {
-	(void)sample_rate;
 	if (!device)
 		return SPUDRESULT_SAUD_INVALID_DEVICE;
+	if (sample_rate == 0)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
 	return SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE;
 }
 

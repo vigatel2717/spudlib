@@ -99,11 +99,11 @@ SPUDRESULT spudgpu_create_image(
     spudgpu_image *out_image) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!desc) return SPUDRESULT_NULL_DESC;
-    if (!out_image) return SPUD_SUCCESS;
+    if (!out_image) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     // Validate desc
     {
-        if (!(desc->width && desc->height && desc->depth && desc->format && desc->array_layers && desc->mip_levels))
+        if (!desc->width || !desc->height || !desc->depth || !desc->array_layers || !desc->mip_levels)
             return SPUDRESULT_DESC_INVALID_PARAMETERS;
         if (desc->usage == 0) return SPUDRESULT_GPU_INVALID_IMAGE_USAGE;
 
@@ -123,6 +123,7 @@ SPUDRESULT spudgpu_create_image(
             if (desc->memory_flags & SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE)
                 return SPUDRESULT_GPU_INVALID_MEMORY_FLAGS;
         }
+        if (desc->format == SPUDGPU_FORMAT_UNKNOWN) return SPUDRESULT_GPU_INVALID_FORMAT;
     }
 
     // Create the result struct
@@ -205,6 +206,14 @@ SPUDRESULT spudgpu_create_image(
     // If all successful, return a memcpy'ed heap pointer
     spudgpu_image_vulkan *pResult = malloc(sizeof(spudgpu_image_vulkan));
     memcpy(pResult, &result, sizeof(spudgpu_image_vulkan));
+#if _DEBUG
+    if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+        spudgpu_destroy_image(pResult);
+        return SPUDRESULT_OUT_OF_MEMORY;
+    }
+    pResult->_desc.debug_name = pResult->_debug_name;
+#endif
+
     *out_image = pResult;
     return SPUD_SUCCESS;
 }
@@ -213,7 +222,8 @@ SPUDRESULT spudgpu_get_image_desc(
     spudgpu_image image,
     spudgpu_image_desc *out_desc) {
     if (!image) return SPUDRESULT_GPU_INVALID_IMAGE;
-    if (out_desc) *out_desc = image->_desc;
+    if (!out_desc) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+    *out_desc = image->_desc;
     return SPUD_SUCCESS;
 }
 
@@ -222,6 +232,9 @@ void spudgpu_destroy_image(
     if (!image) return;
     vkDestroyImage(image->_device._logical_device_vk, image->_image_vk, NULL);
     vkFreeMemory(image->_device._logical_device_vk, image->_memory_vk, NULL);
+#if _DEBUG
+    free((void *)image->_debug_name);
+#endif
     free(image);
 }
 
@@ -231,7 +244,7 @@ SPUDRESULT spudgpu_create_image_view(
     spudgpu_image_view *out_image_view) {
     if (!image) return SPUDRESULT_GPU_INVALID_IMAGE;
     if (!desc) return SPUDRESULT_NULL_DESC;
-    if (!out_image_view) return SPUD_SUCCESS;
+    if (!out_image_view) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     spudgpu_image_view_vulkan result = {0};
     result._desc = *desc;
@@ -279,6 +292,9 @@ SPUDRESULT spudgpu_create_image_view(
 void spudgpu_destroy_image_view(spudgpu_image_view image_view) {
     if (!image_view) return;
     vkDestroyImageView(image_view->_desc.parent_image->_device._logical_device_vk, image_view->_image_view_vk, NULL);
+#if _DEBUG
+    free((void *)image_view->_debug_name);
+#endif
     free(image_view);
 }
 
@@ -286,7 +302,8 @@ SPUDRESULT spudgpu_get_image_view_desc(
     spudgpu_image_view image_view,
     spudgpu_image_view_desc *out_desc) {
     if (!image_view) return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
-    if (out_desc) *out_desc = image_view->_desc;
+    if (!out_desc) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+    *out_desc = image_view->_desc;
     return SPUD_SUCCESS;
 }
 

@@ -90,6 +90,9 @@ sfs_file_open(SFS_FILE_OPEN_ATTRIBUTES open_attribs, sfs_file *out_file) {
         CloseHandle(h);
         return SPUDRESULT_OUT_OF_MEMORY;
     }
+#if _DEBUG
+    f->debug_name = NULL;
+#endif
     f->handle = h;
     *out_file = f;
     return SPUD_SUCCESS;
@@ -98,6 +101,9 @@ sfs_file_open(SFS_FILE_OPEN_ATTRIBUTES open_attribs, sfs_file *out_file) {
 SPUDRESULT sfs_file_release(sfs_file file) {
     if (!file) return SPUDRESULT_SFS_INVALID_FILE;
     CloseHandle(file->handle);
+#if _DEBUG
+    free((void *)file->debug_name);
+#endif
     free(file);
     return SPUD_SUCCESS;
 }
@@ -264,6 +270,35 @@ SPUDRESULT sfs_file_replace(const char *source_path, const char *target_path, SF
     }
     free(source);
     free(target);
+    return result;
+}
+
+SPUDRESULT sfs_file_remove(const char *file_path) {
+    if (!file_path || file_path[0] == '\0')
+        return SPUDRESULT_SFS_NULL_PATH;
+
+    wchar_t   *path   = NULL;
+    SPUDRESULT result = sfs_utf8_to_wide(file_path, &path);
+    if (result != SPUD_SUCCESS)
+        return result;
+    if (!DeleteFileW(path)) {
+        switch (GetLastError()) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+            result = SPUDRESULT_SFS_INVALID_FILE;
+            break;
+        // An open or mapped file, a read-only one, or a directory.
+        case ERROR_SHARING_VIOLATION:
+        case ERROR_USER_MAPPED_FILE:
+        case ERROR_ACCESS_DENIED:
+            result = SPUDRESULT_SFS_IN_USE;
+            break;
+        default:
+            result = SPUDRESULT_GENERAL_FAILURE;
+            break;
+        }
+    }
+    free(path);
     return result;
 }
 

@@ -45,7 +45,9 @@ SPUDRESULT spudgpu_submit_command_lists(
     spudgpu_command_queue queue,
     spudgpu_command_list *cmd_lists,
     uint32_t cmd_list_count) {
-    if (!queue) return SPUD_SUCCESS;
+    if (!queue) return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+    if (!cmd_lists) return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+    if (cmd_list_count == 0) return SPUDRESULT_ZERO_SIZE;
     
     VkCommandBuffer *buffers = calloc(cmd_list_count, sizeof(VkCommandBuffer));
     for (uint32_t i = 0; i < cmd_list_count; i++) {
@@ -77,7 +79,10 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
     spudgpu_command_list *cmd_lists,
     uint32_t cmd_list_count,
     spudgpu_swap_chain swap_chain) {
-    if (!(queue && swap_chain)) return SPUD_SUCCESS;
+    if (!queue) return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+    if (!cmd_lists) return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+    if (cmd_list_count == 0) return SPUDRESULT_ZERO_SIZE;
+    if (!swap_chain) return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
 
     uint32_t frame = swap_chain->_current_frame;
 
@@ -122,7 +127,7 @@ SPUDRESULT spudgpu_create_command_allocator(
 	spudgpu_command_allocator *out_allocator) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!desc) return SPUDRESULT_NULL_DESC;
-    if (!out_allocator) return SPUD_SUCCESS;
+    if (!out_allocator) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     // Re-query graphics family (you'll want to cache this on the device later)
     uint32_t family_count = 0;
@@ -174,13 +179,16 @@ SPUDRESULT spudgpu_reset_command_allocator(spudgpu_command_allocator allocator) 
 void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator) {
     if (!allocator) return;
     vkDestroyCommandPool(allocator->_device._logical_device_vk, allocator->_command_pool_vk, NULL);
+#if _DEBUG
+    free((void *)allocator->_debug_name);
+#endif
     free(allocator);
 }
 
 SPUDRESULT spudgpu_create_command_list(
     spudgpu_command_allocator allocator, spudgpu_command_list *out_cmd_list) {
     if (!allocator) return SPUDRESULT_GPU_INVALID_COMMAND_ALLOCATOR;
-    if (!out_cmd_list) return SPUD_SUCCESS;
+    if (!out_cmd_list) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
     
     VkCommandBufferAllocateInfo alloc_info = {0};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -211,6 +219,9 @@ void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
         cmd->_allocator._device._logical_device_vk,
         cmd->_allocator._command_pool_vk,
         1, &cmd->_command_buffer_vk);
+#if _DEBUG
+    free((void *)cmd->_debug_name);
+#endif
     free(cmd);
 }
 
@@ -238,7 +249,7 @@ void spudgpu_cmd_set_viewports(
     uint32_t first_viewport,
     uint32_t viewport_count,
     const SPUDGPU_VIEWPORT *viewports) {
-    if (!(cmd && viewports) || viewport_count == 0) return;
+    if (!cmd || !viewports || viewport_count == 0) return;
 
     VkViewport *vk_viewports = calloc(viewport_count, sizeof(VkViewport));
     for (uint32_t i = 0; i < viewport_count; i++) {
@@ -260,7 +271,7 @@ void spudgpu_cmd_set_scissor_rects(
     uint32_t first_scissor_rect,
     uint32_t scissor_rect_count,
     const SPUDGPU_SCISSOR_RECT *scissor_rects) {
-    if (!(cmd && scissor_rects) || scissor_rect_count == 0) return;
+    if (!cmd || !scissor_rects || scissor_rect_count == 0) return;
 
     VkRect2D *vk_scissors = calloc(scissor_rect_count, sizeof(VkRect2D));
     for (uint32_t i = 0; i < scissor_rect_count; i++) {
@@ -280,7 +291,7 @@ void spudgpu_cmd_set_vertex_buffers(
     uint32_t start_slot,
     uint32_t view_count,
     spudgpu_buffer_view *buffer_views) {
-    if (!(cmd && buffer_views) || view_count == 0) return;
+    if (!cmd || !buffer_views || view_count == 0) return;
 
     VkBuffer *vk_buffers = calloc(view_count, sizeof(VkBuffer));
     VkDeviceSize *vk_offsets = calloc(view_count, sizeof(VkDeviceSize));
@@ -305,7 +316,7 @@ void spudgpu_cmd_set_vertex_buffers(
 void spudgpu_cmd_set_index_buffer(
     spudgpu_command_list cmd,
     spudgpu_buffer_view buffer_view) {
-    if (!(cmd && buffer_view)) return;
+    if (!cmd || !buffer_view) return;
     spudgpu_buffer_view_vulkan *bv = (spudgpu_buffer_view_vulkan *) buffer_view;
     VkIndexType index_type = bv->_desc.stride == sizeof(uint16_t)
                                  ? VK_INDEX_TYPE_UINT16
@@ -333,7 +344,7 @@ void spudgpu_cmd_draw(
 void spudgpu_cmd_bind_pipeline(
     spudgpu_command_list cmd,
     spudgpu_shader_pipeline pipeline) {
-    if (!(cmd && pipeline)) return;
+    if (!cmd || !pipeline) return;
 
     vkCmdBindPipeline(
         cmd->_command_buffer_vk,
@@ -389,7 +400,7 @@ void spudgpu_cmd_draw_indexed_instanced(
 }
 
 void spudgpu_queue_submit(spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
-    if (!(queue && desc && desc->cmd_list_count > 0)) return;
+    if (!queue || !desc || desc->cmd_list_count == 0) return;
 
     VkCommandBuffer *cmd_bufs = calloc(desc->cmd_list_count, sizeof(VkCommandBuffer));
     for (uint32_t i = 0; i < desc->cmd_list_count; i++) {
@@ -512,7 +523,7 @@ void spudgpu_cmd_bind_bindless_resources_compute(
 void spudgpu_cmd_bind_compute_pipeline(
     spudgpu_command_list cmd,
     spudgpu_compute_pipeline pipeline) {
-    if (!(cmd && pipeline)) return;
+    if (!cmd || !pipeline) return;
 
     vkCmdBindPipeline(
         cmd->_command_buffer_vk,
@@ -535,7 +546,7 @@ void spudgpu_cmd_draw_indirect(
     uint64_t offset,
     uint32_t draw_count,
     uint32_t stride) {
-    if (!(cmd && buffer) || draw_count == 0) return;
+    if (!cmd || !buffer || draw_count == 0) return;
     vkCmdDrawIndirect(
         cmd->_command_buffer_vk,
         buffer->_buffer_vk,
@@ -550,7 +561,7 @@ void spudgpu_cmd_draw_indexed_indirect(
     uint64_t offset,
     uint32_t draw_count,
     uint32_t stride) {
-    if (!(cmd && buffer) || draw_count == 0) return;
+    if (!cmd || !buffer || draw_count == 0) return;
     vkCmdDrawIndexedIndirect(
         cmd->_command_buffer_vk,
         buffer->_buffer_vk,

@@ -10,15 +10,73 @@ static SPUDRESULT ___internal_spudgpu_d3d12_create_command_queues_per_family(
     const D3D12_COMMAND_QUEUE_DESC *desc,
     std::array<spudgpu_command_queue, SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY>
         &arr) {
+	// A queue that fails is released here; the ones already in arr are
+	// released with the device (___internal_spudgpu_d3d12_destroy_device).
 	for (size_t i = 0; i < arr.size(); ++i) {
-		arr[i] = (spudgpu_command_queue_d3d12 *)calloc(
-		    1, sizeof(spudgpu_command_queue_d3d12));
-		arr[i]->_device = device;
+		spudgpu_command_queue_d3d12 *queue =
+		    (spudgpu_command_queue_d3d12 *)malloc(
+		        sizeof(spudgpu_command_queue_d3d12));
+		if (!queue)
+			return SPUDRESULT_OUT_OF_MEMORY;
+		queue          = new (queue) spudgpu_command_queue_d3d12();
+		queue->_device = device;
 		if (FAILED(device->_d3d_device->CreateCommandQueue(
-		        desc, IID_PPV_ARGS(&arr[i]->_d3d_cmd_queue))))
+		        desc, IID_PPV_ARGS(&queue->_d3d_cmd_queue)))) {
+			queue->~spudgpu_command_queue_d3d12();
+			free(queue);
 			return SPUDRESULT_API_SPECIFIC_FAILURE;
+		}
+		arr[i] = queue;
 	}
 	return SPUD_SUCCESS;
+}
+
+static void ___internal_spudgpu_d3d12_destroy_command_queues_per_family(
+    std::array<spudgpu_command_queue, SPUD_D3D12_COMMAND_QUEUE_COUNT_PER_FAMILY>
+        &arr) {
+	for (size_t i = 0; i < arr.size(); ++i) {
+		if (!arr[i])
+			continue;
+#if _DEBUG
+		free((void *)arr[i]->_debug_name);
+#endif
+		arr[i]->~spudgpu_command_queue_d3d12();
+		free(arr[i]);
+		arr[i] = nullptr;
+	}
+}
+
+// Releases a device and everything it owns: its command queues and, if one
+// was ever created, its bindless state.
+static void ___internal_spudgpu_d3d12_destroy_device(spudgpu_device device) {
+	if (!device)
+		return;
+	___internal_spudgpu_d3d12_destroy_command_queues_per_family(
+	    device->_cmd_queues_direct);
+	___internal_spudgpu_d3d12_destroy_command_queues_per_family(
+	    device->_cmd_queues_copy);
+	___internal_spudgpu_d3d12_destroy_command_queues_per_family(
+	    device->_cmd_queues_compute);
+	if (device->_bindless) {
+#if _DEBUG
+		if (device->_bindless->layout)
+			free((void *)device->_bindless->layout->_debug_name);
+#endif
+		free(device->_bindless->layout);
+		device->_bindless->~spudgpu_bindless_state_d3d12();
+		free(device->_bindless);
+	}
+#if _DEBUG
+	free((void *)device->_debug_name);
+#endif
+	device->~spudgpu_device_d3d12();
+	free(device);
+}
+
+static void ___internal_spudgpu_d3d12_destroy_devices(
+    spudgpu_device *devices, size_t count) {
+	for (size_t i = 0; i < count; ++i)
+		___internal_spudgpu_d3d12_destroy_device(devices[i]);
 }
 
 static SPUDRESULT
@@ -66,10 +124,13 @@ SPUDRESULT spudgpu_create_instance(
     uint32_t engine_version,
     spudgpu_instance *out_instance) {
 	if (!out_instance)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	spudgpu_instance_d3d12 *pResult =
-	    (spudgpu_instance_d3d12 *)calloc(1, sizeof(spudgpu_instance_d3d12));
+	    (spudgpu_instance_d3d12 *)malloc(sizeof(spudgpu_instance_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult                          = new (pResult) spudgpu_instance_d3d12();
 	pResult->application_name        = application_name;
 	pResult->application_version     = application_version;
 	pResult->engine_name             = engine_name;
@@ -93,6 +154,7 @@ SPUDRESULT spudgpu_create_instance(
 	HRESULT hr =
 	    CreateDXGIFactory2(dxgiFlags, IID_PPV_ARGS(&pResult->_dxgi_factory));
 	if (FAILED(hr)) {
+		pResult->~spudgpu_instance_d3d12();
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
@@ -101,32 +163,16 @@ SPUDRESULT spudgpu_create_instance(
 	return SPUD_SUCCESS;
 }
 
-static SPUDRESULT
-___internal_spudgpu_d3d12_destroy_device(spudgpu_device device) {
-	for (size_t i = 0; i < device->_cmd_queues_direct.size(); ++i)
-		if (device->_cmd_queues_direct[i])
-			device->_cmd_queues_direct[i]->_d3d_cmd_queue.Reset();
-	for (size_t i = 0; i < device->_cmd_queues_copy.size(); ++i)
-		if (device->_cmd_queues_copy[i])
-			device->_cmd_queues_copy[i]->_d3d_cmd_queue.Reset();
-	for (size_t i = 0; i < device->_cmd_queues_compute.size(); ++i)
-		if (device->_cmd_queues_compute[i])
-			device->_cmd_queues_compute[i]->_d3d_cmd_queue.Reset();
-	device->_d3d_device.Reset();
-	device->_dxgi_adapter.Reset();
-	return SPUD_SUCCESS;
-}
 SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance) {
 	if (!instance)
 		return SPUD_SUCCESS;
-	SPUDRESULT sr = SPUD_SUCCESS;
-	for (size_t i = 0; i < instance->_gpu_device_count; ++i) {
-		sr =
-		    ___internal_spudgpu_d3d12_destroy_device(instance->_gpu_devices[i]);
-		if (sr != SPUD_SUCCESS)
-			return sr;
-	}
-	instance->_dxgi_factory.Reset();
+	___internal_spudgpu_d3d12_destroy_devices(
+	    instance->_gpu_devices, instance->_gpu_device_count);
+	free(instance->_gpu_devices);
+#if _DEBUG
+	free((void *)instance->_debug_name);
+#endif
+	instance->~spudgpu_instance_d3d12();
 	free(instance);
 	return SPUD_SUCCESS;
 }
@@ -160,6 +206,10 @@ SPUDRESULT spudgpu_enumerate_devices(
     uint32_t *pOutputDevicesCount) {
 	if (!instance)
 		return SPUDRESULT_GPU_INVALID_INSTANCE;
+	if (!ppOutputDevices)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!pOutputDevicesCount)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (instance->_gpu_devices_enumerated)
 		return SPUD_SUCCESS;
 
@@ -193,18 +243,32 @@ SPUDRESULT spudgpu_enumerate_devices(
 		        __uuidof(ID3D12Device14), nullptr))) {
 
 			// Create a new SpudGPU Device
+			// Every failure below releases this device and the ones
+			// already gathered, so nothing outlives a failed enumeration.
 			spudgpu_device_d3d12 *gpuDevice =
-			    (spudgpu_device_d3d12 *)calloc(1, sizeof(spudgpu_device_d3d12));
+			    (spudgpu_device_d3d12 *)malloc(sizeof(spudgpu_device_d3d12));
+			if (!gpuDevice) {
+				___internal_spudgpu_d3d12_destroy_devices(
+				    gpuDevices.data(), gpuDevices.size());
+				return SPUDRESULT_OUT_OF_MEMORY;
+			}
+			gpuDevice = new (gpuDevice) spudgpu_device_d3d12();
 			if (FAILED(D3D12CreateDevice(
 			        dxgiAdapter.Get(), minimumFeatureLevel,
-			        IID_PPV_ARGS(&gpuDevice->_d3d_device))))
+			        IID_PPV_ARGS(&gpuDevice->_d3d_device)))) {
 				// If a D3D12 Device creation failed,
 				// just return out of this function.
+				___internal_spudgpu_d3d12_destroy_device(gpuDevice);
+				___internal_spudgpu_d3d12_destroy_devices(
+				    gpuDevices.data(), gpuDevices.size());
 				return SPUDRESULT_API_SPECIFIC_FAILURE;
+			}
 			gpuDevice->_dxgi_adapter = dxgiAdapter;
 			gpuDevice->_instance     = instance;
 			if (!___internal_spudgpu_d3d12_make_device_properties(gpuDevice)) {
-				free(gpuDevice);
+				___internal_spudgpu_d3d12_destroy_device(gpuDevice);
+				___internal_spudgpu_d3d12_destroy_devices(
+				    gpuDevices.data(), gpuDevices.size());
 				return sr;
 			}
 
@@ -213,7 +277,9 @@ SPUDRESULT spudgpu_enumerate_devices(
 			    ___internal_spudgpu_d3d12_create_device_command_queues(
 			        gpuDevice);
 			if (sr != SPUD_SUCCESS) {
-				free(gpuDevice);
+				___internal_spudgpu_d3d12_destroy_device(gpuDevice);
+				___internal_spudgpu_d3d12_destroy_devices(
+				    gpuDevices.data(), gpuDevices.size());
 				return sr;
 			}
 			gpuDevices.push_back(gpuDevice);
@@ -221,12 +287,21 @@ SPUDRESULT spudgpu_enumerate_devices(
 		} else
 			continue;
 	}
-	instance->_gpu_device_count = (uint32_t)gpuDevices.size();
-	instance->_gpu_devices      = (spudgpu_device *)malloc(
-	    sizeof(spudgpu_device) * instance->_gpu_device_count);
-	memcpy(
-	    instance->_gpu_devices, gpuDevices.data(),
-	    sizeof(spudgpu_device) * instance->_gpu_device_count);
+	// No array for zero devices: _gpu_devices stays null and the count 0.
+	if (!gpuDevices.empty()) {
+		spudgpu_device *devices = (spudgpu_device *)malloc(
+		    sizeof(spudgpu_device) * gpuDevices.size());
+		if (!devices) {
+			___internal_spudgpu_d3d12_destroy_devices(
+			    gpuDevices.data(), gpuDevices.size());
+			return SPUDRESULT_OUT_OF_MEMORY;
+		}
+		memcpy(
+		    devices, gpuDevices.data(),
+		    sizeof(spudgpu_device) * gpuDevices.size());
+		instance->_gpu_devices = devices;
+	}
+	instance->_gpu_device_count       = (uint32_t)gpuDevices.size();
 	instance->_gpu_devices_enumerated = true;
 
 	*pOutputDevicesCount = instance->_gpu_device_count;
@@ -304,17 +379,26 @@ SPUDRESULT spudgpu_create_surface(
 	if (!instance)
 		return SPUDRESULT_GPU_INVALID_INSTANCE;
 	if (!window_handle)
-		return SPUDRESULT_NULL_DESC;
+		return SPUDRESULT_GPU_INVALID_WINDOW_HANDLE;
 	if (!out_surface)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	spudgpu_surface_d3d12 *pResult =
 	    (spudgpu_surface_d3d12 *)calloc(1, sizeof(spudgpu_surface_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->_hwnd     = (HWND)window_handle;
 	pResult->_instance = instance;
 	*out_surface       = pResult;
 	return SPUD_SUCCESS;
 }
-void spudgpu_destroy_surface(spudgpu_surface surface) { free(surface); }
+void spudgpu_destroy_surface(spudgpu_surface surface) {
+	if (!surface)
+		return;
+#if _DEBUG
+	free((void *)surface->_debug_name);
+#endif
+	free(surface);
+}
 }
 
 #endif

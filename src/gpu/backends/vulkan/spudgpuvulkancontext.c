@@ -402,7 +402,7 @@ SPUDRESULT spudgpu_create_instance(
     const char *engine_name,
     uint32_t engine_version,
     spudgpu_instance *out_instance) {
-    if (!out_instance) return SPUD_SUCCESS;
+    if (!out_instance) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
     spudgpu_instance_vulkan result = {0};
 
     VkApplicationInfo appInfo = {0};
@@ -467,11 +467,17 @@ SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance) {
         // Created for every device in spudgpu_enumerate_devices.
         spudgpuvulkan___destroy_bindless_state((spudgpu_device) dev);
         vkDestroyDevice(dev->_logical_device_vk, NULL);
+#if _DEBUG
+        free((void *)dev->_debug_name);
+#endif
         free(dev);
     }
     free(instance->_devices_pointer_array);
 
     vkDestroyInstance(instance->_instance_vk, NULL);
+#if _DEBUG
+    free((void *)instance->_debug_name);
+#endif
     free(instance);
     return SPUD_SUCCESS;
 }
@@ -518,6 +524,8 @@ SPUDRESULT spudgpu_enumerate_devices(
     spudgpu_device **ppOutputDevices,
     uint32_t *pOutputDevicesCount) {
     if (!instance) return SPUDRESULT_GPU_INVALID_INSTANCE;
+    if (!ppOutputDevices) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+    if (!pOutputDevicesCount) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance->_instance_vk, &deviceCount, NULL);
@@ -538,6 +546,9 @@ SPUDRESULT spudgpu_enumerate_devices(
 
     for (size_t i = 0; i < deviceCount; i++) {
         spudgpu_device_vulkan *pDeviceVulkan = malloc(sizeof(spudgpu_device_vulkan));
+#if _DEBUG
+        pDeviceVulkan->_debug_name = NULL;
+#endif
         pDeviceVulkan->_bindless = NULL;
         pDeviceVulkan->_instance = *instance;
         pDeviceVulkan->_physical_device_vk = physicalDevices[i];

@@ -49,7 +49,7 @@ SPUDRESULT spudgpu_create_sampler(
     spudgpu_sampler *out_sampler) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!desc) return SPUDRESULT_NULL_DESC;
-    if (!out_sampler) return SPUD_SUCCESS;
+    if (!out_sampler) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     VkSamplerCreateInfo info = {0};
     info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -76,6 +76,13 @@ SPUDRESULT spudgpu_create_sampler(
         return SPUDRESULT_API_SPECIFIC_FAILURE;
     }
 
+#if _DEBUG
+    if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+        spudgpu_destroy_sampler(pResult);
+        return SPUDRESULT_OUT_OF_MEMORY;
+    }
+#endif
+
     *out_sampler = pResult;
     return SPUD_SUCCESS;
 }
@@ -83,6 +90,9 @@ SPUDRESULT spudgpu_create_sampler(
 void spudgpu_destroy_sampler(spudgpu_sampler sampler) {
     if (!sampler) return;
     vkDestroySampler(sampler->_device._logical_device_vk, sampler->_sampler_vk, NULL);
+#if _DEBUG
+    free((void *)sampler->_debug_name);
+#endif
     free(sampler);
 }
 
@@ -92,8 +102,8 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 	spudgpu_descriptor_set_layout *out_layout) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!desc) return SPUDRESULT_NULL_DESC;
+    if (!out_layout) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
     if (desc->binding_count > SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET) return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS;
-    if (!out_layout) return SPUD_SUCCESS;
 
     spudgpu_descriptor_set_layout_vulkan result = {0};
     result._device = *device;
@@ -149,6 +159,14 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
     spudgpu_descriptor_set_layout_vulkan *pResult =
             malloc(sizeof(spudgpu_descriptor_set_layout_vulkan));
     memcpy(pResult, &result, sizeof(spudgpu_descriptor_set_layout_vulkan));
+#if _DEBUG
+    if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+        spudgpu_destroy_descriptor_set_layout(pResult);
+        return SPUDRESULT_OUT_OF_MEMORY;
+    }
+    pResult->_desc.debug_name = pResult->_debug_name;
+#endif
+
     *out_layout = pResult;
     return SPUD_SUCCESS;
 }
@@ -160,6 +178,9 @@ void spudgpu_destroy_descriptor_set_layout(
         layout->_device._logical_device_vk,
         layout->_layout_vk,
         NULL);
+#if _DEBUG
+    free((void *)layout->_debug_name);
+#endif
     free(layout);
 }
 
@@ -169,8 +190,8 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 	spudgpu_descriptor_pool *out_pool) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!desc) return SPUDRESULT_NULL_DESC;
+    if (!out_pool) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
     if (desc->pool_size_count > SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES) return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_POOLS;
-    if (!out_pool) return SPUD_SUCCESS;
 
     spudgpu_descriptor_pool_vulkan result = {0};
     result._device = *device;
@@ -223,6 +244,14 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 
     spudgpu_descriptor_pool_vulkan *pResult = malloc(sizeof(spudgpu_descriptor_pool_vulkan));
     memcpy(pResult, &result, sizeof(spudgpu_descriptor_pool_vulkan));
+#if _DEBUG
+    if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+        spudgpu_destroy_descriptor_pool(pResult);
+        return SPUDRESULT_OUT_OF_MEMORY;
+    }
+    pResult->_desc.debug_name = pResult->_debug_name;
+#endif
+
     *out_pool = pResult;
     return SPUD_SUCCESS;
 }
@@ -242,6 +271,9 @@ void spudgpu_destroy_descriptor_pool(
         pool->_device._logical_device_vk,
         pool->_pool_vk,
         NULL);
+#if _DEBUG
+    free((void *)pool->_debug_name);
+#endif
     free(pool);
 }
 
@@ -251,6 +283,7 @@ SPUDRESULT spudgpu_create_descriptor_sets(
     spudgpu_descriptor_set *out_sets) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!desc) return SPUDRESULT_NULL_DESC;
+    if (!out_sets) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
     if (!desc->pool) return SPUDRESULT_GPU_INVALID_DESCRIPTOR_POOL;
 	if (!desc->set_count)
 		return SPUDRESULT_GPU_ZERO_DESCRIPTOR_SET_LAYOUTS;
@@ -290,6 +323,9 @@ SPUDRESULT spudgpu_create_descriptor_sets(
             // The pool reset at the next frame will reclaim the Vulkan-side sets.
             return SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
         }
+#if _DEBUG
+        pSet->_debug_name = NULL;
+#endif
         pSet->_pool = *desc->pool;
         pSet->_set_vk = vk_sets[i];
         out_sets[i] = (spudgpu_descriptor_set) pSet;
@@ -303,7 +339,7 @@ void spudgpu_update_descriptor_sets(
     spudgpu_device device,
     const spudgpu_write_descriptor_set *writes,
     uint32_t write_count) {
-    if (!(device && writes && write_count)) return;
+    if (!device || !writes || !write_count) return;
 
     // We translate each SpudGPU write into a VkWriteDescriptorSet on the stack.
     // For larger write counts a heap allocation would be safer, but the per-frame
@@ -370,7 +406,7 @@ void spudgpu_cmd_bind_descriptor_sets(
     uint32_t first_set,
     const spudgpu_descriptor_set *sets,
     uint32_t set_count) {
-    if (!(cmd && pipeline && sets && set_count)) return;
+    if (!cmd || !pipeline || !sets || !set_count) return;
     if (set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS) return;
 
     // The command list's internal VkCommandBuffer lives at the front of the struct,
@@ -403,7 +439,7 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
     uint32_t first_set,
     const spudgpu_descriptor_set *sets,
     uint32_t set_count) {
-    if (!(cmd && pipeline && sets && set_count)) return;
+    if (!cmd || !pipeline || !sets || !set_count) return;
     if (set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS) return;
 
     VkDescriptorSet vk_sets[SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS] = {0};
@@ -544,6 +580,9 @@ void spudgpuvulkan___destroy_bindless_state(spudgpu_device device) {
     spudgpu_descriptor_set_layout_vulkan *layoutWrapper = (spudgpu_descriptor_set_layout_vulkan *) state->layout;
     if (layoutWrapper) {
         vkDestroyDescriptorSetLayout(device->_logical_device_vk, layoutWrapper->_layout_vk, NULL);
+#if _DEBUG
+        free((void *)layoutWrapper->_debug_name);
+#endif
         free(layoutWrapper);
     }
     free(state);
@@ -569,7 +608,7 @@ SPUDRESULT spudgpu_get_bindless_capabilities(
         spudgpu_device device,
         spudgpu_bindless_capabilities *out_caps) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
-    if (!out_caps) return SPUD_SUCCESS;
+    if (!out_caps) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     memset(out_caps, 0, sizeof(*out_caps));
     // Reflects whether the global layout/pool/set actually got created —
@@ -596,7 +635,7 @@ SPUDRESULT spudgpu_bindless_register_sampled_image(
         uint32_t *out_index) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!view) return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
-    if (!out_index) return SPUD_SUCCESS;
+    if (!out_index) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     SPUDRESULT sr = spudgpuvulkan___ensure_bindless_state(device);
     if (sr != SPUD_SUCCESS) return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
@@ -641,7 +680,7 @@ SPUDRESULT spudgpu_bindless_register_storage_image(
         uint32_t *out_index) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!view) return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
-    if (!out_index) return SPUD_SUCCESS;
+    if (!out_index) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     SPUDRESULT sr = spudgpuvulkan___ensure_bindless_state(device);
     if (sr != SPUD_SUCCESS) return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;
@@ -686,7 +725,7 @@ SPUDRESULT spudgpu_bindless_register_storage_buffer(
         uint32_t *out_index) {
     if (!device) return SPUDRESULT_GPU_INVALID_DEVICE;
     if (!view) return SPUDRESULT_GPU_INVALID_BUFFER_VIEW;
-    if (!out_index) return SPUD_SUCCESS;
+    if (!out_index) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
     SPUDRESULT sr = spudgpuvulkan___ensure_bindless_state(device);
     if (sr != SPUD_SUCCESS) return SPUDRESULT_GPU_EXT_BINDLESS_DESCRIPTOR_INDEXING_NOT_SUPPORTED;

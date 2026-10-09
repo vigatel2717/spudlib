@@ -42,13 +42,14 @@ SPUDRESULT spudaudio_enumerate_devices(
     SPUDAUDIO_DIRECTION direction,
     spudaudio_device **out_devices,
     uint32_t *out_device_count) {
-	(void)direction;
 	if (!out_devices || !out_device_count)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	*out_devices      = NULL;
 	*out_device_count = 0;
 	if (!instance)
 		return SPUDRESULT_SAUD_INVALID_INSTANCE;
+	if (direction != SPUDAUDIO_DIRECTION_OUTPUT && direction != SPUDAUDIO_DIRECTION_INPUT)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
 	return SPUDRESULT_NOT_IMPLEMENTED_YET;
 }
 
@@ -149,9 +150,10 @@ SPUDRESULT spudaudio_stream_get_status(
 }
 
 SPUDRESULT spudaudio_set_device_sample_rate(spudaudio_device device, uint32_t sample_rate) {
-	(void)sample_rate;
 	if (!device)
 		return SPUDRESULT_SAUD_INVALID_DEVICE;
+	if (sample_rate == 0)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
 	return SPUDRESULT_NOT_IMPLEMENTED_YET;
 }
 

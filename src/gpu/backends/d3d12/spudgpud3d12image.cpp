@@ -60,16 +60,39 @@ SPUDRESULT spudgpu_create_image(
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
 	if (!out_image)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	if (!desc->width || !desc->height || !desc->depth || !desc->array_layers || !desc->mip_levels)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	if (desc->usage == SPUDGPU_IMAGE_USAGE_NONE)
+		return SPUDRESULT_GPU_INVALID_IMAGE_USAGE;
+	// SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT's contract (see spudgpu.h) is
+	// enforced identically on every backend, not just the ones that act on
+	// it.
+	if (desc->usage & SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT) {
+		if (!(desc->usage & (SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT | SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)))
+			return SPUDRESULT_GPU_INVALID_IMAGE_USAGE;
+		if (desc->usage & (SPUDGPU_IMAGE_USAGE_SAMPLED | SPUDGPU_IMAGE_USAGE_STORAGE |
+		                   SPUDGPU_IMAGE_USAGE_TRANSFER_SRC | SPUDGPU_IMAGE_USAGE_TRANSFER_DST |
+		                   SPUDGPU_IMAGE_USAGE_PRESENTABLE))
+			return SPUDRESULT_GPU_INVALID_IMAGE_USAGE;
+		if (desc->memory_flags & SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE)
+			return SPUDRESULT_GPU_INVALID_MEMORY_FLAGS;
+	}
+	if (desc->format == SPUDGPU_FORMAT_UNKNOWN)
+		return SPUDRESULT_GPU_INVALID_FORMAT;
 
 	spudgpu_image_d3d12 *pResult =
-	    (spudgpu_image_d3d12 *)calloc(1, sizeof(spudgpu_image_d3d12));
+	    (spudgpu_image_d3d12 *)malloc(sizeof(spudgpu_image_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	pResult          = new (pResult) spudgpu_image_d3d12();
 	pResult->_device = device;
 	pResult->_desc   = *desc;
 
 	SPUDRESULT sr = spudgpu_d3d12_create_resource_desc_from_image(
 	    desc, &pResult->_d3d_resource_desc);
 	if (sr != SPUD_SUCCESS) {
+		pResult->~spudgpu_image_d3d12();
 		free(pResult);
 		return sr;
 	}
@@ -95,9 +118,10 @@ SPUDRESULT spudgpu_create_image(
 	    d3dInitialState, hasOptimizedClearValue ? &d3dClearValue : nullptr,
 	    nullptr, IID_PPV_ARGS(&pResult->_d3d_resource));
 	if (FAILED(hr)) {
-		printf("apricot: CreateCommittedResource1 failed (%ux%u, fmt=%u, flags=0x%x, heapFlags=0x%x, initialState=0x%x): hr=0x%08lx\n",
+		printf("spudgpu: CreateCommittedResource1 failed (%ux%u, fmt=%u, flags=0x%x, heapFlags=0x%x, initialState=0x%x): hr=0x%08lx\n",
 		    desc->width, desc->height, (unsigned)pResult->_d3d_resource_desc.Format, (unsigned)pResult->_d3d_resource_desc.Flags,
 		    (unsigned)d3dHeapFlags, (unsigned)d3dInitialState, (unsigned long)hr);
+		pResult->~spudgpu_image_d3d12();
 		free(pResult);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
@@ -105,20 +129,32 @@ SPUDRESULT spudgpu_create_image(
 
 	pResult->_d3d_gpu_address = pResult->_d3d_resource->GetGPUVirtualAddress();
 
+#if _DEBUG
+	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_image(pResult);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pResult->_desc.debug_name = pResult->_debug_name;
+#endif
+
 	*out_image = pResult;
 
 	return SPUD_SUCCESS;
 }
 void spudgpu_destroy_image(spudgpu_image image) {
     if (!image) return;
-    image->_d3d_resource.Reset();
+#if _DEBUG
+    free((void *)image->_debug_name);
+#endif
+    image->~spudgpu_image_d3d12();
     free(image);
 }
 SPUDRESULT spudgpu_get_image_desc(
 	spudgpu_image image,
 	spudgpu_image_desc *out_desc) {
     if (!image) return SPUDRESULT_GPU_INVALID_IMAGE;
-    if (out_desc) *out_desc = image->_desc;
+    if (!out_desc) return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+    *out_desc = image->_desc;
     return SPUD_SUCCESS;
 }
 
@@ -132,10 +168,12 @@ SPUDRESULT spudgpu_create_image_view(
 	if (!desc)
 		return SPUDRESULT_NULL_DESC;
 	if (!out_image_view)
-		return SPUD_SUCCESS;
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 
 	spudgpu_image_view_d3d12 *pResult = (spudgpu_image_view_d3d12 *)calloc(
 	    1, sizeof(spudgpu_image_view_d3d12));
+	if (!pResult)
+		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->_image = image;
 	pResult->_desc  = *desc;
 	pResult->_desc.parent_image = image;
@@ -293,14 +331,20 @@ SPUDRESULT spudgpu_create_image_view(
     return SPUD_SUCCESS;
 }
 void spudgpu_destroy_image_view(spudgpu_image_view image_view) {
+	if (!image_view)
+		return;
+#if _DEBUG
+	free((void *)image_view->_debug_name);
+#endif
 	free(image_view);
 }
 SPUDRESULT spudgpu_get_image_view_desc(
     spudgpu_image_view image_view, spudgpu_image_view_desc *out_desc) {
 	if (!image_view)
 		return SPUDRESULT_GPU_INVALID_IMAGE_VIEW;
-	if (out_desc)
-		*out_desc = image_view->_desc;
+	if (!out_desc)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	*out_desc = image_view->_desc;
 	return SPUD_SUCCESS;
 }
 }

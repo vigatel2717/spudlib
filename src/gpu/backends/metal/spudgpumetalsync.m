@@ -68,6 +68,9 @@ void spudgpu_destroy_fence(spudgpu_fence fence) {
 		if (fence_metal->_shared_event_mtl) {
 			[fence_metal->_shared_event_mtl release];
 		}
+#if _DEBUG
+		free((void *)fence_metal->_debug_name);
+#endif
 		free(fence_metal);
 	}
 }
@@ -111,8 +114,10 @@ SPUDRESULT spudgpu_wait_for_fences(
     uint64_t timeout_ns) {
 	if (!device)
 		return SPUDRESULT_GPU_INVALID_DEVICE;
-	if (!fences || fence_count == 0)
+	if (!fences)
 		return SPUDRESULT_GPU_INVALID_FENCE;
+	if (fence_count == 0)
+		return SPUDRESULT_ZERO_SIZE;
 
 	for (uint32_t i = 0; i < fence_count; i++) {
 		spudgpu_fence_metal *fence_metal = (spudgpu_fence_metal *)fences[i];
@@ -218,6 +223,9 @@ void spudgpu_destroy_semaphore(spudgpu_semaphore semaphore) {
 		if (semaphore_metal->_event_mtl) {
 			[semaphore_metal->_event_mtl release];
 		}
+#if _DEBUG
+		free((void *)semaphore_metal->_debug_name);
+#endif
 		free(semaphore_metal);
 	}
 }

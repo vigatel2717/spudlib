@@ -86,6 +86,13 @@ SPUDRESULT spudgpu_create_sampler(
 	    (spudgpu_sampler_metal *)calloc(1, sizeof(spudgpu_sampler_metal));
 	sampler_metal->_sampler_state_mtl = [state retain];
 
+#if _DEBUG
+	if (spud_debug_name_set(sampler_metal, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_sampler((spudgpu_sampler)sampler_metal);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+#endif
+
 	*out_sampler = (spudgpu_sampler)sampler_metal;
 	return SPUD_SUCCESS;
 }
@@ -95,6 +102,9 @@ void spudgpu_destroy_sampler(spudgpu_sampler sampler) {
 	if (!sampler_metal)
 		return;
 	[sampler_metal->_sampler_state_mtl release];
+#if _DEBUG
+	free((void *)sampler_metal->_debug_name);
+#endif
 	free(sampler_metal);
 }
 
@@ -170,6 +180,14 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 		}
 	}
 
+#if _DEBUG
+	if (spud_debug_name_set(layout_metal, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_descriptor_set_layout((spudgpu_descriptor_set_layout)layout_metal);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	layout_metal->_desc.debug_name = layout_metal->_debug_name;
+#endif
+
 	*out_layout = (spudgpu_descriptor_set_layout)layout_metal;
 
 	return sr;
@@ -190,6 +208,9 @@ void spudgpu_destroy_descriptor_set_layout(spudgpu_descriptor_set_layout layout)
 		if (layout_metal->_argument_encoder_mtl) {
 			[layout_metal->_argument_encoder_mtl release];
 		}
+#if _DEBUG
+		free((void *)layout_metal->_debug_name);
+#endif
 		free(layout_metal);
 	}
 }
@@ -231,6 +252,14 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 		goto failedattempt;
 	}
 
+#if _DEBUG
+	if (spud_debug_name_set(pool_metal, desc->debug_name) != SPUD_SUCCESS) {
+		spudgpu_destroy_descriptor_pool((spudgpu_descriptor_pool)pool_metal);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	pool_metal->_desc.debug_name = pool_metal->_debug_name;
+#endif
+
 	*out_pool = (spudgpu_descriptor_pool)pool_metal;
 
 	return sr;
@@ -251,6 +280,9 @@ static void spudgpumetal___internal_free_tracked_sets(spudgpu_descriptor_pool_me
 		if (set_metal->_argument_buffer_mtl) {
 			[set_metal->_argument_buffer_mtl release];
 		}
+#if _DEBUG
+		free((void *)set_metal->_debug_name);
+#endif
 		free(set_metal);
 	}
 	pool_metal->_allocated_set_count = 0;
@@ -269,6 +301,9 @@ void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool) {
 		return;
 	spudgpumetal___internal_free_tracked_sets(pool_metal);
 	free(pool_metal->_tracked_sets_mtl);
+#if _DEBUG
+	free((void *)pool_metal->_debug_name);
+#endif
 	free(pool_metal);
 }
 
@@ -404,6 +439,8 @@ void spudgpu_cmd_bind_descriptor_sets(
     uint32_t set_count) {
 	if (!cmd || !pipeline || !sets || set_count == 0)
 		return;
+	if (set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
+		return;
 
 	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;
 	if (!cmd_metal->_active_render_encoder)
@@ -448,6 +485,8 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
     const spudgpu_descriptor_set *sets,
     uint32_t set_count) {
 	if (!cmd || !pipeline || !sets || set_count == 0)
+		return;
+	if (set_count > SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
 		return;
 
 	spudgpu_command_list_metal *cmd_metal = (spudgpu_command_list_metal *)cmd;

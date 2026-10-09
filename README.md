@@ -1,6 +1,6 @@
 # SpudLib
 
-Hardware Abstraction Layer (HAL) for the Apricot CAD/BIM stack — a
+Hardware Abstraction Layer (HAL) — a
 from-scratch, unified C interface over GPU, filesystem, memory, audio, and network primitives.
 
 ## Overview
@@ -10,9 +10,7 @@ into one consistent C interface and stops there. It never makes a decision on
 the caller's behalf, never has a "convenient" default that hides a choice, and holds no global state. All program logic lives one layer up; SpudLib only exposes enumeration/query functions so the caller can inspect and decide for itself.
 
 ```
-Trellis (C++) / Swift App     ← platform UI host
-        ↓ C-ABI
-Apricot SDK
+The caller                    ← every decision
         ↓ C-ABI
 SpudLib (HAL)                 ← you are here
         ↓

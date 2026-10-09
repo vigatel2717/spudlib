@@ -73,6 +73,9 @@ sfs_file_open(
 		close(fd);
 		return SPUDRESULT_OUT_OF_MEMORY;
 	}
+#if _DEBUG
+	f->debug_name = NULL;
+#endif
 	f->fd     = fd;
 	*out_file = f;
 	return SPUD_SUCCESS;
@@ -82,6 +85,9 @@ SPUDRESULT sfs_file_release(sfs_file file) {
 	if (!file)
 		return SPUDRESULT_SFS_INVALID_FILE;
 	close(file->fd);
+#if _DEBUG
+	free((void *)file->debug_name);
+#endif
 	free(file);
 	return SPUD_SUCCESS;
 }
@@ -278,6 +284,18 @@ SPUDRESULT sfs_file_replace(
 
 	if (level != SFS_FLUSH_LEVEL_NONE)
 		return sfs_flush_parent_directory(target_path, level);
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT sfs_file_remove(const char *file_path) {
+	if (!file_path || file_path[0] == '\0')
+		return SPUDRESULT_SFS_NULL_PATH;
+	if (unlink(file_path) != 0) {
+		// EISDIR on Linux, EPERM on Apple: a directory isn't a file.
+		if (errno == ENOENT || errno == ENOTDIR || errno == EISDIR || errno == EPERM)
+			return SPUDRESULT_SFS_INVALID_FILE;
+		return SPUDRESULT_GENERAL_FAILURE;
+	}
 	return SPUD_SUCCESS;
 }
 
