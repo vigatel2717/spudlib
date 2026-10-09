@@ -38,6 +38,9 @@ extern "C" {
  */
 static const GUID spudaudio_clsid_mmdevice_enumerator = {0xbcde0395, 0xe52f, 0x467c, {0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e}};
 static const GUID spudaudio_iid_immdevice_enumerator  = {0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}};
+static const GUID spudaudio_iid_immendpoint           = {0x1be09788, 0x6894, 0x4089, {0x85, 0x86, 0x9a, 0x2a, 0x6c, 0x26, 0x5a, 0xc5}};
+static const GUID spudaudio_iid_immnotificationclient = {0x7991eec9, 0x7e89, 0x4d85, {0x83, 0x90, 0x6c, 0x70, 0x3c, 0xec, 0x60, 0xc0}};
+static const GUID spudaudio_iid_iunknown              = {0x00000000, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
 static const GUID spudaudio_iid_iaudioclient          = {0x1cb9ad4c, 0xdbfa, 0x4c32, {0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2}};
 static const GUID spudaudio_iid_iaudioclient3         = {0x7ed4ee07, 0x8e67, 0x4cd4, {0x8c, 0x1a, 0x2b, 0x7a, 0x59, 0x87, 0xad, 0x42}};
 static const GUID spudaudio_iid_iaudiorenderclient    = {0xf294acfc, 0x3146, 0x4483, {0xa7, 0xbf, 0xad, 0xdc, 0xa7, 0xc2, 0x60, 0xe2}};
@@ -111,6 +114,44 @@ struct spudaudio_stream_t {
 	volatile LONG64 overflow_count;
 };
 
+// One active endpoint as the device-change watch last saw it. The direction
+// is kept because an endpoint that has gone can no longer be asked for it.
+struct wasapi_endpoint {
+	SPUDAUDIO_DIRECTION direction;
+	char persistent_id[256];
+};
+
+/*
+ * Device-change notification for one instance: exists while a callback is
+ * set. It is the IMMNotificationClient registered with the instance's
+ * enumerator, so it is a COM object - reference-counted, and freed by the
+ * last Release, which may be MMDevice's and come after the watch stopped.
+ *
+ * WASAPI reports a plug or unplug as a state change that carries only the
+ * new state, and may also report the same endpoint as added or removed. The
+ * watch keeps the ids of the active endpoints so that each one is reported
+ * once: ADDED when it becomes active and wasn't, REMOVED when it stops
+ * being active and was. That record is the watch's own - never the
+ * instance's device list, which belongs to the thread that enumerates.
+ */
+struct wasapi_watch {
+	IMMNotificationClient client; // first, so the interface pointer is the watch
+	volatile LONG refs;
+	SPUDAUDIO_DEVICE_EVENT_CALLBACK callback;
+	void *user_data;
+	IMMDeviceEnumerator *enumerator; // the instance's; not used once stopped
+
+	volatile LONG stopped;            // set by destroy: notifications do nothing from then on
+	volatile LONG active;             // notifications inside the watch right now
+	volatile LONG callback_thread_id; // the thread inside the caller's callback, 0 if none
+
+	SRWLOCK lock;       // the fields below
+	bool have_baseline; // changes before the baseline is taken are not events
+	struct wasapi_endpoint *endpoints;
+	uint32_t endpoint_count;
+	uint32_t endpoint_capacity;
+};
+
 struct spudaudio_instance_t {
 #if _DEBUG
 	const char *debug_name;
@@ -119,6 +160,7 @@ struct spudaudio_instance_t {
 	IMMDeviceEnumerator *enumerator;
 	struct spudaudio_device_t *devices; // every endpoint ever enumerated
 	spudaudio_device *enumerated[2];    // latest array per direction
+	struct wasapi_watch *watch;         // NULL while no device-event callback is set
 };
 
 // --------------------------------------------------------------------------
@@ -557,6 +599,316 @@ static SPUDRESULT wasapi_probe_shared_legacy(
 }
 
 // --------------------------------------------------------------------------
+// Device-change notification
+// --------------------------------------------------------------------------
+
+// WASAPI's default-endpoint roles, as SpudAudio roles.
+static const struct {
+	ERole role;
+	SPUDAUDIO_DEFAULT_ROLES spud_role;
+} wasapi_roles[] = {
+    {eConsole, SPUDAUDIO_DEFAULT_ROLE_GENERAL},
+    {eMultimedia, SPUDAUDIO_DEFAULT_ROLE_MULTIMEDIA},
+    {eCommunications, SPUDAUDIO_DEFAULT_ROLE_COMMUNICATIONS},
+};
+
+// An endpoint id as the UTF-8 persistent id, the same conversion as
+// spudaudio_enumerate_devices.
+static void wasapi_persistent_id(LPCWSTR wide_id, char *out, size_t out_size) {
+	memset(out, 0, out_size);
+	WideCharToMultiByte(CP_UTF8, 0, wide_id, -1, out, (int)out_size - 1, NULL, NULL);
+}
+
+// Direction and state of the endpoint with this id. False if it can't be
+// asked - it has been removed. Called from notifications, where it takes
+// and releases an IMMDevice of its own; the enumerator outlives it.
+static bool wasapi_endpoint_info(IMMDeviceEnumerator *enumerator, LPCWSTR wide_id, SPUDAUDIO_DIRECTION *out_direction, DWORD *out_state) {
+	IMMDevice *mm_device = NULL;
+	if (FAILED(IMMDeviceEnumerator_GetDevice(enumerator, wide_id, &mm_device)))
+		return false;
+	IMMEndpoint *endpoint = NULL;
+	EDataFlow flow        = eRender;
+	bool ok               = SUCCEEDED(IMMDevice_QueryInterface(mm_device, &spudaudio_iid_immendpoint, (void **)&endpoint));
+	if (ok) {
+		ok = SUCCEEDED(IMMEndpoint_GetDataFlow(endpoint, &flow));
+		IMMEndpoint_Release(endpoint);
+	}
+	if (ok)
+		ok = SUCCEEDED(IMMDevice_GetState(mm_device, out_state));
+	IMMDevice_Release(mm_device);
+	*out_direction = flow == eRender ? SPUDAUDIO_DIRECTION_OUTPUT : SPUDAUDIO_DIRECTION_INPUT;
+	return ok;
+}
+
+// Index of an endpoint in the watch's record, or -1. Lock held. Endpoint
+// ids are unique across both directions.
+static int wasapi_watch_find(const struct wasapi_watch *w, const char *id) {
+	for (uint32_t i = 0; i < w->endpoint_count; ++i)
+		if (strcmp(w->endpoints[i].persistent_id, id) == 0)
+			return (int)i;
+	return -1;
+}
+
+// Lock held. False if the record couldn't grow.
+static bool wasapi_watch_add(struct wasapi_watch *w, const char *id, SPUDAUDIO_DIRECTION direction) {
+	if (w->endpoint_count == w->endpoint_capacity) {
+		const uint32_t capacity        = w->endpoint_capacity ? w->endpoint_capacity * 2 : 16;
+		struct wasapi_endpoint *bigger = (struct wasapi_endpoint *)realloc(w->endpoints, (size_t)capacity * sizeof(*bigger));
+		if (!bigger)
+			return false;
+		w->endpoints         = bigger;
+		w->endpoint_capacity = capacity;
+	}
+	struct wasapi_endpoint *e = &w->endpoints[w->endpoint_count++];
+	memset(e, 0, sizeof(*e));
+	e->direction = direction;
+	strncpy(e->persistent_id, id, sizeof(e->persistent_id) - 1);
+	return true;
+}
+
+// A notification enters the watch. False once the watch has stopped; the
+// count is what destroy waits on, so every true is paired with a leave.
+static bool wasapi_watch_enter(struct wasapi_watch *w) {
+	InterlockedIncrement(&w->active);
+	if (InterlockedCompareExchange(&w->stopped, 0, 0)) {
+		InterlockedDecrement(&w->active);
+		return false;
+	}
+	return true;
+}
+
+static void wasapi_watch_leave(struct wasapi_watch *w) {
+	InterlockedDecrement(&w->active);
+}
+
+// The caller's callback, with no lock held.
+static void wasapi_watch_call(struct wasapi_watch *w, SPUDAUDIO_DEVICE_EVENT event, const char *id, SPUDAUDIO_DIRECTION direction, SPUDAUDIO_DEFAULT_ROLES roles) {
+	InterlockedExchange(&w->callback_thread_id, (LONG)GetCurrentThreadId());
+	w->callback(event, id, direction, roles, w->user_data);
+	InterlockedExchange(&w->callback_thread_id, 0);
+}
+
+// An endpoint is now active, or now isn't. Reported only when that differs
+// from the record, so the several notifications WASAPI can send for one
+// plug or unplug come out as one event.
+static void wasapi_watch_update(struct wasapi_watch *w, LPCWSTR wide_id, bool active, SPUDAUDIO_DIRECTION direction) {
+	char id[256];
+	wasapi_persistent_id(wide_id, id, sizeof(id));
+	bool report = false;
+	AcquireSRWLockExclusive(&w->lock);
+	if (w->have_baseline) {
+		const int at = wasapi_watch_find(w, id);
+		if (active && at < 0) {
+			// Not recorded means not reported: a later REMOVED would
+			// otherwise have nothing to match.
+			report = wasapi_watch_add(w, id, direction);
+		} else if (!active && at >= 0) {
+			direction        = w->endpoints[at].direction;
+			w->endpoints[at] = w->endpoints[--w->endpoint_count];
+			report           = true;
+		}
+	}
+	ReleaseSRWLockExclusive(&w->lock);
+	if (report)
+		wasapi_watch_call(w, active ? SPUDAUDIO_DEVICE_EVENT_ADDED : SPUDAUDIO_DEVICE_EVENT_REMOVED, id, direction, SPUDAUDIO_DEFAULT_ROLE_NONE);
+}
+
+static HRESULT STDMETHODCALLTYPE wasapi_watch_query_interface(IMMNotificationClient *self, REFIID iid, void **out_object) {
+	if (!out_object)
+		return E_POINTER;
+	if (memcmp(iid, &spudaudio_iid_iunknown, sizeof(GUID)) != 0 && memcmp(iid, &spudaudio_iid_immnotificationclient, sizeof(GUID)) != 0) {
+		*out_object = NULL;
+		return E_NOINTERFACE;
+	}
+	InterlockedIncrement(&((struct wasapi_watch *)self)->refs);
+	*out_object = self;
+	return S_OK;
+}
+
+static ULONG STDMETHODCALLTYPE wasapi_watch_add_ref(IMMNotificationClient *self) {
+	return (ULONG)InterlockedIncrement(&((struct wasapi_watch *)self)->refs);
+}
+
+static ULONG STDMETHODCALLTYPE wasapi_watch_release(IMMNotificationClient *self) {
+	struct wasapi_watch *w = (struct wasapi_watch *)self;
+	const LONG refs        = InterlockedDecrement(&w->refs);
+	if (refs == 0) {
+		free(w->endpoints);
+		free(w);
+	}
+	return (ULONG)refs;
+}
+
+// The usual plug and unplug: the endpoint stays known and its state changes.
+static HRESULT STDMETHODCALLTYPE wasapi_watch_on_state_changed(IMMNotificationClient *self, LPCWSTR wide_id, DWORD new_state) {
+	struct wasapi_watch *w = (struct wasapi_watch *)self;
+	if (!wide_id || !wasapi_watch_enter(w))
+		return S_OK;
+	SPUDAUDIO_DIRECTION direction = SPUDAUDIO_DIRECTION_OUTPUT;
+	DWORD state                   = 0;
+	if (new_state != DEVICE_STATE_ACTIVE)
+		wasapi_watch_update(w, wide_id, false, direction);
+	else if (wasapi_endpoint_info(w->enumerator, wide_id, &direction, &state))
+		wasapi_watch_update(w, wide_id, true, direction);
+	wasapi_watch_leave(w);
+	return S_OK;
+}
+
+// A new endpoint (a driver was installed). It counts once it is active.
+static HRESULT STDMETHODCALLTYPE wasapi_watch_on_added(IMMNotificationClient *self, LPCWSTR wide_id) {
+	struct wasapi_watch *w = (struct wasapi_watch *)self;
+	if (!wide_id || !wasapi_watch_enter(w))
+		return S_OK;
+	SPUDAUDIO_DIRECTION direction = SPUDAUDIO_DIRECTION_OUTPUT;
+	DWORD state                   = 0;
+	if (wasapi_endpoint_info(w->enumerator, wide_id, &direction, &state) && state == DEVICE_STATE_ACTIVE)
+		wasapi_watch_update(w, wide_id, true, direction);
+	wasapi_watch_leave(w);
+	return S_OK;
+}
+
+// The endpoint no longer exists (a driver was uninstalled).
+static HRESULT STDMETHODCALLTYPE wasapi_watch_on_removed(IMMNotificationClient *self, LPCWSTR wide_id) {
+	struct wasapi_watch *w = (struct wasapi_watch *)self;
+	if (!wide_id || !wasapi_watch_enter(w))
+		return S_OK;
+	wasapi_watch_update(w, wide_id, false, SPUDAUDIO_DIRECTION_OUTPUT);
+	wasapi_watch_leave(w);
+	return S_OK;
+}
+
+// One call per role. A NULL id is a role left with no endpoint, passed on
+// as a NULL persistent id.
+static HRESULT STDMETHODCALLTYPE wasapi_watch_on_default_changed(IMMNotificationClient *self, EDataFlow flow, ERole role, LPCWSTR wide_id) {
+	struct wasapi_watch *w = (struct wasapi_watch *)self;
+	if ((flow != eRender && flow != eCapture) || !wasapi_watch_enter(w))
+		return S_OK;
+	AcquireSRWLockShared(&w->lock);
+	const bool have_baseline = w->have_baseline;
+	ReleaseSRWLockShared(&w->lock);
+	char id[256];
+	if (wide_id)
+		wasapi_persistent_id(wide_id, id, sizeof(id));
+	for (size_t i = 0; have_baseline && i < sizeof(wasapi_roles) / sizeof(wasapi_roles[0]); ++i)
+		if (wasapi_roles[i].role == role)
+			wasapi_watch_call(
+			    w, SPUDAUDIO_DEVICE_EVENT_DEFAULT_CHANGED, wide_id ? id : NULL, flow == eRender ? SPUDAUDIO_DIRECTION_OUTPUT : SPUDAUDIO_DIRECTION_INPUT,
+			    wasapi_roles[i].spud_role);
+	wasapi_watch_leave(w);
+	return S_OK;
+}
+
+// Not a SpudAudio event.
+static HRESULT STDMETHODCALLTYPE wasapi_watch_on_property_changed(IMMNotificationClient *self, LPCWSTR wide_id, const PROPERTYKEY key) {
+	(void)self, (void)wide_id, (void)key;
+	return S_OK;
+}
+
+static IMMNotificationClientVtbl wasapi_watch_vtbl = {
+    .QueryInterface         = wasapi_watch_query_interface,
+    .AddRef                 = wasapi_watch_add_ref,
+    .Release                = wasapi_watch_release,
+    .OnDeviceStateChanged   = wasapi_watch_on_state_changed,
+    .OnDeviceAdded          = wasapi_watch_on_added,
+    .OnDeviceRemoved        = wasapi_watch_on_removed,
+    .OnDefaultDeviceChanged = wasapi_watch_on_default_changed,
+    .OnPropertyValueChanged = wasapi_watch_on_property_changed,
+};
+
+/*
+ * Records the active endpoints of both directions - what
+ * spudaudio_enumerate_devices returns. The lock is held across the
+ * enumeration: a notification either finishes first (and is ignored, with
+ * the enumeration after it seeing its effect) or waits and is then compared
+ * against the record. Without that a change could fall between the two.
+ */
+static SPUDRESULT wasapi_watch_take_baseline(struct wasapi_watch *w) {
+	static const struct {
+		EDataFlow flow;
+		SPUDAUDIO_DIRECTION direction;
+	} flows[] = {
+	    {eRender, SPUDAUDIO_DIRECTION_OUTPUT},
+	    {eCapture, SPUDAUDIO_DIRECTION_INPUT},
+	};
+	SPUDRESULT r = SPUD_SUCCESS;
+	AcquireSRWLockExclusive(&w->lock);
+	for (size_t f = 0; f < sizeof(flows) / sizeof(flows[0]) && SPUD_SUCCESS == r; ++f) {
+		IMMDeviceCollection *collection = NULL;
+		HRESULT hr                      = IMMDeviceEnumerator_EnumAudioEndpoints(w->enumerator, flows[f].flow, DEVICE_STATE_ACTIVE, &collection);
+		if (FAILED(hr)) {
+			r = wasapi_result(hr);
+			break;
+		}
+		UINT count = 0;
+		IMMDeviceCollection_GetCount(collection, &count);
+		for (UINT i = 0; i < count && SPUD_SUCCESS == r; ++i) {
+			IMMDevice *mm_device = NULL;
+			if (FAILED(IMMDeviceCollection_Item(collection, i, &mm_device)))
+				continue; // removed between GetCount and Item
+			LPWSTR wide_id = NULL;
+			char id[256]   = {0};
+			if (SUCCEEDED(IMMDevice_GetId(mm_device, &wide_id))) {
+				wasapi_persistent_id(wide_id, id, sizeof(id));
+				CoTaskMemFree(wide_id);
+			}
+			IMMDevice_Release(mm_device);
+			if (wasapi_watch_find(w, id) < 0 && !wasapi_watch_add(w, id, flows[f].direction))
+				r = SPUDRESULT_OUT_OF_MEMORY;
+		}
+		IMMDeviceCollection_Release(collection);
+	}
+	w->have_baseline = SPUD_SUCCESS == r;
+	ReleaseSRWLockExclusive(&w->lock);
+	return r;
+}
+
+// Returns once the caller's callback is not running and will not run again.
+// NULL is a no-op. The memory goes with the last reference, which MMDevice
+// may hold a little longer.
+static void wasapi_watch_destroy(struct wasapi_watch *w) {
+	if (!w)
+		return;
+	InterlockedExchange(&w->stopped, 1);
+	IMMDeviceEnumerator_UnregisterEndpointNotificationCallback(w->enumerator, &w->client);
+	// A notification that got in before `stopped` was set is still counted.
+	while (InterlockedCompareExchange(&w->active, 0, 0) != 0)
+		Sleep(1);
+	IMMNotificationClient_Release(&w->client);
+}
+
+static SPUDRESULT wasapi_watch_create(spudaudio_instance instance, SPUDAUDIO_DEVICE_EVENT_CALLBACK callback, void *user_data, struct wasapi_watch **out_watch) {
+	struct wasapi_watch *w = (struct wasapi_watch *)calloc(1, sizeof(*w));
+	if (!w)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	w->client.lpVtbl = &wasapi_watch_vtbl;
+	w->refs          = 1;
+	w->callback      = callback;
+	w->user_data     = user_data;
+	w->enumerator    = instance->enumerator;
+	InitializeSRWLock(&w->lock);
+
+	// Registered first, baseline second: see wasapi_watch_take_baseline.
+	HRESULT hr = IMMDeviceEnumerator_RegisterEndpointNotificationCallback(w->enumerator, &w->client);
+	if (FAILED(hr)) {
+		free(w);
+		return wasapi_result(hr);
+	}
+	SPUDRESULT r = wasapi_watch_take_baseline(w);
+	if (SPUDFAIL(r)) {
+		wasapi_watch_destroy(w);
+		return r;
+	}
+	*out_watch = w;
+	return SPUD_SUCCESS;
+}
+
+// True on the instance's own device-event callback, where waiting for that
+// callback to return would never end.
+static bool wasapi_in_device_event_callback(spudaudio_instance instance) {
+	return instance->watch && (DWORD)InterlockedCompareExchange(&instance->watch->callback_thread_id, 0, 0) == GetCurrentThreadId();
+}
+
+// --------------------------------------------------------------------------
 // Instance / devices
 // --------------------------------------------------------------------------
 
@@ -591,6 +943,9 @@ SPUDRESULT spudaudio_create_instance(
 SPUDRESULT spudaudio_destroy_instance(spudaudio_instance instance) {
 	if (!instance)
 		return SPUDRESULT_SAUD_INVALID_INSTANCE;
+	if (wasapi_in_device_event_callback(instance))
+		return SPUDRESULT_GENERAL_FAILURE;
+	wasapi_watch_destroy(instance->watch);
 	struct spudaudio_device_t *dev = instance->devices;
 	while (dev) {
 		struct spudaudio_device_t *next = dev->next;
@@ -726,18 +1081,10 @@ SPUDRESULT spudaudio_get_device_properties(
 
 	// One default per WASAPI role. A role with no default at all
 	// (E_NOTFOUND, e.g. no capture devices) just isn't held by this one.
-	static const struct {
-		ERole role;
-		SPUDAUDIO_DEFAULT_ROLES spud_role;
-	} roles[] = {
-	    {eConsole, SPUDAUDIO_DEFAULT_ROLE_GENERAL},
-	    {eMultimedia, SPUDAUDIO_DEFAULT_ROLE_MULTIMEDIA},
-	    {eCommunications, SPUDAUDIO_DEFAULT_ROLE_COMMUNICATIONS},
-	};
 	EDataFlow flow = device->direction == SPUDAUDIO_DIRECTION_OUTPUT ? eRender : eCapture;
-	for (size_t i = 0; i < sizeof(roles) / sizeof(roles[0]); ++i) {
+	for (size_t i = 0; i < sizeof(wasapi_roles) / sizeof(wasapi_roles[0]); ++i) {
 		IMMDevice *default_device = NULL;
-		if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(device->instance->enumerator, flow, roles[i].role, &default_device)))
+		if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(device->instance->enumerator, flow, wasapi_roles[i].role, &default_device)))
 			continue;
 		LPWSTR wide_id = NULL;
 		char id[256]   = {0};
@@ -746,7 +1093,7 @@ SPUDRESULT spudaudio_get_device_properties(
 			CoTaskMemFree(wide_id);
 		}
 		if (strcmp(id, device->persistent_id) == 0)
-			out_properties->default_roles |= roles[i].spud_role;
+			out_properties->default_roles |= wasapi_roles[i].spud_role;
 		IMMDevice_Release(default_device);
 	}
 
@@ -1293,11 +1640,22 @@ SPUDRESULT spudaudio_set_device_event_callback(
     spudaudio_instance instance,
     SPUDAUDIO_DEVICE_EVENT_CALLBACK callback,
     void *user_data) {
-	(void)callback;
-	(void)user_data;
 	if (!instance)
 		return SPUDRESULT_SAUD_INVALID_INSTANCE;
-	return SPUDRESULT_NOT_IMPLEMENTED_YET;
+	if (wasapi_in_device_event_callback(instance))
+		return SPUDRESULT_GENERAL_FAILURE;
+
+	// The new watch is built before the old one goes, so a failure leaves
+	// the callback that was set still set.
+	struct wasapi_watch *watch = NULL;
+	if (callback) {
+		SPUDRESULT r = wasapi_watch_create(instance, callback, user_data, &watch);
+		if (SPUDFAIL(r))
+			return r;
+	}
+	wasapi_watch_destroy(instance->watch);
+	instance->watch = watch;
+	return SPUD_SUCCESS;
 }
 
 #if __cplusplus

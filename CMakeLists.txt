@@ -243,7 +243,11 @@ if(NOT TARGET spudlib)
         # libasound2-dev / alsa-lib-devel, and pthreads for the audio thread.
         find_package(ALSA REQUIRED)
         find_package(Threads REQUIRED)
-        target_link_libraries(spudlib PRIVATE ALSA::ALSA Threads::Threads)
+        # libudev-dev / systemd-devel: udev's "sound" events, which are how
+        # device-change notification hears of a card (ALSA reports none).
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(SPUDAUDIO_LIBUDEV REQUIRED IMPORTED_TARGET libudev)
+        target_link_libraries(spudlib PRIVATE ALSA::ALSA Threads::Threads PkgConfig::SPUDAUDIO_LIBUDEV)
     endif()
     if("COREAUDIO" IN_LIST SPUDAUDIO_APIS)
         # The HAL, and CoreFoundation for its CFString names.

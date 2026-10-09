@@ -19,9 +19,11 @@
  *   streams is always Float32 at the device's nominal rate. So F32 is the
  *   only sample format, the rate is the device's (spudaudio_set_device_
  *   sample_rate changes it), and the channel count is the device's.
- *   ALLOW_OS_CONVERSION isn't built yet — that needs an AudioConverter or
- *   AUHAL — so the flag is refused with NOT_IMPLEMENTED_YET rather than
- *   ignored.
+ * - With ALLOW_OS_CONVERSION a stream in any other format goes through an
+ *   AudioConverter (AudioToolbox) in the IOProc. The converter is given the
+ *   two formats and nothing else - no channel map, no mix, no quality
+ *   setting - so what it does with them is its own default. See "A
+ *   converting stream" above ca_ioproc.
  * - A device can expose several HAL streams in one direction (a buffer
  *   each in the IOProc's AudioBufferList); they're presented as one
  *   SpudAudio channel range, rearranged (never converted) through a
@@ -30,6 +32,11 @@
  *   per process per device: two SpudAudio streams on the same device in
  *   one process share it.
  * - EXCLUSIVE is hog mode.
+ * - Device-change notification is listeners on the system object: the
+ *   device list and the three default-device properties. The device list
+ *   is the only trigger for ADDED/REMOVED, so a device that stays but gains
+ *   or loses its streams in one direction is not reported until the list
+ *   next changes.
  */
 
 #include "spudaudioapple.h"
@@ -60,12 +67,42 @@ struct spudaudio_device_t {
 	struct spudaudio_device_t *next; // instance-owned list
 };
 
+// One endpoint as the device-change watch last saw it. The UID is kept
+// because a device that has gone can no longer be asked for it.
+struct ca_endpoint {
+	SPUDAUDIO_DIRECTION direction;
+	char persistent_id[256]; // kAudioDevicePropertyDeviceUID
+};
+
+/*
+ * Device-change notification for one instance: exists while a callback is
+ * set. The HAL only says that the device list changed, so the watch keeps
+ * the endpoints it last saw and reports the difference. That record is the
+ * watch's own and is only touched on its queue - never the instance's
+ * device list, which belongs to the thread that enumerates.
+ */
+struct ca_watch {
+	SPUDAUDIO_DEVICE_EVENT_CALLBACK callback;
+	void *user_data;
+	// Listeners run on this private serial queue, so destroy can drain it
+	// after removing them.
+	dispatch_queue_t queue;
+	AudioObjectPropertyListenerBlock listener;
+	bool listening;
+	// Queue-only state.
+	bool have_baseline; // changes before the baseline is taken are not events
+	SPUDRESULT baseline;
+	struct ca_endpoint *endpoints;
+	uint32_t endpoint_count;
+};
+
 struct spudaudio_instance_t {
 #if _DEBUG
 	const char *debug_name;
 #endif
 	struct spudaudio_device_t *devices; // every device ever enumerated
 	spudaudio_device *enumerated[2];    // latest array per direction
+	struct ca_watch *watch;             // NULL while no device-event callback is set
 };
 
 struct spudaudio_stream_t {
@@ -80,8 +117,19 @@ struct spudaudio_stream_t {
 	AudioDeviceIOProcID proc;
 	bool hogged;
 	mach_timebase_info_data_t timebase;
-	float *scratch;   // max_callback_frames x channels
-	float **planes;   // planar: one pointer per channel into scratch
+	float *scratch;   // max_callback_frames x channels; converting: device_max_frames x device channels, interleaved
+	float **planes;   // planar: one pointer per channel into scratch; unused when converting
+	SPUDAUDIO_FORMAT device_format; // the device's own format when the stream was created
+	uint32_t device_max_frames;     // the most frames one IOProc call brings
+
+	// ALLOW_OS_CONVERSION, when the stream's format isn't the device's: an
+	// AudioConverter between the two. NULL otherwise, and the rest of this
+	// group unused. The callback then always gets one whole period, held in
+	// `client`, however many frames the device asked for or brought.
+	AudioConverterRef converter;
+	uint8_t *client;             // one period in the stream's format
+	void **client_planes;        // planar: one pointer per channel into client
+	uint32_t client_sample_bytes; // bytes of one sample
 
 	// Device-change listeners (alive, nominal rate) run on this private
 	// serial queue, so destroy can drain it after removing them.
@@ -104,6 +152,17 @@ struct spudaudio_stream_t {
 	double origin_sample_time;   // device sample time of the first frame since start
 	double expected_sample_time; // where the next buffer should start
 	uint64_t position_frames;    // fallback when a timestamp has no sample time
+
+	// IOProc-only state of a converting stream.
+	uint32_t client_used;        // OUTPUT: frames of `client` the converter has taken; a full period = empty
+	uint32_t client_filled;      // INPUT: frames of `client` the converter has written
+	uint32_t device_given;       // INPUT: frames of scratch the converter has taken this cycle
+	uint32_t device_left;        // INPUT: frames of scratch it hasn't
+	uint64_t client_position;    // stream frames handed to the callback since start
+	bool pending_discontinuity;  // the device skipped; flag the next callback
+	bool cycle_host_valid;       // this IO cycle's timestamp has a host time
+	uint64_t cycle_host_ns;      // that host time
+	int64_t cycle_offset_frames; // where the next callback's first frame sits relative to it, in stream frames
 };
 
 // --------------------------------------------------------------------------
@@ -205,9 +264,284 @@ static void ca_device_format(AudioObjectID dev, SPUDAUDIO_DIRECTION dir, SPUDAUD
 	free(layout);
 }
 
+// A SpudAudio format as linear PCM in native byte order. False for a sample
+// format with no PCM description.
+static bool ca_format_to_asbd(const SPUDAUDIO_FORMAT *format, AudioStreamBasicDescription *out) {
+	UInt32 bits            = 0;
+	AudioFormatFlags flags = 0;
+	switch (format->sample_format) {
+	case SPUDAUDIO_SAMPLE_FORMAT_S16:
+		bits  = 16;
+		flags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+		break;
+	case SPUDAUDIO_SAMPLE_FORMAT_S24_PACKED:
+		bits  = 24;
+		flags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+		break;
+	case SPUDAUDIO_SAMPLE_FORMAT_S24_32_MSB:
+		bits  = 24;
+		flags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsAlignedHigh;
+		break;
+	case SPUDAUDIO_SAMPLE_FORMAT_S24_32_LSB:
+		bits  = 24;
+		flags = kAudioFormatFlagIsSignedInteger; // neither packed nor high: the low 3 bytes
+		break;
+	case SPUDAUDIO_SAMPLE_FORMAT_S32:
+		bits  = 32;
+		flags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+		break;
+	case SPUDAUDIO_SAMPLE_FORMAT_F32:
+		bits  = 32;
+		flags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+		break;
+	default:
+		return false;
+	}
+	const UInt32 sample_bytes = spudaudio_sample_format_byte_size(format->sample_format);
+	memset(out, 0, sizeof(*out));
+	out->mFormatID         = kAudioFormatLinearPCM;
+	out->mSampleRate       = format->sample_rate;
+	out->mFormatFlags      = flags | kAudioFormatFlagsNativeEndian | (format->interleaved ? 0 : kAudioFormatFlagIsNonInterleaved);
+	out->mChannelsPerFrame = format->channel_count;
+	out->mBitsPerChannel   = bits;
+	out->mFramesPerPacket  = 1;
+	// Non-interleaved: each buffer holds one channel, so a "frame" is a sample.
+	out->mBytesPerFrame  = format->interleaved ? sample_bytes * format->channel_count : sample_bytes;
+	out->mBytesPerPacket = out->mBytesPerFrame;
+	return true;
+}
+
+// frames at rate `from` as frames at rate `to`. round: -1 down, 0 nearest,
+// 1 up.
+static uint32_t ca_scale_frames(uint32_t frames, uint32_t from, uint32_t to, int round) {
+	const uint64_t scaled = (uint64_t)frames * to;
+	if (round > 0)
+		return (uint32_t)((scaled + from - 1) / from);
+	if (round == 0)
+		return (uint32_t)((scaled + from / 2) / from);
+	return (uint32_t)(scaled / from);
+}
+
+// Whether a stream of `format` on a device of `device_format` goes through
+// an AudioConverter. Interleaving is never a reason: the IOProc rearranges.
+static bool ca_format_needs_conversion(const SPUDAUDIO_FORMAT *format, const SPUDAUDIO_FORMAT *device_format) {
+	return format->sample_format != SPUDAUDIO_SAMPLE_FORMAT_F32 || format->sample_rate != device_format->sample_rate ||
+	       format->channel_count != device_format->channel_count;
+}
+
+/*
+ * Where each channel of a converted stream goes. No channel map and no mix
+ * are set on the converter, so its default applies: stream channel n is
+ * device channel n, and channels past the device's are discarded (OUTPUT)
+ * or silent (INPUT) - NA. No layout where the device has none, or where its
+ * one channel is MONO and the stream has more (MONO can't sit in a layout).
+ */
+static void ca_converted_positions(const SPUDAUDIO_FORMAT *device_format, uint32_t channel_count, SPUDAUDIO_CHANNEL_POSITION *out) {
+	memset(out, SPUDAUDIO_CHANNEL_POSITION_UNSPECIFIED, SPUDAUDIO_MAX_CHANNELS * sizeof(*out));
+	if (!spudaudio_format_has_layout(device_format))
+		return;
+	if (device_format->positions[0] == SPUDAUDIO_CHANNEL_POSITION_MONO && channel_count > 1)
+		return;
+	for (uint32_t ch = 0; ch < channel_count; ++ch)
+		out[ch] = ch < device_format->channel_count ? device_format->positions[ch] : SPUDAUDIO_CHANNEL_POSITION_NA;
+}
+
 static void ca_sleep_ms(long ms) {
 	struct timespec t = {ms / 1000, (ms % 1000) * 1000000L};
 	nanosleep(&t, NULL);
+}
+
+// An empty task: run synchronously on a serial queue, it returns once
+// everything queued before it has finished.
+static void ca_drain(void *context) { (void)context; }
+
+// The system object's default-device properties, as SpudAudio roles.
+static const struct {
+	AudioObjectPropertySelector selector;
+	SPUDAUDIO_DIRECTION direction;
+	SPUDAUDIO_DEFAULT_ROLES role;
+} ca_defaults[] = {
+    {kAudioHardwarePropertyDefaultOutputDevice, SPUDAUDIO_DIRECTION_OUTPUT, SPUDAUDIO_DEFAULT_ROLE_GENERAL},
+    {kAudioHardwarePropertyDefaultSystemOutputDevice, SPUDAUDIO_DIRECTION_OUTPUT, SPUDAUDIO_DEFAULT_ROLE_SYSTEM_SOUNDS},
+    {kAudioHardwarePropertyDefaultInputDevice, SPUDAUDIO_DIRECTION_INPUT, SPUDAUDIO_DEFAULT_ROLE_GENERAL},
+};
+
+// --------------------------------------------------------------------------
+// Device-change notification
+// --------------------------------------------------------------------------
+
+static const AudioObjectPropertyAddress ca_hardware_watched[] = {
+    {kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
+    {kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
+    {kAudioHardwarePropertyDefaultSystemOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
+    {kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
+};
+
+// Its address is the queue-specific key that marks a watch's queue; the
+// value stored under it is the watch.
+static char ca_watch_key;
+
+// Every endpoint there is now, malloc'd: the same test and the same identity
+// (UID + direction) as spudaudio_enumerate_devices, for both directions.
+static SPUDRESULT ca_list_endpoints(struct ca_endpoint **out_endpoints, uint32_t *out_count) {
+	static const SPUDAUDIO_DIRECTION directions[] = {SPUDAUDIO_DIRECTION_OUTPUT, SPUDAUDIO_DIRECTION_INPUT};
+	*out_endpoints                                = NULL;
+	*out_count                                    = 0;
+
+	UInt32 size        = 0;
+	AudioObjectID *ids = (AudioObjectID *)ca_get_alloc(kAudioObjectSystemObject, kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, &size);
+	uint32_t count     = ids ? size / (uint32_t)sizeof(AudioObjectID) : 0;
+	if (count == 0) {
+		free(ids);
+		return SPUD_SUCCESS;
+	}
+	struct ca_endpoint *list = (struct ca_endpoint *)calloc((size_t)count * 2, sizeof(*list));
+	if (!list) {
+		free(ids);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+
+	uint32_t written = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		for (size_t d = 0; d < sizeof(directions) / sizeof(directions[0]); ++d) {
+			if (ca_channel_count(ids[i], directions[d], NULL) == 0)
+				continue; // no streams in this direction
+			list[written].direction = directions[d];
+			ca_get_string(ids[i], kAudioDevicePropertyDeviceUID, list[written].persistent_id, sizeof(list[written].persistent_id));
+			++written;
+		}
+	}
+	free(ids);
+	*out_endpoints = list;
+	*out_count     = written;
+	return SPUD_SUCCESS;
+}
+
+static bool ca_endpoint_in(const struct ca_endpoint *endpoint, const struct ca_endpoint *list, uint32_t count) {
+	for (uint32_t i = 0; i < count; ++i)
+		if (list[i].direction == endpoint->direction && strcmp(list[i].persistent_id, endpoint->persistent_id) == 0)
+			return true;
+	return false;
+}
+
+// Runs on the watch's queue: kAudioHardwarePropertyDevices changed. Reports
+// what left and then what arrived since the last record, and keeps the new
+// one. If the endpoints can't be listed the old record stays, and the next
+// change is compared against it.
+static void ca_watch_devices_changed(struct ca_watch *w) {
+	struct ca_endpoint *now = NULL;
+	uint32_t now_count      = 0;
+	if (SPUDFAIL(ca_list_endpoints(&now, &now_count)))
+		return;
+	struct ca_endpoint *before = w->endpoints;
+	uint32_t before_count      = w->endpoint_count;
+	w->endpoints               = now;
+	w->endpoint_count          = now_count;
+
+	for (uint32_t i = 0; i < before_count; ++i)
+		if (!ca_endpoint_in(&before[i], now, now_count))
+			w->callback(SPUDAUDIO_DEVICE_EVENT_REMOVED, before[i].persistent_id, before[i].direction, SPUDAUDIO_DEFAULT_ROLE_NONE, w->user_data);
+	for (uint32_t i = 0; i < now_count; ++i)
+		if (!ca_endpoint_in(&now[i], before, before_count))
+			w->callback(SPUDAUDIO_DEVICE_EVENT_ADDED, now[i].persistent_id, now[i].direction, SPUDAUDIO_DEFAULT_ROLE_NONE, w->user_data);
+	free(before);
+}
+
+// Runs on the watch's queue: one of ca_defaults changed. A role left with
+// no device is reported with a NULL id.
+static void ca_watch_default_changed(struct ca_watch *w, size_t which) {
+	AudioObjectID id = kAudioObjectUnknown;
+	char uid[256];
+	const char *persistent_id = NULL;
+	if (ca_get(kAudioObjectSystemObject, ca_defaults[which].selector, kAudioObjectPropertyScopeGlobal, sizeof(id), &id) == noErr && id != kAudioObjectUnknown) {
+		ca_get_string(id, kAudioDevicePropertyDeviceUID, uid, sizeof(uid));
+		persistent_id = uid;
+	}
+	w->callback(SPUDAUDIO_DEVICE_EVENT_DEFAULT_CHANGED, persistent_id, ca_defaults[which].direction, ca_defaults[which].role, w->user_data);
+}
+
+// Runs on the watch's queue. The device list is handled first, so an
+// endpoint is reported ADDED before it is reported as a default.
+static void ca_on_hardware_change(struct ca_watch *w, UInt32 count, const AudioObjectPropertyAddress *addresses) {
+	if (!w->have_baseline)
+		return;
+	for (UInt32 i = 0; i < count; ++i)
+		if (addresses[i].mSelector == kAudioHardwarePropertyDevices) {
+			ca_watch_devices_changed(w);
+			break;
+		}
+	for (UInt32 i = 0; i < count; ++i)
+		for (size_t d = 0; d < sizeof(ca_defaults) / sizeof(ca_defaults[0]); ++d)
+			if (addresses[i].mSelector == ca_defaults[d].selector)
+				ca_watch_default_changed(w, d);
+}
+
+// Runs on the watch's queue, once, after the listeners are registered.
+static void ca_watch_take_baseline(void *context) {
+	struct ca_watch *w = (struct ca_watch *)context;
+	w->baseline        = ca_list_endpoints(&w->endpoints, &w->endpoint_count);
+	w->have_baseline   = SPUD_SUCCESS == w->baseline;
+}
+
+// Returns once no listener is running or will run. NULL is a no-op.
+static void ca_watch_destroy(struct ca_watch *w) {
+	if (!w)
+		return;
+	if (w->listening) {
+		for (size_t i = 0; i < sizeof(ca_hardware_watched) / sizeof(ca_hardware_watched[0]); ++i)
+			AudioObjectRemovePropertyListenerBlock(kAudioObjectSystemObject, &ca_hardware_watched[i], w->queue, w->listener);
+		// Removal doesn't wait for a listener already queued: running an
+		// empty task on the same serial queue does.
+		dispatch_sync_f(w->queue, NULL, ca_drain);
+	}
+	if (w->listener)
+		Block_release(w->listener);
+	if (w->queue)
+		dispatch_release(w->queue);
+	free(w->endpoints);
+	free(w);
+}
+
+static SPUDRESULT ca_watch_create(SPUDAUDIO_DEVICE_EVENT_CALLBACK callback, void *user_data, struct ca_watch **out_watch) {
+	struct ca_watch *w = (struct ca_watch *)calloc(1, sizeof(*w));
+	if (!w)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	w->callback  = callback;
+	w->user_data = user_data;
+	w->queue     = dispatch_queue_create("spudaudio.coreaudio.devices", DISPATCH_QUEUE_SERIAL);
+	if (w->queue)
+		w->listener = Block_copy(^(UInt32 count, const AudioObjectPropertyAddress *addresses) {
+			ca_on_hardware_change(w, count, addresses);
+		});
+	if (!w->queue || !w->listener) {
+		ca_watch_destroy(w);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	dispatch_queue_set_specific(w->queue, &ca_watch_key, w, NULL);
+
+	// Listeners first, baseline second, and the baseline on the queue: a
+	// change in between is then queued behind the baseline and compared
+	// against it, instead of falling in a gap before the listeners existed.
+	SPUDRESULT r = SPUD_SUCCESS;
+	w->listening = true;
+	for (size_t i = 0; i < sizeof(ca_hardware_watched) / sizeof(ca_hardware_watched[0]) && SPUD_SUCCESS == r; ++i)
+		r = ca_result(AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &ca_hardware_watched[i], w->queue, w->listener));
+	if (SPUD_SUCCESS == r) {
+		dispatch_sync_f(w->queue, w, ca_watch_take_baseline);
+		r = w->baseline;
+	}
+	if (SPUDFAIL(r)) {
+		ca_watch_destroy(w);
+		return r;
+	}
+	*out_watch = w;
+	return SPUD_SUCCESS;
+}
+
+// True on the instance's own device-event callback, where waiting for that
+// callback to return would never end.
+static bool ca_in_device_event_callback(spudaudio_instance instance) {
+	return instance->watch && dispatch_get_specific(&ca_watch_key) == instance->watch;
 }
 
 // --------------------------------------------------------------------------
@@ -232,6 +566,9 @@ SPUDRESULT spudaudio_create_instance(
 SPUDRESULT spudaudio_destroy_instance(spudaudio_instance instance) {
 	if (!instance)
 		return SPUDRESULT_SAUD_INVALID_INSTANCE;
+	if (ca_in_device_event_callback(instance))
+		return SPUDRESULT_GENERAL_FAILURE;
+	ca_watch_destroy(instance->watch);
 	struct spudaudio_device_t *dev = instance->devices;
 	while (dev) {
 		struct spudaudio_device_t *next = dev->next;
@@ -344,21 +681,12 @@ SPUDRESULT spudaudio_get_device_properties(
 	out_properties->supports_exclusive = true; // hog mode
 	ca_device_format(device->id, device->direction, &out_properties->native_format);
 
-	static const struct {
-		AudioObjectPropertySelector selector;
-		SPUDAUDIO_DIRECTION direction;
-		SPUDAUDIO_DEFAULT_ROLES role;
-	} defaults[] = {
-	    {kAudioHardwarePropertyDefaultOutputDevice, SPUDAUDIO_DIRECTION_OUTPUT, SPUDAUDIO_DEFAULT_ROLE_GENERAL},
-	    {kAudioHardwarePropertyDefaultSystemOutputDevice, SPUDAUDIO_DIRECTION_OUTPUT, SPUDAUDIO_DEFAULT_ROLE_SYSTEM_SOUNDS},
-	    {kAudioHardwarePropertyDefaultInputDevice, SPUDAUDIO_DIRECTION_INPUT, SPUDAUDIO_DEFAULT_ROLE_GENERAL},
-	};
-	for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); ++i) {
-		if (defaults[i].direction != device->direction)
+	for (size_t i = 0; i < sizeof(ca_defaults) / sizeof(ca_defaults[0]); ++i) {
+		if (ca_defaults[i].direction != device->direction)
 			continue;
 		AudioObjectID id = kAudioObjectUnknown;
-		if (ca_get(kAudioObjectSystemObject, defaults[i].selector, kAudioObjectPropertyScopeGlobal, sizeof(id), &id) == noErr && id == device->id)
-			out_properties->default_roles |= defaults[i].role;
+		if (ca_get(kAudioObjectSystemObject, ca_defaults[i].selector, kAudioObjectPropertyScopeGlobal, sizeof(id), &id) == noErr && id == device->id)
+			out_properties->default_roles |= ca_defaults[i].role;
 	}
 	return SPUD_SUCCESS;
 }
@@ -426,7 +754,6 @@ SPUDRESULT spudaudio_get_timing_caps(
     const SPUDAUDIO_FORMAT *format,
     SPUDAUDIO_STREAM_FLAGS flags,
     SPUDAUDIO_TIMING_CAPS *out_caps) {
-	(void)flags; // hog mode doesn't change the HAL's buffer-size range
 	if (!out_caps)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	memset(out_caps, 0, sizeof(*out_caps));
@@ -443,6 +770,20 @@ SPUDRESULT spudaudio_get_timing_caps(
 	out_caps->default_period_frames     = current;
 	out_caps->variable_callback_frames  = ca_variable_max_frames(device->id) != 0;
 	// min/max_buffer_frames stay 0: no buffer separate from the period.
+
+	// Hog mode doesn't change the HAL's buffer-size range; conversion does
+	// change what it means. The range above is in device frames, and a
+	// converted stream's period is in its own, handed over whole each time.
+	if (flags & SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION) {
+		SPUDAUDIO_FORMAT device_format;
+		ca_device_format(device->id, device->direction, &device_format);
+		if (format->sample_rate != 0 && device_format.sample_rate != 0 && ca_format_needs_conversion(format, &device_format)) {
+			out_caps->min_period_frames        = ca_scale_frames(out_caps->min_period_frames, device_format.sample_rate, format->sample_rate, 1);
+			out_caps->max_period_frames        = ca_scale_frames(out_caps->max_period_frames, device_format.sample_rate, format->sample_rate, -1);
+			out_caps->default_period_frames    = ca_scale_frames(out_caps->default_period_frames, device_format.sample_rate, format->sample_rate, 0);
+			out_caps->variable_callback_frames = false;
+		}
+	}
 	return SPUD_SUCCESS;
 }
 
@@ -451,57 +792,102 @@ static SPUDRESULT ca_check_thread(const SPUDAUDIO_THREAD_DESC *t) {
 	return t->priority == SPUDAUDIO_THREAD_PRIORITY_PLATFORM ? SPUD_SUCCESS : SPUDRESULT_SAUD_THREAD_PRIORITY_UNSUPPORTED;
 }
 
+// What ca_check_desc worked out about the device side of a stream.
+struct ca_plan {
+	SPUDAUDIO_FORMAT device_format; // the device's own format in the stream's direction
+	uint32_t device_period;         // kAudioDevicePropertyBufferFrameSize to set
+	uint32_t device_max_frames;     // the most frames one IOProc call brings
+	AudioConverterRef converter;    // NULL when the stream's format is the device's
+};
+
 /*
- * The one check behind probe and create. Format, period and buffer are
- * properties of the device the HAL reports directly, so they're compared
- * exactly here; the suggestion for each is the device's own value. Hog
- * mode is checked, not taken — taking it would silence every other app on
- * the device for the probe's duration; create takes it.
+ * Format, period and buffer are properties of the device the HAL reports
+ * directly, so they're compared exactly here; the suggestion for each is the
+ * device's own value. With ALLOW_OS_CONVERSION a format that isn't the
+ * device's is put to AudioConverterNew instead, and whether it converts is
+ * the converter's answer. Hog mode is checked, not taken — taking it would
+ * silence every other app on the device for the probe's duration; create
+ * takes it. On failure `plan->converter` may be left set.
  */
-static SPUDRESULT ca_check_desc(const SPUDAUDIO_STREAM_DESC *desc, SPUDAUDIO_STREAM_CONFIG *cfg) {
+static SPUDRESULT ca_plan_stream(const SPUDAUDIO_STREAM_DESC *desc, SPUDAUDIO_STREAM_CONFIG *cfg, struct ca_plan *plan) {
 	const AudioObjectID dev = desc->device->id;
 	UInt32 alive            = 0;
 	if (ca_get(dev, kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal, sizeof(alive), &alive) != noErr || !alive)
 		return SPUDRESULT_SAUD_DEVICE_LOST;
 
-	// Refused, not ignored: ignoring it would answer FORMAT_NOT_SUPPORTED
-	// as if conversion had been tried.
-	if (desc->flags & SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION)
-		return SPUDRESULT_NOT_IMPLEMENTED_YET;
-
 	// --- Format.
-	SPUDAUDIO_FORMAT device_format;
-	ca_device_format(dev, desc->device->direction, &device_format);
+	const SPUDAUDIO_FORMAT *device_format = &plan->device_format;
+	ca_device_format(dev, desc->device->direction, &plan->device_format);
 	cfg->format = desc->format;
-	if (desc->format.sample_format != SPUDAUDIO_SAMPLE_FORMAT_F32) {
-		cfg->format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
-		return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
-	}
-	if (desc->format.sample_rate != device_format.sample_rate) {
-		cfg->format.sample_rate = device_format.sample_rate; // or spudaudio_set_device_sample_rate
-		return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
-	}
-	if (desc->format.channel_count != device_format.channel_count) {
-		cfg->format.channel_count = device_format.channel_count;
-		memcpy(cfg->format.positions, device_format.positions, sizeof(cfg->format.positions));
-		return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
-	}
-	// A layout must be the device's own (its preferred layout is the
-	// user's speaker setup in Audio MIDI Setup — not something to change).
-	if (spudaudio_format_has_layout(&desc->format) &&
-	    memcmp(desc->format.positions, device_format.positions, desc->format.channel_count) != 0) {
-		memcpy(cfg->format.positions, device_format.positions, sizeof(cfg->format.positions));
-		return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+	if ((desc->flags & SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION) && ca_format_needs_conversion(&desc->format, device_format)) {
+		// A layout must be the one the conversion gives.
+		SPUDAUDIO_CHANNEL_POSITION positions[SPUDAUDIO_MAX_CHANNELS];
+		ca_converted_positions(device_format, desc->format.channel_count, positions);
+		if (spudaudio_format_has_layout(&desc->format) && memcmp(desc->format.positions, positions, desc->format.channel_count) != 0) {
+			memcpy(cfg->format.positions, positions, sizeof(cfg->format.positions));
+			return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+		}
+		// The device side of the converter is the scratch buffer: the
+		// device's rate and channels, Float32, interleaved.
+		SPUDAUDIO_FORMAT scratch_format = *device_format;
+		scratch_format.interleaved      = true;
+		AudioStreamBasicDescription stream_asbd, scratch_asbd;
+		const bool out      = desc->device->direction == SPUDAUDIO_DIRECTION_OUTPUT;
+		const bool describe = ca_format_to_asbd(&desc->format, &stream_asbd) && ca_format_to_asbd(&scratch_format, &scratch_asbd);
+		if (!describe || AudioConverterNew(out ? &stream_asbd : &scratch_asbd, out ? &scratch_asbd : &stream_asbd, &plan->converter) != noErr) {
+			// The converter won't do it: suggest what needs no conversion.
+			plan->converter           = NULL;
+			cfg->format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
+			cfg->format.sample_rate   = device_format->sample_rate;
+			cfg->format.channel_count = device_format->channel_count;
+			memcpy(cfg->format.positions, device_format->positions, sizeof(cfg->format.positions));
+			return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+		}
+	} else {
+		if (desc->format.sample_format != SPUDAUDIO_SAMPLE_FORMAT_F32) {
+			cfg->format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
+			return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+		}
+		if (desc->format.sample_rate != device_format->sample_rate) {
+			cfg->format.sample_rate = device_format->sample_rate; // or spudaudio_set_device_sample_rate
+			return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+		}
+		if (desc->format.channel_count != device_format->channel_count) {
+			cfg->format.channel_count = device_format->channel_count;
+			memcpy(cfg->format.positions, device_format->positions, sizeof(cfg->format.positions));
+			return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+		}
+		// A layout must be the device's own (its preferred layout is the
+		// user's speaker setup in Audio MIDI Setup — not something to change).
+		if (spudaudio_format_has_layout(&desc->format) &&
+		    memcmp(desc->format.positions, device_format->positions, desc->format.channel_count) != 0) {
+			memcpy(cfg->format.positions, device_format->positions, sizeof(cfg->format.positions));
+			return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+		}
 	}
 
-	// --- Period.
+	// --- Period. The HAL's range is in device frames. A converted stream's
+	// period is in its own frames, so the device gets the nearest whole
+	// number of its frames that lasts as long.
 	uint32_t min_period = 0, max_period = 0;
 	if (!ca_period_range(dev, &min_period, &max_period))
 		return SPUDRESULT_SAUD_DEVICE_LOST;
 	cfg->period_mode = SPUDAUDIO_PERIOD_MODE_EXACT;
-	if (desc->period_frames < min_period || desc->period_frames > max_period) {
-		cfg->period_frames = desc->period_frames < min_period ? min_period : max_period;
-		return SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE;
+	if (plan->converter) {
+		const uint32_t rate        = desc->format.sample_rate;
+		const uint32_t device_rate = device_format->sample_rate;
+		const uint64_t in_device   = ((uint64_t)desc->period_frames * device_rate + rate / 2) / rate;
+		if (in_device < min_period || in_device > max_period) {
+			cfg->period_frames = in_device < min_period ? ca_scale_frames(min_period, device_rate, rate, 1) : ca_scale_frames(max_period, device_rate, rate, -1);
+			return SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE;
+		}
+		plan->device_period = (uint32_t)in_device;
+	} else {
+		if (desc->period_frames < min_period || desc->period_frames > max_period) {
+			cfg->period_frames = desc->period_frames < min_period ? min_period : max_period;
+			return SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE;
+		}
+		plan->device_period = desc->period_frames;
 	}
 	cfg->period_frames = desc->period_frames;
 
@@ -521,8 +907,22 @@ static SPUDRESULT ca_check_desc(const SPUDAUDIO_STREAM_DESC *desc, SPUDAUDIO_STR
 	}
 
 	uint32_t variable        = ca_variable_max_frames(dev);
-	cfg->max_callback_frames = variable > desc->period_frames ? variable : desc->period_frames;
+	plan->device_max_frames  = variable > plan->device_period ? variable : plan->device_period;
+	// A converted stream's callback always gets one whole period.
+	cfg->max_callback_frames = plan->converter ? desc->period_frames : plan->device_max_frames;
 	return SPUD_SUCCESS;
+}
+
+// The one check behind probe and create. On success the caller owns
+// `plan->converter`, if there is one.
+static SPUDRESULT ca_check_desc(const SPUDAUDIO_STREAM_DESC *desc, SPUDAUDIO_STREAM_CONFIG *cfg, struct ca_plan *plan) {
+	memset(plan, 0, sizeof(*plan));
+	SPUDRESULT r = ca_plan_stream(desc, cfg, plan);
+	if (SPUDFAIL(r) && plan->converter) {
+		AudioConverterDispose(plan->converter);
+		plan->converter = NULL;
+	}
+	return r;
 }
 
 SPUDRESULT spudaudio_probe_stream(
@@ -537,12 +937,200 @@ SPUDRESULT spudaudio_probe_stream(
 	r = ca_check_thread(&desc->thread);
 	if (SPUDFAIL(r))
 		return r;
-	return ca_check_desc(desc, out_config);
+	struct ca_plan plan;
+	r = ca_check_desc(desc, out_config, &plan);
+	if (plan.converter)
+		AudioConverterDispose(plan.converter);
+	return r;
 }
 
 // --------------------------------------------------------------------------
 // IOProc
 // --------------------------------------------------------------------------
+
+/*
+ * A converting stream (ALLOW_OS_CONVERSION). The device works in its own
+ * frames and the caller in the stream's, and with a rate change the two
+ * don't line up cycle for cycle. So the callback is always given exactly
+ * one period, held in `client`, and the AudioConverter sits between that
+ * and the device-format scratch buffer:
+ *
+ * - OUTPUT: the IOProc asks the converter for the device's frames; the
+ *   converter pulls stream frames through ca_converter_take_client, which
+ *   calls the callback whenever the period it holds is used up.
+ * - INPUT: the IOProc hands the converter the device's frames through
+ *   ca_converter_take_device and asks it for stream frames until those are
+ *   used up, calling the callback each time a period is full.
+ *
+ * Either way the callback runs zero or more times per IO cycle.
+ */
+
+// Returned by ca_converter_take_device when this cycle's frames are used
+// up. Any error with no packets tells the converter "none for now" without
+// ending its stream; AudioConverterFillComplexBuffer hands it back.
+#define CA_CONVERTER_NO_MORE_INPUT ((OSStatus)'spnm')
+
+// The stream's buffer list over `client`, from frame `first` for `frames`.
+static void ca_client_buffer_list(struct spudaudio_stream_t *s, AudioBufferList *list, uint32_t first, uint32_t frames) {
+	const uint32_t channels = s->config.format.channel_count;
+	if (s->config.format.interleaved) {
+		const uint32_t frame_bytes        = s->client_sample_bytes * channels;
+		list->mNumberBuffers              = 1;
+		list->mBuffers[0].mNumberChannels = channels;
+		list->mBuffers[0].mDataByteSize   = frames * frame_bytes;
+		list->mBuffers[0].mData           = s->client + (size_t)first * frame_bytes;
+		return;
+	}
+	list->mNumberBuffers = channels;
+	for (uint32_t ch = 0; ch < channels; ++ch) {
+		list->mBuffers[ch].mNumberChannels = 1;
+		list->mBuffers[ch].mDataByteSize   = frames * s->client_sample_bytes;
+		list->mBuffers[ch].mData           = (uint8_t *)s->client_planes[ch] + (size_t)first * s->client_sample_bytes;
+	}
+}
+
+// One period to or from the caller. The host time is this IO cycle's, moved
+// by where the period's first frame sits in the cycle; the converter's own
+// delay isn't in it.
+static void ca_call_client(struct spudaudio_stream_t *s) {
+	SPUDAUDIO_CALLBACK_INFO info = {0};
+	if (s->pending_discontinuity) {
+		info.flags |= SPUDAUDIO_CALLBACK_FLAG_DISCONTINUITY;
+		s->pending_discontinuity = false;
+	}
+	info.device_position_frames = s->client_position;
+	if (s->cycle_host_valid) {
+		info.host_time_ns = (uint64_t)((int64_t)s->cycle_host_ns + s->cycle_offset_frames * 1000000000LL / (int64_t)s->config.format.sample_rate);
+		info.flags |= SPUDAUDIO_CALLBACK_FLAG_HOST_TIME_VALID;
+	}
+	s->callback(s, s->config.format.interleaved ? (void *)s->client : (void *)s->client_planes, s->config.period_frames, &info, s->user_data);
+	s->client_position += s->config.period_frames;
+	s->cycle_offset_frames += s->config.period_frames;
+}
+
+// OUTPUT: the converter wants stream frames. What it was given last time
+// has been consumed by the time it asks again, so the period can be refilled.
+static OSStatus ca_converter_take_client(
+    AudioConverterRef converter,
+    UInt32 *io_packets,
+    AudioBufferList *io_data,
+    AudioStreamPacketDescription **out_descriptions,
+    void *client) {
+	(void)converter;
+	struct spudaudio_stream_t *s = (struct spudaudio_stream_t *)client;
+	if (out_descriptions)
+		*out_descriptions = NULL;
+	if (s->client_used == s->config.period_frames) {
+		ca_call_client(s);
+		s->client_used = 0;
+	}
+	uint32_t frames = s->config.period_frames - s->client_used;
+	if (frames > *io_packets)
+		frames = *io_packets;
+	ca_client_buffer_list(s, io_data, s->client_used, frames);
+	s->client_used += frames;
+	*io_packets = frames;
+	return noErr;
+}
+
+// INPUT: the converter wants device frames; it gets what this cycle brought.
+static OSStatus ca_converter_take_device(
+    AudioConverterRef converter,
+    UInt32 *io_packets,
+    AudioBufferList *io_data,
+    AudioStreamPacketDescription **out_descriptions,
+    void *client) {
+	(void)converter;
+	struct spudaudio_stream_t *s = (struct spudaudio_stream_t *)client;
+	if (out_descriptions)
+		*out_descriptions = NULL;
+	if (s->device_left == 0) {
+		*io_packets = 0;
+		return CA_CONVERTER_NO_MORE_INPUT;
+	}
+	const uint32_t channels = s->device_format.channel_count;
+	uint32_t frames         = s->device_left < *io_packets ? s->device_left : *io_packets;
+	io_data->mNumberBuffers              = 1;
+	io_data->mBuffers[0].mNumberChannels = channels;
+	io_data->mBuffers[0].mDataByteSize   = frames * channels * (uint32_t)sizeof(float);
+	io_data->mBuffers[0].mData           = s->scratch + (size_t)s->device_given * channels;
+	s->device_given += frames;
+	s->device_left -= frames;
+	*io_packets = frames;
+	return noErr;
+}
+
+// One IO cycle of a converting stream: `frames` device frames to fill
+// (`output`) or to take (`input`).
+static void ca_ioproc_converted(
+    struct spudaudio_stream_t *s,
+    const AudioBufferList *input,
+    AudioBufferList *output,
+    uint32_t frames,
+    const AudioTimeStamp *time) {
+	const bool out                 = s->direction == SPUDAUDIO_DIRECTION_OUTPUT;
+	const uint32_t device_channels = s->device_format.channel_count;
+	const uint32_t period          = s->config.period_frames;
+
+	// A skipped cycle shows on the device clock, as in ca_ioproc; the
+	// stream's position moves on by the same time in its own frames.
+	if (time && (time->mFlags & kAudioTimeStampSampleTimeValid)) {
+		if (s->have_origin && time->mSampleTime > s->expected_sample_time + 0.5) {
+			s->pending_discontinuity = true;
+			atomic_fetch_add(out ? &s->underflow_count : &s->overflow_count, 1);
+			s->client_position += (uint64_t)((time->mSampleTime - s->expected_sample_time) * s->config.format.sample_rate / s->device_format.sample_rate);
+		}
+		s->have_origin          = true;
+		s->expected_sample_time = time->mSampleTime + frames;
+	}
+	s->cycle_host_valid = time && (time->mFlags & kAudioTimeStampHostTimeValid);
+	if (s->cycle_host_valid)
+		s->cycle_host_ns = spudaudio_apple_host_time_to_ns(time->mHostTime, &s->timebase);
+	// OUTPUT: frames still held from the last callback play first. INPUT:
+	// frames already written to the period were captured before this cycle.
+	s->cycle_offset_frames = out ? (int64_t)(period - s->client_used) : -(int64_t)s->client_filled;
+
+	if (out) {
+		AudioBufferList device_list;
+		device_list.mNumberBuffers              = 1;
+		device_list.mBuffers[0].mNumberChannels = device_channels;
+		device_list.mBuffers[0].mDataByteSize   = frames * device_channels * (uint32_t)sizeof(float);
+		device_list.mBuffers[0].mData           = s->scratch;
+		UInt32 produced                         = frames;
+		if (AudioConverterFillComplexBuffer(s->converter, ca_converter_take_client, s, &produced, &device_list, NULL) != noErr || produced > frames)
+			produced = 0;
+		// What the converter didn't produce plays as silence.
+		if (produced < frames)
+			memset(s->scratch + (size_t)produced * device_channels, 0, (size_t)(frames - produced) * device_channels * sizeof(float));
+		spudaudio_apple_copy_to_buffer_list(output, frames, device_channels, s->scratch, NULL);
+		return;
+	}
+
+	spudaudio_apple_copy_from_buffer_list(input, frames, device_channels, s->scratch, NULL);
+	s->device_given = 0;
+	s->device_left  = frames;
+	for (;;) {
+		// Room for one buffer per channel of a planar stream.
+		struct {
+			AudioBufferList list;
+			AudioBuffer more[SPUDAUDIO_MAX_CHANNELS - 1];
+		} client_list;
+		UInt32 produced = period - s->client_filled;
+		ca_client_buffer_list(s, &client_list.list, s->client_filled, produced);
+		const UInt32 wanted   = produced;
+		const OSStatus status = AudioConverterFillComplexBuffer(s->converter, ca_converter_take_device, s, &produced, &client_list.list, NULL);
+		if (produced > wanted)
+			produced = 0;
+		s->client_filled += produced;
+		if (s->client_filled == period) {
+			ca_call_client(s);
+			s->client_filled = 0;
+		}
+		// CA_CONVERTER_NO_MORE_INPUT: the cycle's frames are used up.
+		if (status != noErr || produced == 0)
+			break;
+	}
+}
 
 /*
  * Runs on the HAL's real-time IO thread. No allocation, no locks: the
@@ -584,8 +1172,14 @@ static OSStatus ca_ioproc(
 	}
 
 	uint32_t frames = list->mBuffers[0].mDataByteSize / (list->mBuffers[0].mNumberChannels * (uint32_t)sizeof(float));
-	if (frames > s->config.max_callback_frames)
-		frames = s->config.max_callback_frames; // never past the promised bound
+	if (frames > s->device_max_frames)
+		frames = s->device_max_frames; // never past the promised bound
+
+	if (s->converter) {
+		ca_ioproc_converted(s, input, output, frames, time);
+		atomic_store(&s->in_callback, false);
+		return noErr;
+	}
 
 	SPUDAUDIO_CALLBACK_INFO info = {0};
 	if (time && (time->mFlags & kAudioTimeStampSampleTimeValid)) {
@@ -635,7 +1229,8 @@ static bool ca_is_terminal(unsigned int state) {
 }
 
 // Runs on the stream's listener queue: the device vanished, or its nominal
-// rate changed (this process or any other) so the granted format is stale.
+// rate changed (this process or any other) so the granted format - or the
+// converter built for the old rate - is stale.
 // Either ends the stream; the device is stopped so the IOProc stops too.
 static void ca_on_device_change(struct spudaudio_stream_t *s, UInt32 count, const AudioObjectPropertyAddress *addresses) {
 	for (UInt32 i = 0; i < count && !ca_is_terminal(atomic_load(&s->state)); ++i) {
@@ -644,7 +1239,7 @@ static void ca_on_device_change(struct spudaudio_stream_t *s, UInt32 count, cons
 			if (ca_get(s->device, kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal, sizeof(alive), &alive) != noErr || !alive)
 				ca_set_terminal(s, SPUDRESULT_SAUD_DEVICE_LOST);
 		} else if (addresses[i].mSelector == kAudioDevicePropertyNominalSampleRate) {
-			if (ca_nominal_rate(s->device) != s->config.format.sample_rate)
+			if (ca_nominal_rate(s->device) != s->device_format.sample_rate)
 				ca_set_terminal(s, SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED);
 		}
 	}
@@ -656,8 +1251,6 @@ static const AudioObjectPropertyAddress ca_watched[] = {
     {kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
     {kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
 };
-
-static void ca_drain(void *context) { (void)context; }
 
 // Hog mode toggles: setting it takes ownership if free, releases it if
 // ours (the value written is ignored by the HAL).
@@ -680,11 +1273,15 @@ static void ca_free_stream(struct spudaudio_stream_t *s) {
 	}
 	if (s->proc)
 		AudioDeviceDestroyIOProcID(s->device, s->proc);
+	if (s->converter)
+		AudioConverterDispose(s->converter);
 	ca_release_hog(s);
 	if (s->listener)
 		Block_release(s->listener);
 	if (s->listener_queue)
 		dispatch_release(s->listener_queue);
+	free(s->client_planes);
+	free(s->client);
 	free(s->planes);
 	free(s->scratch);
 #if _DEBUG
@@ -722,19 +1319,23 @@ SPUDRESULT spudaudio_create_stream(
 	atomic_init(&s->in_callback, false);
 	mach_timebase_info(&s->timebase);
 
-	r = ca_check_desc(desc, &s->config);
+	struct ca_plan plan;
+	r                    = ca_check_desc(desc, &s->config, &plan);
+	s->converter         = plan.converter;
+	s->device_format     = plan.device_format;
+	s->device_max_frames = plan.device_max_frames;
 
 	// Period: set this process's IO buffer size for the device and read
 	// it back — the HAL can still refuse or adjust a value in range.
 	if (SPUD_SUCCESS == r) {
-		UInt32 frames   = desc->period_frames;
+		UInt32 frames   = plan.device_period;
 		OSStatus status = ca_set(s->device, kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal, sizeof(frames), &frames);
 		UInt32 granted  = 0;
 		if (status == noErr)
 			status = ca_get(s->device, kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal, sizeof(granted), &granted);
 		if (status != noErr)
 			r = ca_result(status);
-		else if (granted != desc->period_frames)
+		else if (granted != plan.device_period)
 			r = SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE;
 	}
 
@@ -752,7 +1353,21 @@ SPUDRESULT spudaudio_create_stream(
 			r = SPUDRESULT_SAUD_EXCLUSIVE_UNAVAILABLE;
 	}
 
-	if (SPUD_SUCCESS == r) {
+	if (SPUD_SUCCESS == r && s->converter) {
+		// The scratch buffer is the device side of the converter, and
+		// `client` holds the one period the callback is given.
+		const uint32_t channels = s->config.format.channel_count;
+		const uint32_t frames   = s->config.period_frames;
+		s->client_sample_bytes  = spudaudio_sample_format_byte_size(s->config.format.sample_format);
+		s->scratch              = (float *)calloc((size_t)s->device_max_frames * s->device_format.channel_count, sizeof(float));
+		s->client               = (uint8_t *)calloc((size_t)frames * channels, s->client_sample_bytes);
+		s->client_planes        = (void **)calloc(channels, sizeof(void *));
+		if (!s->scratch || !s->client || !s->client_planes)
+			r = SPUDRESULT_OUT_OF_MEMORY;
+		else
+			for (uint32_t ch = 0; ch < channels; ++ch)
+				s->client_planes[ch] = s->client + (size_t)ch * frames * s->client_sample_bytes;
+	} else if (SPUD_SUCCESS == r) {
 		const uint32_t channels = s->config.format.channel_count;
 		const uint32_t frames   = s->config.max_callback_frames;
 		s->scratch              = (float *)calloc((size_t)frames * channels, sizeof(float));
@@ -802,6 +1417,15 @@ SPUDRESULT spudaudio_stream_start(spudaudio_stream stream) {
 
 	stream->have_origin     = false;
 	stream->position_frames = 0;
+	if (stream->converter) {
+		// Nothing carried over from the last run: not the converter's
+		// history, not a part-used period.
+		AudioConverterReset(stream->converter);
+		stream->client_used           = stream->config.period_frames;
+		stream->client_filled         = 0;
+		stream->client_position       = 0;
+		stream->pending_discontinuity = false;
+	}
 	// RUNNING before the device starts: the IOProc outputs silence
 	// unless the stream is RUNNING.
 	atomic_store(&stream->state, SPUDAUDIO_STREAM_STATE_RUNNING);
@@ -863,7 +1487,9 @@ SPUDRESULT spudaudio_stream_get_status(
 }
 
 // The HAL's own breakdown: device latency + safety offset + the IO buffer
-// + the first stream's latency, all in frames at the nominal rate.
+// + the first stream's latency, all in frames at the nominal rate. For a
+// converting stream that total is restated in the stream's frames; the
+// converter's own delay is not in it.
 SPUDRESULT spudaudio_stream_get_latency_frames(
     spudaudio_stream stream,
     uint32_t *out_latency_frames) {
@@ -887,6 +1513,8 @@ SPUDRESULT spudaudio_stream_get_latency_frames(
 		free(streams);
 	}
 	*out_latency_frames = device_latency + safety + buffer + stream_latency;
+	if (stream->converter)
+		*out_latency_frames = ca_scale_frames(*out_latency_frames, stream->device_format.sample_rate, stream->config.format.sample_rate, 0);
 	return SPUD_SUCCESS;
 }
 
@@ -894,11 +1522,22 @@ SPUDRESULT spudaudio_set_device_event_callback(
     spudaudio_instance instance,
     SPUDAUDIO_DEVICE_EVENT_CALLBACK callback,
     void *user_data) {
-	(void)callback;
-	(void)user_data;
 	if (!instance)
 		return SPUDRESULT_SAUD_INVALID_INSTANCE;
-	return SPUDRESULT_NOT_IMPLEMENTED_YET;
+	if (ca_in_device_event_callback(instance))
+		return SPUDRESULT_GENERAL_FAILURE;
+
+	// The new watch is built before the old one goes, so a failure leaves
+	// the callback that was set still set.
+	struct ca_watch *watch = NULL;
+	if (callback) {
+		SPUDRESULT r = ca_watch_create(callback, user_data, &watch);
+		if (SPUDFAIL(r))
+			return r;
+	}
+	ca_watch_destroy(instance->watch);
+	instance->watch = watch;
+	return SPUD_SUCCESS;
 }
 
 #if __cplusplus

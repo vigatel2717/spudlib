@@ -54,3 +54,64 @@ labelling them as positions would misdescribe them. CoreAudio's ambisonic labels
 therefore read back as `AUX`. If ambisonic streams are ever carried as such, they need
 their own per-format layout kind (speaker positions vs. ambisonic order + channel
 ordering + normalization), not more position labels.
+
+## TODO: let the caller see and decide what OS conversion does (CoreAudio)
+
+`SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION` on CoreAudio puts an `AudioConverter`
+between the stream's format and the device's. Today the flag is one bit: the caller
+can allow conversion, but can't see what was converted or choose how. Each item below
+is a decision the backend currently makes, or a fact it currently keeps to itself.
+
+**Where this should go:** SpudAudio reports every one of these differences between
+what was asked for and what the device does, and the caller makes every choice among
+them. Nothing below should stay a built-in default.
+
+- [ ] **Whether a stream is converted at all.** A format that already is the device's
+  is not converted, flag or no flag, and `SPUDAUDIO_STREAM_CONFIG` doesn't say which
+  happened. Report it, along with the device-side format (sample rate, channel count,
+  layout) the stream is being converted to or from.
+- [ ] **Channel routing when the channel counts differ.** No channel map and no mix
+  are set, so the converter's default applies: stream channel n is device channel n,
+  and channels past the device's are discarded (OUTPUT) or silent (INPUT). Mono into a
+  stereo device plays on the left only; stereo into mono drops the right channel.
+  Report the routing in use, and let the caller supply a channel map or ask for a mix
+  (`kAudioConverterChannelMap`, `kAudioConverterPropertyPerformDownmix`,
+  `kAudioConverterPropertyChannelMixMap`).
+- [ ] **Channel layout.** A requested layout must equal the one that default routing
+  gives (the device's positions for shared channels, `NA` for the rest) or the stream
+  is refused. Let the caller hand both layouts to the converter
+  (`kAudioConverterInputChannelLayout` / `kAudioConverterOutputChannelLayout`) when it
+  wants a different one.
+- [ ] **The device's I/O buffer size.** The stream's period is in its own frames; the
+  device's buffer is set to the nearest whole number of device frames that lasts as
+  long. The rounding is the backend's and the result isn't reported. Report the device
+  period that was granted, and let the caller state it or the rounding.
+- [ ] **How the callback is driven.** The callback always gets exactly `period_frames`
+  from a buffer of the backend's, zero or more times per device I/O cycle, because with
+  a rate change the two sets of frames don't line up. Report that the stream is driven
+  this way, and how many device frames one I/O cycle is, so the caller can tell a
+  re-chunked stream from a direct one.
+- [ ] **Timing that leaves out the converter.** `host_time_ns` is the I/O cycle's host
+  time moved by the period's offset in the cycle, and
+  `spudaudio_stream_get_latency_frames()` is the HAL's total restated in stream frames.
+  Neither includes the converter's own delay. Report that delay separately.
+- [ ] **Converter quality and priming.** Sample-rate converter quality and the prime
+  method are left at the converter's defaults. Report what is in use and let the caller
+  set them.
+- [ ] **A device rate change ends the stream.** The converter was built for the old
+  rate, so the stream moves to `SPUDAUDIO_STREAM_STATE_ERROR` with
+  `SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED`, the same as an unconverted stream. That is
+  already reported; whether a converted stream could instead be offered the new rate
+  is the caller's choice to add.
+
+Verification still owed, separate from the above:
+
+- [ ] The CoreAudio conversion path has not been compiled or run.
+- [ ] `SPUDAUDIO_SAMPLE_FORMAT_S24_32_LSB` may be refused: `AudioConverter` only
+  promises non-packed integers that are high-aligned. If it is, the stream fails with
+  `SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED`.
+
+WASAPI (`AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM`) and ALSA (plugins) convert inside the
+platform and hide the same kinds of difference. Whatever shape the reporting takes
+should cover them too, so one description of "what was converted and how" works on
+every backend.

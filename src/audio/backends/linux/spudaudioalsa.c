@@ -3,6 +3,7 @@
 #include "../../spudaudiointernal.h"
 
 #include <alsa/asoundlib.h>
+#include <libudev.h>
 
 #include <errno.h>
 #include <poll.h>
@@ -92,12 +93,45 @@ struct spudaudio_stream_t {
 	atomic_uint_least64_t overflow_count;
 };
 
+// One endpoint as the device-change watch last saw it.
+struct alsa_endpoint {
+	SPUDAUDIO_DIRECTION direction;
+	char persistent_id[256]; // the ALSA PCM name
+};
+
+/*
+ * Device-change notification for one instance: exists while a callback is
+ * set. ALSA itself reports nothing when a card comes or goes, so the watch
+ * listens to udev's "sound" events - the "udev" source, sent once udev has
+ * finished with the device - on a thread of its own, there being no
+ * platform thread to borrow. An event only says that something about a
+ * sound device changed: the watch then lists the PCM name hints again and
+ * reports the difference from the ones it last saw. That record is the
+ * watch's own and, once the thread runs, only the thread's - never the
+ * instance's device list, which belongs to the thread that enumerates.
+ *
+ * No DEFAULT_CHANGED: ALSA's default is the PCM named "default", which
+ * doesn't move.
+ */
+struct alsa_watch {
+	SPUDAUDIO_DEVICE_EVENT_CALLBACK callback;
+	void *user_data;
+	struct udev *udev;
+	struct udev_monitor *monitor;
+	int stop_fd; // eventfd; written by destroy, polled by the thread
+	pthread_t thread;
+	bool thread_started;
+	struct alsa_endpoint *endpoints;
+	uint32_t endpoint_count;
+};
+
 struct spudaudio_instance_t {
 #if _DEBUG
 	const char *debug_name;
 #endif
 	struct spudaudio_device_t *devices; // every PCM ever enumerated
 	spudaudio_device *enumerated[2];    // latest array per direction
+	struct alsa_watch *watch;           // NULL while no device-event callback is set
 };
 
 // --------------------------------------------------------------------------
@@ -281,6 +315,199 @@ static bool alsa_chmap_query_matches(const snd_pcm_chmap_query_t *q, const unsig
 }
 
 // --------------------------------------------------------------------------
+// Device-change notification
+// --------------------------------------------------------------------------
+
+// Every endpoint there is now, malloc'd: the same hints, the same test and
+// the same identity (PCM name + direction) as spudaudio_enumerate_devices,
+// for both directions. A PCM with no IOID does both and is two endpoints.
+static SPUDRESULT alsa_list_endpoints(struct alsa_endpoint **out_endpoints, uint32_t *out_count) {
+	static const struct {
+		SPUDAUDIO_DIRECTION direction;
+		const char *ioid;
+	} directions[] = {
+	    {SPUDAUDIO_DIRECTION_OUTPUT, "Output"},
+	    {SPUDAUDIO_DIRECTION_INPUT, "Input"},
+	};
+	*out_endpoints = NULL;
+	*out_count     = 0;
+
+	void **hints = NULL;
+	int err      = snd_device_name_hint(-1, "pcm", &hints);
+	if (err < 0)
+		return alsa_result(err);
+	uint32_t capacity = 0;
+	for (void **h = hints; *h; ++h)
+		capacity += 2;
+	if (capacity == 0) {
+		snd_device_name_free_hint(hints);
+		return SPUD_SUCCESS;
+	}
+	struct alsa_endpoint *list = (struct alsa_endpoint *)calloc(capacity, sizeof(*list));
+	if (!list) {
+		snd_device_name_free_hint(hints);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+
+	uint32_t written = 0;
+	for (void **h = hints; *h; ++h) {
+		char *name = snd_device_name_get_hint(*h, "NAME");
+		char *ioid = snd_device_name_get_hint(*h, "IOID");
+		for (size_t d = 0; name && d < sizeof(directions) / sizeof(directions[0]); ++d) {
+			if (ioid && strcmp(ioid, directions[d].ioid) != 0)
+				continue;
+			list[written].direction = directions[d].direction;
+			strncpy(list[written].persistent_id, name, sizeof(list[written].persistent_id) - 1);
+			++written;
+		}
+		free(name);
+		free(ioid);
+	}
+	snd_device_name_free_hint(hints);
+	*out_endpoints = list;
+	*out_count     = written;
+	return SPUD_SUCCESS;
+}
+
+static bool alsa_endpoint_in(const struct alsa_endpoint *endpoint, const struct alsa_endpoint *list, uint32_t count) {
+	for (uint32_t i = 0; i < count; ++i)
+		if (list[i].direction == endpoint->direction && strcmp(list[i].persistent_id, endpoint->persistent_id) == 0)
+			return true;
+	return false;
+}
+
+// Runs on the watch's thread: udev reported a sound device. Reports what
+// left and then what arrived since the last record, and keeps the new one.
+// If the endpoints can't be listed the old record stays, and the next change
+// is compared against it.
+static void alsa_watch_devices_changed(struct alsa_watch *w) {
+	struct alsa_endpoint *now = NULL;
+	uint32_t now_count        = 0;
+	if (SPUDFAIL(alsa_list_endpoints(&now, &now_count)))
+		return;
+	struct alsa_endpoint *before = w->endpoints;
+	uint32_t before_count        = w->endpoint_count;
+	w->endpoints                 = now;
+	w->endpoint_count            = now_count;
+
+	for (uint32_t i = 0; i < before_count; ++i)
+		if (!alsa_endpoint_in(&before[i], now, now_count))
+			w->callback(SPUDAUDIO_DEVICE_EVENT_REMOVED, before[i].persistent_id, before[i].direction, SPUDAUDIO_DEFAULT_ROLE_NONE, w->user_data);
+	for (uint32_t i = 0; i < now_count; ++i)
+		if (!alsa_endpoint_in(&now[i], before, before_count))
+			w->callback(SPUDAUDIO_DEVICE_EVENT_ADDED, now[i].persistent_id, now[i].direction, SPUDAUDIO_DEFAULT_ROLE_NONE, w->user_data);
+	free(before);
+}
+
+/*
+ * The watch's thread: blocks until udev has something or destroy wants it
+ * gone. One plugged card is several udev events (the card, its control
+ * device, each PCM device), so everything waiting is taken before the
+ * endpoints are listed once; events that come later list them again, and a
+ * listing that finds nothing new reports nothing.
+ */
+static void *alsa_watch_thread(void *arg) {
+	struct alsa_watch *w = (struct alsa_watch *)arg;
+	struct pollfd fds[2] = {
+	    {.fd = w->stop_fd, .events = POLLIN},
+	    {.fd = udev_monitor_get_fd(w->monitor), .events = POLLIN},
+	};
+	for (;;) {
+		if (poll(fds, 2, -1) < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		if (fds[0].revents)
+			break;
+		if (fds[1].revents & (POLLERR | POLLHUP | POLLNVAL))
+			break; // the monitor is gone: nothing more will come
+		if (!(fds[1].revents & POLLIN))
+			continue;
+		// The monitor's socket is non-blocking: NULL once it is empty.
+		bool changed = false;
+		struct udev_device *device;
+		while ((device = udev_monitor_receive_device(w->monitor))) {
+			changed = true;
+			udev_device_unref(device);
+		}
+		if (changed)
+			alsa_watch_devices_changed(w);
+	}
+	return NULL;
+}
+
+// Returns once the thread has ended, so the callback is not running and
+// will not run again. NULL is a no-op.
+static void alsa_watch_destroy(struct alsa_watch *w) {
+	if (!w)
+		return;
+	if (w->thread_started) {
+		const uint64_t one = 1;
+		ssize_t written    = write(w->stop_fd, &one, sizeof(one));
+		(void)written; // an eventfd write only fails at counter overflow
+		pthread_join(w->thread, NULL);
+	}
+	if (w->monitor)
+		udev_monitor_unref(w->monitor);
+	if (w->udev)
+		udev_unref(w->udev);
+	if (w->stop_fd >= 0)
+		close(w->stop_fd);
+	free(w->endpoints);
+	free(w);
+}
+
+static SPUDRESULT alsa_watch_create(SPUDAUDIO_DEVICE_EVENT_CALLBACK callback, void *user_data, struct alsa_watch **out_watch) {
+	struct alsa_watch *w = (struct alsa_watch *)calloc(1, sizeof(*w));
+	if (!w)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	w->callback  = callback;
+	w->user_data = user_data;
+	w->stop_fd   = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+
+	SPUDRESULT r = w->stop_fd >= 0 ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
+	if (SPUD_SUCCESS == r) {
+		w->udev = udev_new();
+		if (!w->udev)
+			r = SPUDRESULT_OUT_OF_MEMORY;
+	}
+	if (SPUD_SUCCESS == r) {
+		w->monitor = udev_monitor_new_from_netlink(w->udev, "udev");
+		if (!w->monitor)
+			r = SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+	// Receiving first, baseline second, thread last: a change in between
+	// waits in the monitor's socket and is compared against the baseline,
+	// instead of falling in a gap before anything was listening.
+	if (SPUD_SUCCESS == r && udev_monitor_filter_add_match_subsystem_devtype(w->monitor, "sound", NULL) < 0)
+		r = SPUDRESULT_API_SPECIFIC_FAILURE;
+	if (SPUD_SUCCESS == r && udev_monitor_enable_receiving(w->monitor) < 0)
+		r = SPUDRESULT_API_SPECIFIC_FAILURE;
+	if (SPUD_SUCCESS == r)
+		r = alsa_list_endpoints(&w->endpoints, &w->endpoint_count);
+	if (SPUD_SUCCESS == r) {
+		if (pthread_create(&w->thread, NULL, alsa_watch_thread, w) == 0)
+			w->thread_started = true;
+		else
+			r = SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+	if (SPUDFAIL(r)) {
+		alsa_watch_destroy(w);
+		return r;
+	}
+	*out_watch = w;
+	return SPUD_SUCCESS;
+}
+
+// True on the instance's own device-event callback, where waiting for that
+// callback to return would never end. The callback only ever runs on the
+// watch's thread.
+static bool alsa_in_device_event_callback(spudaudio_instance instance) {
+	return instance->watch && pthread_equal(pthread_self(), instance->watch->thread);
+}
+
+// --------------------------------------------------------------------------
 // Instance / devices
 // --------------------------------------------------------------------------
 
@@ -305,6 +532,9 @@ SPUDRESULT spudaudio_create_instance(
 SPUDRESULT spudaudio_destroy_instance(spudaudio_instance instance) {
 	if (!instance)
 		return SPUDRESULT_SAUD_INVALID_INSTANCE;
+	if (alsa_in_device_event_callback(instance))
+		return SPUDRESULT_GENERAL_FAILURE;
+	alsa_watch_destroy(instance->watch);
 	struct spudaudio_device_t *dev = instance->devices;
 	while (dev) {
 		struct spudaudio_device_t *next = dev->next;
@@ -1227,11 +1457,22 @@ SPUDRESULT spudaudio_set_device_event_callback(
     spudaudio_instance instance,
     SPUDAUDIO_DEVICE_EVENT_CALLBACK callback,
     void *user_data) {
-	(void)callback;
-	(void)user_data;
 	if (!instance)
 		return SPUDRESULT_SAUD_INVALID_INSTANCE;
-	return SPUDRESULT_NOT_IMPLEMENTED_YET;
+	if (alsa_in_device_event_callback(instance))
+		return SPUDRESULT_GENERAL_FAILURE;
+
+	// The new watch is built before the old one goes, so a failure leaves
+	// the callback that was set still set.
+	struct alsa_watch *watch = NULL;
+	if (callback) {
+		SPUDRESULT r = alsa_watch_create(callback, user_data, &watch);
+		if (SPUDFAIL(r))
+			return r;
+	}
+	alsa_watch_destroy(instance->watch);
+	instance->watch = watch;
+	return SPUD_SUCCESS;
 }
 
 #if __cplusplus
