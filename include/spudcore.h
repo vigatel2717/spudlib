@@ -103,6 +103,7 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_GPU_MAP_OUT_OF_RANGE                            = 239,
 	SPUDRESULT_GPU_INVALID_SEMAPHORE                           = 250,
 	SPUDRESULT_GPU_INVALID_FENCE                               = 251,
+	SPUDRESULT_GPU_FENCE_WAIT_TIMED_OUT                        = 252,
 	SPUDRESULT_GPU_INVALID_SHADER_STAGE                        = 280,
 	SPUDRESULT_GPU_INVALID_PRIMITIVE_TOPOLOGY                  = 281,
 	SPUDRESULT_GPU_INVALID_CULL_MODE                           = 282,

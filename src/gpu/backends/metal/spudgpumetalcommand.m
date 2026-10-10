@@ -111,48 +111,12 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
 	if (!swap_chain)
 		return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
 
-	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
-	spudgpu_semaphore_metal *image_available   = swap_chain_metal->_image_available_semaphore;
-	spudgpu_semaphore_metal *render_finished   = swap_chain_metal->_render_finished_semaphore;
-	spudgpu_fence_metal *in_flight             = swap_chain_metal->_in_flight_fence;
-
-	// image_available/render_finished are plain id<MTLEvent> timelines,
-	// in_flight is id<MTLSharedEvent> (see spudgpumetal.h) - not Vulkan-style
-	// binary semaphores. The wait targets the value already recorded on the
-	// semaphore/fence struct, and signaling bumps that value before encoding
-	// it. There is no single batch submit call spanning multiple command
-	// buffers on Metal, so the wait is encoded on the first buffer (nothing
-	// in the batch starts before it's satisfied) and the signals on the last
-	// (they fire only once every buffer in the batch has run, since a queue
-	// executes committed buffers in commit order) to match Vulkan/D3D12's
-	// single-submit semantics.
-	for (uint32_t i = 0; i < cmd_list_count; i++) {
-		spudgpu_command_list_metal *cmd_list_metal = (spudgpu_command_list_metal *)cmd_lists[i];
-		if (!cmd_list_metal || !cmd_list_metal->_command_buffer_mtl)
-			continue;
-		id<MTLCommandBuffer> cmd_buffer = cmd_list_metal->_command_buffer_mtl;
-
-		if (i == 0 && image_available && image_available->_event_mtl) {
-			[cmd_buffer encodeWaitForEvent:image_available->_event_mtl
-			                          value:image_available->_signal_value];
-		}
-		if (i == cmd_list_count - 1) {
-			if (render_finished && render_finished->_event_mtl) {
-				render_finished->_signal_value += 1;
-				[cmd_buffer encodeSignalEvent:render_finished->_event_mtl
-				                         value:render_finished->_signal_value];
-			}
-			if (in_flight && in_flight->_shared_event_mtl) {
-				in_flight->_signal_value += 1;
-				[cmd_buffer encodeSignalEvent:in_flight->_shared_event_mtl
-				                         value:in_flight->_signal_value];
-			}
-		}
-
-		[cmd_buffer commit];
-	}
-
-	return SPUD_SUCCESS;
+	// spudgpu_queue_submit with only the command lists and the swap chain set.
+	spudgpu_submit_desc desc = {0};
+	desc.cmd_lists           = cmd_lists;
+	desc.cmd_list_count      = cmd_list_count;
+	desc.swap_chain          = swap_chain;
+	return spudgpu_queue_submit(queue, &desc);
 }
 
 // Metal has no queue-family partitioning (see SPUD_METAL_COMMAND_QUEUE_COUNT_PER_FAMILY
@@ -890,17 +854,37 @@ void spudgpu_cmd_push_constants(
 	}
 }
 
-void spudgpu_queue_submit(
+SPUDRESULT spudgpu_queue_submit(
     spudgpu_command_queue queue,
     const spudgpu_submit_desc *desc) {
-	if (!queue || !desc || desc->cmd_list_count == 0)
-		return;
+	if (!queue)
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+	if (!desc)
+		return SPUDRESULT_NULL_DESC;
+	if (!desc->cmd_lists)
+		return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+	if (desc->cmd_list_count == 0)
+		return SPUDRESULT_ZERO_SIZE;
 
-	// Same commit-order reasoning as spudgpu_submit_command_lists_synced above:
-	// wait_stage_masks is accepted for API symmetry with Vulkan/D3D12 and
-	// unused - Metal has no separate wait-stage-mask concept, only a value to
-	// wait for on the event/shared-event timeline. Semaphores are plain
-	// id<MTLEvent>; the fence is id<MTLSharedEvent> (see spudgpumetal.h).
+	// With a swap chain, its own events join the caller's: a wait on
+	// image_available, and signals of render_finished and of its in-flight
+	// fence, each of which counts its own submissions.
+	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)desc->swap_chain;
+	spudgpu_semaphore_metal *image_available   = swap_chain_metal ? swap_chain_metal->_image_available_semaphore : NULL;
+	spudgpu_semaphore_metal *render_finished   = swap_chain_metal ? swap_chain_metal->_render_finished_semaphore : NULL;
+	spudgpu_fence_metal *in_flight             = swap_chain_metal ? swap_chain_metal->_in_flight_fence : NULL;
+
+	// Semaphores are plain id<MTLEvent> timelines and a fence is an
+	// id<MTLSharedEvent> (see spudgpumetal.h) - not Vulkan-style binary
+	// semaphores. wait_stage_masks is accepted for API symmetry with
+	// Vulkan/D3D12 and unused - Metal has no separate wait-stage-mask
+	// concept, only a value to wait for. There is no single batch submit
+	// call spanning multiple command buffers on Metal, so the waits are
+	// encoded on the first buffer (nothing in the batch starts before
+	// they're satisfied) and the signals on the last (they fire only once
+	// every buffer in the batch has run, since a queue executes committed
+	// buffers in commit order) to match Vulkan/D3D12's single-submit
+	// semantics.
 	for (uint32_t i = 0; i < desc->cmd_list_count; i++) {
 		spudgpu_command_list_metal *cmd_list_metal = (spudgpu_command_list_metal *)desc->cmd_lists[i];
 		if (!cmd_list_metal || !cmd_list_metal->_command_buffer_mtl)
@@ -914,6 +898,10 @@ void spudgpu_queue_submit(
 					[cmd_buffer encodeWaitForEvent:sem->_event_mtl value:sem->_signal_value];
 				}
 			}
+			if (image_available && image_available->_event_mtl) {
+				[cmd_buffer encodeWaitForEvent:image_available->_event_mtl
+				                          value:image_available->_signal_value];
+			}
 		}
 		if (i == desc->cmd_list_count - 1) {
 			for (uint32_t s = 0; s < desc->signal_semaphore_count; s++) {
@@ -923,17 +911,27 @@ void spudgpu_queue_submit(
 					[cmd_buffer encodeSignalEvent:sem->_event_mtl value:sem->_signal_value];
 				}
 			}
+			if (render_finished && render_finished->_event_mtl) {
+				render_finished->_signal_value += 1;
+				[cmd_buffer encodeSignalEvent:render_finished->_event_mtl
+				                         value:render_finished->_signal_value];
+			}
+			if (in_flight && in_flight->_shared_event_mtl) {
+				in_flight->_signal_value += 1;
+				[cmd_buffer encodeSignalEvent:in_flight->_shared_event_mtl
+				                         value:in_flight->_signal_value];
+			}
 			if (desc->signal_fence) {
+				// The caller's fence, signaled to the caller's value.
 				spudgpu_fence_metal *fence = (spudgpu_fence_metal *)desc->signal_fence;
-				if (fence->_shared_event_mtl) {
-					fence->_signal_value += 1;
-					[cmd_buffer encodeSignalEvent:fence->_shared_event_mtl value:fence->_signal_value];
-				}
+				[cmd_buffer encodeSignalEvent:fence->_shared_event_mtl value:desc->signal_fence_value];
 			}
 		}
 
 		[cmd_buffer commit];
 	}
+
+	return SPUD_SUCCESS;
 }
 
 void spudgpu_queue_wait_idle(spudgpu_command_queue queue) {

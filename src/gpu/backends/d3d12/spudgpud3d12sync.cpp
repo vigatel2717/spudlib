@@ -19,7 +19,7 @@ extern "C" {
 SPUDRESULT spudgpu_create_fence(
     spudgpu_device device,
     SPUDGPU_FENCE_FLAGS flags,
-    bool signaled_on_creation,
+    uint64_t initial_value,
     spudgpu_fence *out_fence) {
 	if (!device)
 		return SPUDRESULT_GPU_INVALID_DEVICE;
@@ -33,10 +33,6 @@ SPUDRESULT spudgpu_create_fence(
 	pResult                       = new (pResult) spudgpu_fence_d3d12();
 	pResult->_device              = device;
 	pResult->flags                = flags;
-	pResult->signaled_on_creation = signaled_on_creation;
-
-	uint64_t initial_value = signaled_on_creation ? 1 : 0;
-	pResult->_signal_value = initial_value;
 
 	if (FAILED(device->_d3d_device->CreateFence(
 	        initial_value, spudgpu_d3d12_get_fence_flags(flags),
@@ -75,13 +71,13 @@ SPUDRESULT spudgpu_signal_fence(
 		return SPUDRESULT_GPU_INVALID_FENCE;
 	if (FAILED(fence->_d3d_fence->Signal(value)))
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
-	fence->_signal_value = value;
 	return SPUD_SUCCESS;
 }
 
 SPUDRESULT spudgpu_wait_for_fences(
     spudgpu_device device,
     spudgpu_fence *fences,
+    const uint64_t *values,
     uint32_t fence_count,
     bool wait_all,
     uint64_t timeout_ns) {
@@ -89,21 +85,22 @@ SPUDRESULT spudgpu_wait_for_fences(
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!fences)
 		return SPUDRESULT_GPU_INVALID_FENCE;
+	if (!values)
+		return SPUDRESULT_NULL_OBJECT;
 	if (fence_count == 0)
 		return SPUDRESULT_ZERO_SIZE;
-
-	if (fence_count > MAXIMUM_WAIT_OBJECTS)
+	// The header's limit, which is also MAXIMUM_WAIT_OBJECTS.
+	if (fence_count > 64)
 		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	for (uint32_t i = 0; i < fence_count; i++) {
+		if (!fences[i])
+			return SPUDRESULT_GPU_INVALID_FENCE;
+	}
 
 	HANDLE events[MAXIMUM_WAIT_OBJECTS];
 	uint32_t events_created = 0;
 
 	for (uint32_t i = 0; i < fence_count; i++) {
-		if (!fences[i]) {
-			for (uint32_t j = 0; j < events_created; j++)
-				CloseHandle(events[j]);
-			return SPUDRESULT_GPU_INVALID_FENCE;
-		}
 		events[i] = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 		if (!events[i]) {
 			for (uint32_t j = 0; j < events_created; j++)
@@ -111,26 +108,30 @@ SPUDRESULT spudgpu_wait_for_fences(
 			return SPUDRESULT_API_SPECIFIC_FAILURE;
 		}
 		events_created++;
-		if (FAILED(
-		        fences[i]->_d3d_fence->SetEventOnCompletion(
-		            fences[i]->_signal_value, events[i]))) {
+		// Sets the event at once if the fence is already at the value.
+		if (FAILED(fences[i]->_d3d_fence->SetEventOnCompletion(values[i], events[i]))) {
 			for (uint32_t j = 0; j < events_created; j++)
 				CloseHandle(events[j]);
 			return SPUDRESULT_API_SPECIFIC_FAILURE;
 		}
 	}
 
-	DWORD timeout_ms = (timeout_ns == UINT64_MAX)
-	                       ? INFINITE
-	                       : (DWORD)(timeout_ns / 1000000ULL);
-	DWORD result     = WaitForMultipleObjects(
+	// Rounded up, so a wait shorter than a millisecond still waits; a
+	// timeout too long for a DWORD waits without limit.
+	DWORD timeout_ms = INFINITE;
+	if (timeout_ns != UINT64_MAX) {
+		uint64_t ms = timeout_ns / 1000000ULL + (timeout_ns % 1000000ULL ? 1 : 0);
+		if (ms < INFINITE)
+			timeout_ms = (DWORD)ms;
+	}
+	DWORD result = WaitForMultipleObjects(
 	    fence_count, events, wait_all ? TRUE : FALSE, timeout_ms);
 
 	for (uint32_t i = 0; i < fence_count; i++)
 		CloseHandle(events[i]);
 
 	if (result == WAIT_TIMEOUT)
-		return SPUDRESULT_GENERAL_FAILURE;
+		return SPUDRESULT_GPU_FENCE_WAIT_TIMED_OUT;
 	if (result == WAIT_FAILED)
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	return SPUD_SUCCESS;

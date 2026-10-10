@@ -316,6 +316,11 @@ typedef struct spudgpu_fence_t {
 	id<MTLSharedEvent> _shared_event_mtl;
 	spudgpu_device_metal *_parent_device;
 	SPUDGPU_FENCE_FLAGS _flags;
+	// Used only by a swap chain's own in-flight fence, which counts its
+	// submissions itself (spudgpu_queue_submit with a swap chain). A fence
+	// the caller created has no counter here: the value a submission signals
+	// is the caller's (spudgpu_submit_desc::signal_fence_value), and the
+	// value reached is the shared event's signaledValue.
 	uint64_t _signal_value;
 } spudgpu_fence_metal;
 

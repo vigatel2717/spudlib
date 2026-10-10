@@ -368,6 +368,21 @@ typedef struct SPUDGPU_DEVICE_PROPERTIES {
 	uint64_t dedicated_video_memory;
 	uint64_t dedicated_system_memory;
 	uint64_t shared_system_memory;
+	/**
+	 * Whether the device has no memory of its own and uses the system's,
+	 * as the graphics API reports it. It is a fact about this device, not
+	 * about the platform or the backend: one machine can have a device of
+	 * each kind.
+	 *
+	 * Metal: `MTLDevice.hasUnifiedMemory`. D3D12:
+	 * `D3D12_FEATURE_DATA_ARCHITECTURE1::UMA`, false if the query fails.
+	 * Vulkan has no such query: true when the device's type is
+	 * `VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU`.
+	 *
+	 * The memory sizes above are not a substitute: #dedicated_video_memory
+	 * is nonzero for a Vulkan device of either kind.
+	 */
+	bool unified_memory;
 } SPUDGPU_DEVICE_PROPERTIES;
 
 /**
@@ -480,9 +495,12 @@ SPUDRESULT spudgpu_submit_command_lists(
 /**
  * @brief Submits command lists synchronized with a swap chain.
  *
- * Waits on the swap chain's image-available semaphore, signals its
- * render-finished semaphore and signals its in-flight fence. Call this instead
- * of spudgpu_submit_command_lists() when rendering to a swap chain.
+ * Waits for the swap chain's acquired image and signals what
+ * spudgpu_swap_chain_present() and the next
+ * spudgpu_swap_chain_acquire_next_image() wait on. Call this instead of
+ * spudgpu_submit_command_lists() when rendering to a swap chain. It is
+ * spudgpu_queue_submit() with only the command lists and
+ * spudgpu_submit_desc::swap_chain set; use that to signal a fence as well.
  *
  * @param[in] queue          Queue to submit to.
  * @param[in] cmd_lists      Array of closed command lists.
@@ -526,127 +544,51 @@ typedef struct spudgpu_submit_desc {
 	/** Number of elements in signal_semaphores. */
 	uint32_t signal_semaphore_count;
 
-	/** CPU-to-GPU sync: fence to signal when execution completes. Optional, can be NULL. */
+	/**
+	 * CPU-to-GPU sync: fence to signal when execution completes. Optional,
+	 * can be NULL.
+	 */
 	spudgpu_fence signal_fence;
+
+	/**
+	 * The value #signal_fence is signaled to once every command list of
+	 * this submission has run. Ignored if #signal_fence is NULL. It is the
+	 * caller's to choose, and must be greater than every value the fence has
+	 * been signaled to or has been asked to be signaled to by a submission
+	 * that hasn't finished: a fence's value only goes up.
+	 */
+	uint64_t signal_fence_value;
+
+	/**
+	 * Swap chain the submission renders to. Optional, can be NULL. When set,
+	 * the submission is synchronized with it as
+	 * spudgpu_submit_command_lists_synced() does - it waits for the acquired
+	 * image and signals what spudgpu_swap_chain_present() and the next
+	 * spudgpu_swap_chain_acquire_next_image() wait on - in addition to the
+	 * semaphores and the fence above.
+	 */
+	spudgpu_swap_chain swap_chain;
 } spudgpu_submit_desc;
 
 /**
  * @brief Submits command lists with caller-chosen synchronization.
  *
- * Does nothing if `queue` or `desc` is NULL or `desc->cmd_list_count` is 0.
- *
  * @param[in] queue Queue to submit to.
  * @param[in] desc  Command lists to submit, the semaphores to wait on and
- *                  signal, and the fence to signal.
+ *                  signal, the fence to signal and the value to signal it
+ *                  to, and the swap chain to synchronize with.
+ *
+ * @retval SPUD_SUCCESS The command lists were submitted.
+ * @retval SPUDRESULT_GPU_INVALID_COMMAND_QUEUE `queue` is NULL.
+ * @retval SPUDRESULT_NULL_DESC `desc` is NULL.
+ * @retval SPUDRESULT_GPU_INVALID_COMMAND_LIST `desc->cmd_lists` is NULL.
+ * @retval SPUDRESULT_ZERO_SIZE `desc->cmd_list_count` is 0.
+ * @return Another SPUDRESULT if the backend fails, such as
+ *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE.
  */
-void spudgpu_queue_submit(
+SPUDRESULT spudgpu_queue_submit(
     spudgpu_command_queue queue,
     const spudgpu_submit_desc *desc);
-
-/**
- * @brief Blocks the calling thread until all work submitted to a queue has
- * completed.
- *
- * Equivalent to vkQueueWaitIdle. Prefer fence-based synchronization in hot
- * paths.
- *
- * @param[in] queue Queue to wait on.
- */
-void spudgpu_queue_wait_idle(spudgpu_command_queue queue);
-
-/**
- * @brief Configuration descriptor for a command allocator.
- */
-typedef struct spudgpu_command_allocator_desc {
-	SPUDGPU_COMMAND_LIST_TYPE type;
-	uint32_t flags;
-	// uint32_t queue_family_index;
-} spudgpu_command_allocator_desc;
-
-/**
- * @brief Creates a command allocator on a device.
- *
- * @param[in]  device        Device to create the allocator on.
- * @param[in]  desc          Allocator configuration.
- * @param[out] out_allocator Receives the new allocator on success.
- *
- * @retval SPUD_SUCCESS The allocator was created.
- * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL.
- * @retval SPUDRESULT_NULL_DESC `desc` is NULL.
- * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_allocator` is NULL.
- * @return Another SPUDRESULT if the backend fails, such as
- *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE.
- *
- * @see spudgpu_destroy_command_allocator()
- */
-SPUDRESULT spudgpu_create_command_allocator(
-    spudgpu_device device,
-    const spudgpu_command_allocator_desc *desc,
-    spudgpu_command_allocator *out_allocator);
-
-/**
- * @brief Destroys a command allocator.
- *
- * @param[in] allocator Allocator to destroy.
- */
-void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator);
-
-/**
- * @brief Resets a command allocator so its memory can be recorded into
- * again.
- *
- * @param[in] allocator Allocator to reset.
- *
- * @retval SPUD_SUCCESS The allocator was reset.
- * @retval SPUDRESULT_GPU_INVALID_COMMAND_ALLOCATOR `allocator` is NULL.
- * @retval SPUDRESULT_API_SPECIFIC_FAILURE The graphics API failed to reset
- *         it.
- */
-SPUDRESULT spudgpu_reset_command_allocator(spudgpu_command_allocator allocator);
-
-/**
- * @brief Creates a command list that records into a command allocator.
- *
- * @param[in]  allocator    Allocator the command list records into.
- * @param[out] out_cmd_list Receives the new command list on success.
- *
- * @retval SPUD_SUCCESS The command list was created.
- * @retval SPUDRESULT_GPU_INVALID_COMMAND_ALLOCATOR `allocator` is NULL.
- * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_cmd_list` is NULL.
- * @return Another SPUDRESULT if the backend fails, such as
- *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE.
- *
- * @see spudgpu_destroy_command_list()
- */
-SPUDRESULT spudgpu_create_command_list(
-    spudgpu_command_allocator allocator,
-    spudgpu_command_list *out_cmd_list);
-
-/**
- * @brief Destroys a command list.
- *
- * @param[in] cmd Command list to destroy.
- */
-void spudgpu_destroy_command_list(spudgpu_command_list cmd);
-
-/**
- * @brief Opens a command list for recording.
- *
- * Resets the command list's state tracking and puts it in recording mode.
- *
- * @warning A command list must not be recorded from more than one thread at a
- * time.
- *
- * @param[in] cmd Command list to open.
- */
-void spudgpu_begin_command_list(spudgpu_command_list cmd);
-
-/**
- * @brief Closes a command list, making it ready to submit to a queue.
- *
- * @param[in] cmd Command list to close.
- */
-void spudgpu_end_command_list(spudgpu_command_list cmd);
 
 /**
  * @brief Bitmask of fence creation flags.
@@ -655,12 +597,23 @@ typedef uint32_t SPUDGPU_FENCE_FLAGS;
 enum { SPUDGPU_FENCE_FLAG_NONE = 0, SPUDGPU_FENCE_FLAG_SHARED = 1 << 0 };
 
 /**
- * @brief Creates a fence, used to synchronize the CPU with GPU progress.
+ * @brief Creates a fence: a counter the GPU raises as submitted work
+ * finishes, and the CPU reads and waits on.
  *
- * @param[in]  device               Device that owns the fence.
- * @param[in]  flags                Fence creation flags.
- * @param[in]  signaled_on_creation If true, the fence starts signaled.
- * @param[out] out_fence            Receives the new fence on success.
+ * A fence holds one 64-bit value that only goes up. A submission raises it
+ * to a value the caller chooses (spudgpu_submit_desc::signal_fence_value)
+ * once its command lists have run; spudgpu_signal_fence() raises it from the
+ * CPU. spudgpu_get_fence_value() reads it and spudgpu_wait_for_fences()
+ * blocks until it reaches a value. There is nothing to reset: a fence is
+ * reused by signaling it to a higher value.
+ *
+ * Maps to: a timeline VkSemaphore (Vulkan), ID3D12Fence (D3D12),
+ * MTLSharedEvent (Metal).
+ *
+ * @param[in]  device        Device that owns the fence.
+ * @param[in]  flags         Fence creation flags.
+ * @param[in]  initial_value Value the fence starts at.
+ * @param[out] out_fence     Receives the new fence on success.
  *
  * @retval SPUD_SUCCESS The fence was created.
  * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL.
@@ -673,35 +626,41 @@ enum { SPUDGPU_FENCE_FLAG_NONE = 0, SPUDGPU_FENCE_FLAG_SHARED = 1 << 0 };
 SPUDRESULT spudgpu_create_fence(
     spudgpu_device device,
     SPUDGPU_FENCE_FLAGS flags,
-    bool signaled_on_creation,
+    uint64_t initial_value,
     spudgpu_fence *out_fence);
 
 /**
  * @brief Destroys a fence.
+ *
+ * @warning Every submission that signals the fence must have finished, and
+ * no thread may be waiting on it.
  *
  * @param[in] fence Fence to destroy.
  */
 void spudgpu_destroy_fence(spudgpu_fence fence);
 
 /**
- * @brief Reads the value a fence has most recently been signaled to.
+ * @brief Reads the value a fence has reached.
  *
- * @note Not yet implemented by the Vulkan backend.
+ * It is the highest value signaled so far by work that has finished or by
+ * spudgpu_signal_fence(), not a value a submission still running has been
+ * asked to signal.
  *
  * @param[in] fence Fence to read.
  *
- * @return The fence's completed value, or 0 if `fence` is NULL.
+ * @return The fence's value, or 0 if `fence` is NULL or the graphics API
+ *         fails to read it.
  */
 uint64_t spudgpu_get_fence_value(spudgpu_fence fence);
 
 /**
  * @brief Signals a fence to a value from the CPU.
  *
- * @note Not yet implemented by the Vulkan backend.
- *
  * @param[in] device Device that owns the fence.
  * @param[in] fence  Fence to signal.
- * @param[in] value  Value to signal the fence to.
+ * @param[in] value  Value to signal the fence to. Greater than its current
+ *                   value and than every value a submission that hasn't
+ *                   finished has been asked to signal it to.
  *
  * @retval SPUD_SUCCESS The fence was signaled.
  * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL.
@@ -715,27 +674,37 @@ SPUDRESULT spudgpu_signal_fence(
     uint64_t value);
 
 /**
- * @brief Blocks the calling thread until one or all of the given fences are
- * signaled.
+ * @brief Blocks the calling thread until one or all of the given fences have
+ * reached the given values.
+ *
+ * `fences[i]` is waited on until its value is at least `values[i]`. A fence
+ * already there counts at once, so a wait for a value of 0 never blocks.
  *
  * @param[in] device      Device that owns the fences.
- * @param[in] fences      Array of fences to wait on.
- * @param[in] fence_count Number of elements in `fences`.
+ * @param[in] fences      Array of fences to wait on. No entry may be NULL.
+ * @param[in] values      Array of the value to wait for on each fence.
+ * @param[in] fence_count Number of elements in `fences` and in `values`. At
+ *                        most 64.
  * @param[in] wait_all    If true, waits for every fence; if false, for at
  *                        least one.
  * @param[in] timeout_ns  Longest time to wait, in nanoseconds. UINT64_MAX waits
- *                        without limit.
+ *                        without limit; 0 only checks.
  *
- * @retval SPUD_SUCCESS The fences were signaled within the timeout.
+ * @retval SPUD_SUCCESS The fences reached their values within the timeout.
  * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL.
- * @retval SPUDRESULT_GPU_INVALID_FENCE `fences` is NULL.
+ * @retval SPUDRESULT_GPU_INVALID_FENCE `fences` is NULL, or one of its
+ *         entries is.
+ * @retval SPUDRESULT_NULL_OBJECT `values` is NULL.
  * @retval SPUDRESULT_ZERO_SIZE `fence_count` is 0.
- * @return SPUDRESULT_GENERAL_FAILURE or SPUDRESULT_API_SPECIFIC_FAILURE if the
- *         wait timed out or the graphics API's wait failed.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `fence_count` is above 64.
+ * @retval SPUDRESULT_GPU_FENCE_WAIT_TIMED_OUT The timeout ran out first.
+ * @return Another SPUDRESULT if the backend fails, such as
+ *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE.
  */
 SPUDRESULT spudgpu_wait_for_fences(
     spudgpu_device device,
     spudgpu_fence *fences,
+    const uint64_t *values,
     uint32_t fence_count,
     bool wait_all,
     uint64_t timeout_ns);
@@ -1694,7 +1663,9 @@ enum {
 	SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE,  /**< Read-only in shader */
 	SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, /**< Read/Write (SSBO/UAV) */
 	SPUDGPU_RESOURCE_STATE_PRESENT,
-	SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT /**< Read by spudgpu_cmd_draw_indirect / _indexed_indirect */
+	SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT, /**< Read by spudgpu_cmd_draw_indirect / _indexed_indirect */
+	SPUDGPU_RESOURCE_STATE_COPY_SOURCE,       /**< Read by a copy command */
+	SPUDGPU_RESOURCE_STATE_COPY_DEST          /**< Written by a copy command */
 };
 
 /**
@@ -2108,21 +2079,6 @@ spudgpu_semaphore spudgpu_swap_chain_get_image_available_semaphore(spudgpu_swap_
  * @return The semaphore, or NULL if `swap_chain` is NULL.
  */
 spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_chain swap_chain);
-
-/**
- * @brief Returns the in-flight fence of the swap chain's current frame slot.
- *
- * Pass it as `signal_fence` in spudgpu_submit_desc;
- * spudgpu_swap_chain_acquire_next_image() waits on it and resets it. The swap
- * chain owns it; do not destroy it.
- *
- * @note Not implemented by the D3D12 backend.
- *
- * @param[in] swap_chain Swap chain to get the fence from.
- *
- * @return The fence, or NULL if `swap_chain` is NULL.
- */
-spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain);
 
 // ============================================================================
 //  Descriptor Set Layout
@@ -4045,7 +4001,9 @@ typedef struct spudgpu_image_buffer_copy_desc {
  * responsible for any pipeline barrier `dst_buffer` needs after the copy
  * before a later stage reads or writes it (see spudgpu_cmd_pipeline_barrier());
  * this call does no synchronization beyond ordering the copy within the
- * command list.
+ * command list. To use `dst_buffer` in the same submission as the copy, move
+ * it into SPUDGPU_RESOURCE_STATE_COPY_DEST before the copy and into the state
+ * it is used in after.
  *
  * The primary use is uploading initial data into a buffer whose usage bits
  * are incompatible with host-visible memory on a given backend (e.g.

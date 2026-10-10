@@ -23,7 +23,7 @@ static uint64_t spudgpumetal___internal_now_ms(void) {
 SPUDRESULT spudgpu_create_fence(
     spudgpu_device device,
     SPUDGPU_FENCE_FLAGS flags,
-    bool signaled_on_creation,
+    uint64_t initial_value,
     spudgpu_fence *out_fence) {
 	if (!device)
 		return SPUDRESULT_GPU_INVALID_DEVICE;
@@ -34,12 +34,11 @@ SPUDRESULT spudgpu_create_fence(
 
 	spudgpu_fence_metal *fence_metal = (spudgpu_fence_metal *)calloc(1, sizeof(spudgpu_fence_metal));
 	if (!fence_metal) {
-		sr = SPUDRESULT_GENERAL_FAILURE;
+		sr = SPUDRESULT_OUT_OF_MEMORY;
 		goto failedattempt;
 	}
 	fence_metal->_parent_device = (spudgpu_device_metal *)device;
 	fence_metal->_flags         = flags;
-	fence_metal->_signal_value  = signaled_on_creation ? 1 : 0;
 
 	// SPUDGPU_FENCE_FLAG_SHARED needs no special creation-time flag on Metal
 	// the way D3D12_FENCE_FLAG_SHARED does - any MTLSharedEvent can hand out
@@ -51,7 +50,7 @@ SPUDRESULT spudgpu_create_fence(
 		sr = SPUDRESULT_API_SPECIFIC_FAILURE;
 		goto failedattempt;
 	}
-	fence_metal->_shared_event_mtl.signaledValue = fence_metal->_signal_value;
+	fence_metal->_shared_event_mtl.signaledValue = initial_value;
 
 	*out_fence = (spudgpu_fence)fence_metal;
 
@@ -81,10 +80,8 @@ uint64_t spudgpu_get_fence_value(spudgpu_fence fence) {
 		return 0;
 	if (!fence_metal->_shared_event_mtl)
 		return 0;
-	// The live value the GPU (or a prior spudgpu_signal_fence call) has
-	// actually reached - not fence_metal->_signal_value, which tracks the
-	// *target* value a pending queue submission's signal is scheduled to
-	// reach and may not have completed yet (see spudgpu_queue_submit).
+	// The value the GPU (or a prior spudgpu_signal_fence call) has actually
+	// reached, not one a submission still running has been asked to signal.
 	return fence_metal->_shared_event_mtl.signaledValue;
 }
 
@@ -98,10 +95,7 @@ SPUDRESULT spudgpu_signal_fence(
 		return SPUDRESULT_GPU_INVALID_FENCE;
 
 	spudgpu_fence_metal *fence_metal = (spudgpu_fence_metal *)fence;
-	if (fence_metal->_shared_event_mtl) {
-		fence_metal->_shared_event_mtl.signaledValue = value;
-	}
-	fence_metal->_signal_value = value;
+	fence_metal->_shared_event_mtl.signaledValue = value;
 
 	return SPUD_SUCCESS;
 }
@@ -109,6 +103,7 @@ SPUDRESULT spudgpu_signal_fence(
 SPUDRESULT spudgpu_wait_for_fences(
     spudgpu_device device,
     spudgpu_fence *fences,
+    const uint64_t *values,
     uint32_t fence_count,
     bool wait_all,
     uint64_t timeout_ns) {
@@ -116,20 +111,23 @@ SPUDRESULT spudgpu_wait_for_fences(
 		return SPUDRESULT_GPU_INVALID_DEVICE;
 	if (!fences)
 		return SPUDRESULT_GPU_INVALID_FENCE;
+	if (!values)
+		return SPUDRESULT_NULL_OBJECT;
 	if (fence_count == 0)
 		return SPUDRESULT_ZERO_SIZE;
-
+	if (fence_count > 64)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
 	for (uint32_t i = 0; i < fence_count; i++) {
-		spudgpu_fence_metal *fence_metal = (spudgpu_fence_metal *)fences[i];
-		if (!fence_metal || !fence_metal->_shared_event_mtl)
+		if (!fences[i])
 			return SPUDRESULT_GPU_INVALID_FENCE;
 	}
 
-	uint64_t timeout_ms = (timeout_ns == UINT64_MAX) ? UINT64_MAX : timeout_ns / 1000000ULL;
+	// Rounded up, so a wait shorter than a millisecond still waits.
+	uint64_t timeout_ms = (timeout_ns == UINT64_MAX) ? UINT64_MAX : timeout_ns / 1000000ULL + (timeout_ns % 1000000ULL ? 1 : 0);
 
 	if (wait_all) {
 		// MTLSharedEvent only exposes a single-event blocking wait
-		// (-waitUntilSignaledValue:timeoutMS:), unlike vkWaitForFences/
+		// (-waitUntilSignaledValue:timeoutMS:), unlike vkWaitSemaphores/
 		// WaitForMultipleObjects - wait_all is composed by waiting on each
 		// event in turn against a shared remaining-time budget, which is
 		// equivalent to waiting on all of them at once since the call can't
@@ -138,12 +136,16 @@ SPUDRESULT spudgpu_wait_for_fences(
 		for (uint32_t i = 0; i < fence_count; i++) {
 			spudgpu_fence_metal *fence_metal = (spudgpu_fence_metal *)fences[i];
 
+			// Already there: no wait, and none of the budget spent.
+			if (fence_metal->_shared_event_mtl.signaledValue >= values[i])
+				continue;
+
 			uint64_t started_ms = spudgpumetal___internal_now_ms();
 			BOOL signaled = [fence_metal->_shared_event_mtl
-			    waitUntilSignaledValue:fence_metal->_signal_value
+			    waitUntilSignaledValue:values[i]
 			                 timeoutMS:remaining_ms];
 			if (!signaled)
-				return SPUDRESULT_GENERAL_FAILURE;
+				return SPUDRESULT_GPU_FENCE_WAIT_TIMED_OUT;
 
 			if (timeout_ms != UINT64_MAX) {
 				uint64_t elapsed_ms = spudgpumetal___internal_now_ms() - started_ms;
@@ -153,7 +155,14 @@ SPUDRESULT spudgpu_wait_for_fences(
 		return SPUD_SUCCESS;
 	}
 
-	// wait_all == false: block until ANY one fence reaches its target value.
+	// wait_all == false: block until ANY one fence reaches its value. One
+	// already there settles it without a listener.
+	for (uint32_t i = 0; i < fence_count; i++) {
+		spudgpu_fence_metal *fence_metal = (spudgpu_fence_metal *)fences[i];
+		if (fence_metal->_shared_event_mtl.signaledValue >= values[i])
+			return SPUD_SUCCESS;
+	}
+
 	// There is no native any-of-N wait either, so this is composed from a
 	// per-fence async listener that releases one shared dispatch semaphore
 	// as soon as the first of them fires.
@@ -167,7 +176,7 @@ SPUDRESULT spudgpu_wait_for_fences(
 		spudgpu_fence_metal *fence_metal = (spudgpu_fence_metal *)fences[i];
 		[fence_metal->_shared_event_mtl
 		    notifyListener:listener
-		            atValue:fence_metal->_signal_value
+		            atValue:values[i]
 		              block:^(id<MTLSharedEvent> event, uint64_t value) {
 			              dispatch_semaphore_signal(any_signaled);
 		              }];
@@ -182,7 +191,7 @@ SPUDRESULT spudgpu_wait_for_fences(
 	[listener release];
 	[listener_queue release];
 
-	return (wait_result == 0) ? SPUD_SUCCESS : SPUDRESULT_GENERAL_FAILURE;
+	return (wait_result == 0) ? SPUD_SUCCESS : SPUDRESULT_GPU_FENCE_WAIT_TIMED_OUT;
 }
 
 SPUDRESULT spudgpu_create_semaphore(

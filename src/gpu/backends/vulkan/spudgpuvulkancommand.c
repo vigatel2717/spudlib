@@ -70,10 +70,7 @@ SPUDRESULT spudgpu_submit_command_lists(
     return SPUD_SUCCESS;
 }
 
-// Submit command lists with full swap chain synchronization.
-// Waits on the swap chain's image_available semaphore,
-// signals its render_finished semaphore, and signals the in-flight fence.
-// Call this instead of spudgpu_submit_command_lists when rendering to a swap chain.
+// spudgpu_queue_submit with only the command lists and the swap chain set.
 SPUDRESULT spudgpu_submit_command_lists_synced(
     spudgpu_command_queue queue,
     spudgpu_command_list *cmd_lists,
@@ -84,41 +81,11 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
     if (cmd_list_count == 0) return SPUDRESULT_ZERO_SIZE;
     if (!swap_chain) return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
 
-    uint32_t frame = swap_chain->_current_frame;
-
-    VkCommandBuffer *buffers = calloc(cmd_list_count, sizeof(VkCommandBuffer));
-    for (uint32_t i = 0; i < cmd_list_count; i++) {
-        spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) cmd_lists[i];
-        buffers[i] = cl->_command_buffer_vk;
-    }
-
-    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-    VkSubmitInfo submit = {0};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.waitSemaphoreCount = 1;
-    submit.pWaitSemaphores = &swap_chain->_image_available_semaphores[frame]._semaphore_vk;
-    submit.pWaitDstStageMask = &wait_stage;
-    submit.commandBufferCount = cmd_list_count;
-    submit.pCommandBuffers = buffers;
-    // render_finished_semaphores is indexed by swapchain IMAGE index, not by
-    // the frame-in-flight slot (see spudgpuvulkan___fences_semaphores_swapchain_creation_internal
-    // and spudgpu_swap_chain_present, which waits on this same array using
-    // _current_image_index) — signaling by `frame` here left every image
-    // besides image 0 with a signal semaphore that was never actually signaled.
-    submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &swap_chain->_render_finished_semaphores[swap_chain->_current_image_index]._semaphore_vk;
-
-    VkResult r = vkQueueSubmit(
-        queue->_queue_vk, 1, &submit,
-        swap_chain->_in_flight_fences[frame]._fence_vk); // <-- fence gets signaled here
-    if (r != VK_SUCCESS) {
-        printf("spudgpu: vkQueueSubmit (synced) failed (%d)\n", r);
-        free(buffers);
-        return SPUDRESULT_API_SPECIFIC_FAILURE;
-    }
-    free(buffers);
-    return SPUD_SUCCESS;
+    spudgpu_submit_desc desc = {0};
+    desc.cmd_lists      = cmd_lists;
+    desc.cmd_list_count = cmd_list_count;
+    desc.swap_chain     = swap_chain;
+    return spudgpu_queue_submit(queue, &desc);
 }
 
 SPUDRESULT spudgpu_create_command_allocator(
@@ -399,41 +366,92 @@ void spudgpu_cmd_draw_indexed_instanced(
         start_instance_location);
 }
 
-void spudgpu_queue_submit(spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
-    if (!queue || !desc || desc->cmd_list_count == 0) return;
+// One vkQueueSubmit carrying everything the desc asks for:
+// - the caller's binary semaphores;
+// - with a swap chain: a wait on its image_available semaphore, a signal of
+//   its render_finished semaphore, and its in-flight VkFence, which is the
+//   one VkFence a submit can take;
+// - the caller's fence, which is a timeline semaphore and so goes in the
+//   signal semaphore list with its value in a VkTimelineSemaphoreSubmitInfo.
+SPUDRESULT spudgpu_queue_submit(spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
+    if (!queue) return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+    if (!desc) return SPUDRESULT_NULL_DESC;
+    if (!desc->cmd_lists) return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+    if (desc->cmd_list_count == 0) return SPUDRESULT_ZERO_SIZE;
 
-    VkCommandBuffer *cmd_bufs = calloc(desc->cmd_list_count, sizeof(VkCommandBuffer));
+    spudgpu_swap_chain_vulkan *swap_chain = (spudgpu_swap_chain_vulkan *) desc->swap_chain;
+    spudgpu_fence_vulkan *fence           = (spudgpu_fence_vulkan *) desc->signal_fence;
+
+    uint32_t wait_count   = desc->wait_semaphore_count + (swap_chain ? 1 : 0);
+    uint32_t signal_count = desc->signal_semaphore_count + (swap_chain ? 1 : 0) + (fence ? 1 : 0);
+
+    // Never a zero-sized allocation: a count may legitimately be 0. The
+    // value arrays are zeroed; a binary semaphore's entry is ignored.
+    VkCommandBuffer      *cmd_bufs      = calloc(desc->cmd_list_count, sizeof(VkCommandBuffer));
+    VkSemaphore          *wait_sems     = calloc(wait_count ? wait_count : 1, sizeof(VkSemaphore));
+    VkPipelineStageFlags *wait_stages   = calloc(wait_count ? wait_count : 1, sizeof(VkPipelineStageFlags));
+    uint64_t             *wait_values   = calloc(wait_count ? wait_count : 1, sizeof(uint64_t));
+    VkSemaphore          *signal_sems   = calloc(signal_count ? signal_count : 1, sizeof(VkSemaphore));
+    uint64_t             *signal_values = calloc(signal_count ? signal_count : 1, sizeof(uint64_t));
+    if (!cmd_bufs || !wait_sems || !wait_stages || !wait_values || !signal_sems || !signal_values) {
+        free(cmd_bufs);
+        free(wait_sems);
+        free(wait_stages);
+        free(wait_values);
+        free(signal_sems);
+        free(signal_values);
+        return SPUDRESULT_OUT_OF_MEMORY;
+    }
+
     for (uint32_t i = 0; i < desc->cmd_list_count; i++) {
         spudgpu_command_list_vulkan *cl = (spudgpu_command_list_vulkan *) desc->cmd_lists[i];
         cmd_bufs[i] = cl->_command_buffer_vk;
     }
 
-    uint32_t wait_count   = desc->wait_semaphore_count;
-    uint32_t signal_count = desc->signal_semaphore_count;
-
-    // Use heap for semaphore arrays since counts may legitimately be 0 (VLA of size 0 is UB).
-    VkSemaphore          *wait_sems   = wait_count   ? malloc(wait_count   * sizeof(VkSemaphore))          : NULL;
-    VkPipelineStageFlags *wait_stages = wait_count   ? malloc(wait_count   * sizeof(VkPipelineStageFlags)) : NULL;
-    VkSemaphore          *signal_sems = signal_count ? malloc(signal_count * sizeof(VkSemaphore))           : NULL;
-
-    for (uint32_t i = 0; i < wait_count; i++) {
+    uint32_t wait_index = 0;
+    for (uint32_t i = 0; i < desc->wait_semaphore_count; i++) {
         spudgpu_semaphore_vulkan *sem = (spudgpu_semaphore_vulkan *) desc->wait_semaphores[i];
-        wait_sems[i]   = sem->_semaphore_vk;
-        wait_stages[i] = (VkPipelineStageFlags) desc->wait_stage_masks[i];
+        wait_sems[wait_index]   = sem->_semaphore_vk;
+        wait_stages[wait_index] = (VkPipelineStageFlags) desc->wait_stage_masks[i];
+        wait_index++;
     }
-    for (uint32_t i = 0; i < signal_count; i++) {
+    uint32_t signal_index = 0;
+    for (uint32_t i = 0; i < desc->signal_semaphore_count; i++) {
         spudgpu_semaphore_vulkan *sem = (spudgpu_semaphore_vulkan *) desc->signal_semaphores[i];
-        signal_sems[i] = sem->_semaphore_vk;
+        signal_sems[signal_index++] = sem->_semaphore_vk;
     }
 
-    VkFence signal_fence = VK_NULL_HANDLE;
-    if (desc->signal_fence) {
-        spudgpu_fence_vulkan *f = (spudgpu_fence_vulkan *) desc->signal_fence;
-        signal_fence = f->_fence_vk;
+    VkFence in_flight_fence = VK_NULL_HANDLE;
+    if (swap_chain) {
+        uint32_t frame = swap_chain->_current_frame;
+        wait_sems[wait_index]   = swap_chain->_image_available_semaphores[frame]._semaphore_vk;
+        wait_stages[wait_index] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        wait_index++;
+        // render_finished_semaphores is indexed by swapchain IMAGE index, not
+        // by the frame-in-flight slot (see
+        // spudgpuvulkan___fences_semaphores_swapchain_creation_internal and
+        // spudgpu_swap_chain_present, which waits on this same array using
+        // _current_image_index).
+        signal_sems[signal_index++] =
+            swap_chain->_render_finished_semaphores[swap_chain->_current_image_index]._semaphore_vk;
+        in_flight_fence = swap_chain->_in_flight_fences_vk[frame];
     }
+    if (fence) {
+        signal_sems[signal_index]   = fence->_semaphore_vk;
+        signal_values[signal_index] = desc->signal_fence_value;
+        signal_index++;
+    }
+
+    VkTimelineSemaphoreSubmitInfo timeline = {0};
+    timeline.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    timeline.waitSemaphoreValueCount   = wait_count;
+    timeline.pWaitSemaphoreValues      = wait_values;
+    timeline.signalSemaphoreValueCount = signal_count;
+    timeline.pSignalSemaphoreValues    = signal_values;
 
     VkSubmitInfo submit = {0};
     submit.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.pNext                = fence ? &timeline : NULL;
     submit.waitSemaphoreCount   = wait_count;
     submit.pWaitSemaphores      = wait_sems;
     submit.pWaitDstStageMask    = wait_stages;
@@ -442,15 +460,18 @@ void spudgpu_queue_submit(spudgpu_command_queue queue, const spudgpu_submit_desc
     submit.signalSemaphoreCount = signal_count;
     submit.pSignalSemaphores    = signal_sems;
 
-    VkResult r = vkQueueSubmit(queue->_queue_vk, 1, &submit, signal_fence);
+    VkResult r = vkQueueSubmit(queue->_queue_vk, 1, &submit, in_flight_fence);
     if (r != VK_SUCCESS) {
         printf("spudgpu: vkQueueSubmit failed (%d)\n", r);
     }
-    
+
+    free(cmd_bufs);
     free(wait_sems);
     free(wait_stages);
+    free(wait_values);
     free(signal_sems);
-    free(cmd_bufs);
+    free(signal_values);
+    return r == VK_SUCCESS ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
 }
 
 void spudgpu_queue_wait_idle(spudgpu_command_queue queue) {
@@ -629,6 +650,10 @@ static VkAccessFlags spudgpu_vk___resource_state_to_access(SPUDGPU_RESOURCE_STAT
         return VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     case SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT:
         return VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    case SPUDGPU_RESOURCE_STATE_COPY_SOURCE:
+        return VK_ACCESS_TRANSFER_READ_BIT;
+    case SPUDGPU_RESOURCE_STATE_COPY_DEST:
+        return VK_ACCESS_TRANSFER_WRITE_BIT;
     case SPUDGPU_RESOURCE_STATE_PRESENT:
     case SPUDGPU_RESOURCE_STATE_COMMON:
     default:
@@ -650,6 +675,9 @@ static VkPipelineStageFlags spudgpu_vk___resource_state_to_stage(SPUDGPU_RESOURC
         return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
     case SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT:
         return VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    case SPUDGPU_RESOURCE_STATE_COPY_SOURCE:
+    case SPUDGPU_RESOURCE_STATE_COPY_DEST:
+        return VK_PIPELINE_STAGE_TRANSFER_BIT;
     case SPUDGPU_RESOURCE_STATE_PRESENT:
         return VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
     case SPUDGPU_RESOURCE_STATE_COMMON:
@@ -668,6 +696,10 @@ static VkImageLayout spudgpu_vk___resource_state_to_image_layout(SPUDGPU_RESOURC
         return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     case SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS:
         return VK_IMAGE_LAYOUT_GENERAL;
+    case SPUDGPU_RESOURCE_STATE_COPY_SOURCE:
+        return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    case SPUDGPU_RESOURCE_STATE_COPY_DEST:
+        return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     case SPUDGPU_RESOURCE_STATE_PRESENT:
         return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     case SPUDGPU_RESOURCE_STATE_COMMON:

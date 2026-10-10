@@ -234,6 +234,8 @@ static VkDevice spudgpuvulkan___initialize_vk_logical_device_internal(
     VkPhysicalDeviceVulkan12Features vk12Features = {0};
     vk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     vk12Features.bufferDeviceAddress = VK_TRUE;
+    // spudgpu_fence is a timeline semaphore (spudgpuvulkansync.c).
+    vk12Features.timelineSemaphore = VK_TRUE;
 
     // Bindless / descriptor indexing (see spudgpuvulkandescriptors.c's
     // bindless section) — core in 1.2, no extension needed.
@@ -517,6 +519,11 @@ static void spudgpuvulkan___internal_make_device_properties(
     // shared system memory the way DXGI does.
     device->_properties.dedicated_system_memory = 0;
     device->_properties.shared_system_memory    = hostVisibleMemory;
+    // Vulkan doesn't say whether a device's memory is the system's. The
+    // device type is what it does say, and an integrated GPU is the type
+    // that has none of its own.
+    device->_properties.unified_memory =
+        props->deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 }
 
 SPUDRESULT spudgpu_enumerate_devices(

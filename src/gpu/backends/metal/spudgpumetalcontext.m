@@ -97,6 +97,7 @@ static void spudgpumetal___internal_make_device_properties(
 	device->_properties.dedicated_video_memory  = unified ? 0 : workingSet;
 	device->_properties.dedicated_system_memory = 0;
 	device->_properties.shared_system_memory    = unified ? workingSet : 0;
+	device->_properties.unified_memory          = unified;
 }
 
 static SPUDRESULT spudgpumetal___internal_create_command_queue_family(

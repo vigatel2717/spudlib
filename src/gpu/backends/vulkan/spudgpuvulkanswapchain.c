@@ -238,7 +238,7 @@ void spudgpuvulkan___fences_semaphores_swapchain_creation_internal(
 	// This is the CPU-GPU pipelining depth, not the swapchain image count —
 	// deliberately independent of desc.buffer_count. The caller records into
 	// a single shared command buffer/allocator per frame (not one per frame
-	// in flight), so _in_flight_fences[_current_frame] only actually
+	// in flight), so _in_flight_fences_vk[_current_frame] only actually
 	// tracks that command buffer's previous submission if there is exactly
 	// one slot: with buffer_count (e.g. 2) slots instead, alternate frames
 	// wait on a fence that was never signaled by a real submission (still in
@@ -262,7 +262,7 @@ void spudgpuvulkan___fences_semaphores_swapchain_creation_internal(
 
 	pSwapChain->_image_available_semaphores = calloc(max_frames, sizeof(spudgpu_semaphore_vulkan));
 	pSwapChain->_render_finished_semaphores = calloc(image_count, sizeof(spudgpu_semaphore_vulkan));
-	pSwapChain->_in_flight_fences           = calloc(max_frames, sizeof(spudgpu_fence_vulkan));
+	pSwapChain->_in_flight_fences_vk        = calloc(max_frames, sizeof(VkFence));
 
 	VkDevice vk_device = pSwapChain->_device._logical_device_vk;
 
@@ -275,9 +275,8 @@ void spudgpuvulkan___fences_semaphores_swapchain_creation_internal(
 
 	for (uint32_t i = 0; i < max_frames; i++) {
 		pSwapChain->_image_available_semaphores[i]._device_vk = vk_device;
-		pSwapChain->_in_flight_fences[i]._device_vk           = vk_device;
 		vkCreateSemaphore(vk_device, &semInfo, NULL, &pSwapChain->_image_available_semaphores[i]._semaphore_vk);
-		vkCreateFence(vk_device, &fenceInfo, NULL, &pSwapChain->_in_flight_fences[i]._fence_vk);
+		vkCreateFence(vk_device, &fenceInfo, NULL, &pSwapChain->_in_flight_fences_vk[i]);
 	}
 
 	for (uint32_t i = 0; i < image_count; i++) {
@@ -493,10 +492,9 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 
 	for (uint32_t i = 0; i < swap_chain->_max_frames_in_flight; i++) {
 		vkDestroySemaphore(dev, swap_chain->_image_available_semaphores[i]._semaphore_vk, NULL);
-		vkDestroyFence(dev, swap_chain->_in_flight_fences[i]._fence_vk, NULL);
+		vkDestroyFence(dev, swap_chain->_in_flight_fences_vk[i], NULL);
 #if _DEBUG
 		free((void *)swap_chain->_image_available_semaphores[i]._debug_name);
-		free((void *)swap_chain->_in_flight_fences[i]._debug_name);
 #endif
 	}
 	// render_finished_semaphores is sized/indexed by swapchain image count, not
@@ -509,7 +507,7 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 	}
 	free(swap_chain->_image_available_semaphores);
 	free(swap_chain->_render_finished_semaphores);
-	free(swap_chain->_in_flight_fences);
+	free(swap_chain->_in_flight_fences_vk);
 
 	for (uint32_t i = 0; i < swap_chain->_swapchain_image_views_count; i++) {
 #if _DEBUG
@@ -550,7 +548,7 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 
 	// Wait for the fence of the current frame slot, so we don't overwrite
 	// GPU resources that are still in flight.
-	vkWaitForFences(device, 1, &swap_chain->_in_flight_fences[swap_chain->_current_frame]._fence_vk,
+	vkWaitForFences(device, 1, &swap_chain->_in_flight_fences_vk[swap_chain->_current_frame],
 	                VK_TRUE, SPUD_UINT64_MAX);
 
 	// Ask the driver for the next available swapchain image.
@@ -578,7 +576,7 @@ uint32_t spudgpu_swap_chain_acquire_next_image(spudgpu_swap_chain swap_chain) {
 
 	// Only reset now that we know real work is about to be submitted for
 	// this frame, which will eventually re-signal the fence.
-	vkResetFences(device, 1, &swap_chain->_in_flight_fences[swap_chain->_current_frame]._fence_vk);
+	vkResetFences(device, 1, &swap_chain->_in_flight_fences_vk[swap_chain->_current_frame]);
 
 	return swap_chain->_current_image_index;
 }
@@ -631,10 +629,6 @@ spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_
 	else return &swap_chain->_render_finished_semaphores[swap_chain->_current_image_index];
 }
 
-spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain) {
-	if (!swap_chain) return NULL;
-	else return &swap_chain->_in_flight_fences[swap_chain->_current_frame];
-}
 
 #if __cplusplus
 }

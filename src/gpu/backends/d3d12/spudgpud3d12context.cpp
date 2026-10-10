@@ -198,6 +198,14 @@ bool ___internal_spudgpu_d3d12_make_device_properties(
 	device->_properties.revision                = aDesc.Revision;
 	device->_properties.subSys_id               = aDesc.SubSysId;
 	device->_properties.vendor_id               = aDesc.VendorId;
+
+	// The device exists by now: spudgpu_enumerate_devices creates it before
+	// calling this. A failed query leaves the device reported as not unified.
+	D3D12_FEATURE_DATA_ARCHITECTURE1 architecture = {};
+	architecture.NodeIndex                        = 0;
+	HRESULT hr                                    = device->_d3d_device->CheckFeatureSupport(
+	    D3D12_FEATURE_ARCHITECTURE1, &architecture, sizeof(architecture));
+	device->_properties.unified_memory = SUCCEEDED(hr) && architecture.UMA;
 	return true;
 }
 SPUDRESULT spudgpu_enumerate_devices(

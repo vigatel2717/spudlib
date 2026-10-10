@@ -331,8 +331,9 @@ typedef struct spudgpu_fence_t {
 #endif
 	spudgpu_device_d3d12 *_device;
 	SPUDGPU_FENCE_FLAGS flags;
-	bool signaled_on_creation;
-	uint64_t _signal_value;
+	// The fence's value is the ID3D12Fence's own. Nothing is counted here:
+	// the value a submission signals is the caller's
+	// (spudgpu_submit_desc::signal_fence_value).
 	Microsoft::WRL::ComPtr<ID3D12Fence1> _d3d_fence;
 } spudgpu_fence_d3d12;
 

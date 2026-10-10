@@ -392,11 +392,4 @@ spudgpu_semaphore spudgpu_swap_chain_get_render_finished_semaphore(spudgpu_swap_
 	return (spudgpu_semaphore)swap_chain_metal->_render_finished_semaphore;
 }
 
-spudgpu_fence spudgpu_swap_chain_get_in_flight_fence(spudgpu_swap_chain swap_chain) {
-	spudgpu_swap_chain_metal *swap_chain_metal = (spudgpu_swap_chain_metal *)swap_chain;
-	if (!swap_chain_metal)
-		return NULL;
-	return (spudgpu_fence)swap_chain_metal->_in_flight_fence;
-}
-
 #endif // SPUDGPU_COMPILE_METAL_API

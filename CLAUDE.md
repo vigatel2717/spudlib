@@ -198,6 +198,21 @@ at compile time; the table is at the top of `spudaudio.h`.
   `shader`, `swapchain`, `descriptors`, `command`, `renderpass`, `native`, `sync`. If
   `spudgpu.h` grows a new concern, split a new file for it in every backend rather than
   dumping new functions into an existing one.
+- **A fence is a counter that only goes up, on every backend.** A submission
+  signals it to a value the caller chooses
+  (`spudgpu_submit_desc::signal_fence_value`), `spudgpu_wait_for_fences` waits
+  for a value per fence, and there is no reset: a fence is reused by
+  signaling it higher. That is `ID3D12Fence` and `MTLSharedEvent` as they
+  are, and a timeline `VkSemaphore` on Vulkan - not a `VkFence`, which is one
+  bit that has to be reset by hand and would make the same call behave
+  differently per backend. SpudGPU keeps no counter of its own for a caller's
+  fence; don't add one. The swap chain's own per-frame fences are internal to
+  each backend (plain `VkFence`s on Vulkan, since acquire can't take a
+  timeline semaphore) and are not `spudgpu_fence`s: a submission reaches them
+  through `spudgpu_submit_desc::swap_chain`, which is also all that
+  `spudgpu_submit_command_lists_synced` is. Written 2026-10-10, not compiled
+  on any backend. `spudgpu_semaphore` is still binary on Vulkan and a hidden
+  counter on D3D12 and Metal.
 - **Native escape hatches are interop-only.** `spudgpu_vulkan_natives.h` /
   `_d3d12_natives.h` / `_metal_natives.h` unwrap a handle back to its raw native type
   (`VkInstance`, `ID3D12Device14`, ...) for third-party libraries SpudLib doesn't wrap
@@ -490,10 +505,10 @@ one.
   same condition in every backend") were aligned across SpudGPU and SpudAudio on
   2026-10-09; SpudFiles, SpudMemory and SpudNet already matched. What still
   differs in SpudGPU, each a gap in one backend and not a choice:
-  - Vulkan has no `spudgpu_get_command_queue`, `spudgpu_get_max_queue_count`,
-    `spudgpu_get_fence_value` or `spudgpu_signal_fence`; Metal has no
-    `spudgpu_get_shader_pipeline_desc`, bundle or bindless calls; D3D12 has no
-    `spudgpu_create_surface_from_callback` or swap chain semaphore/fence getters.
+  - Vulkan has no `spudgpu_get_command_queue` or `spudgpu_get_max_queue_count`;
+    Metal has no `spudgpu_get_shader_pipeline_desc`, bundle or bindless calls;
+    D3D12 has no `spudgpu_create_surface_from_callback` or swap chain
+    semaphore getters.
   - D3D12's `spudgpu_cmd_begin_rendering` returns early without a colour
     attachment, so a depth-only pass renders on Vulkan and Metal only.
   - Metal's `spudgpu_create_swap_chain` rejects `buffer_count != 1` and

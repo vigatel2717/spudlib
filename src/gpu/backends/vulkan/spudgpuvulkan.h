@@ -182,7 +182,10 @@ typedef struct spudgpu_fence_t {
 #if _DEBUG
     const char *_debug_name;
 #endif
-    VkFence _fence_vk;
+    // A timeline semaphore, not a VkFence: spudgpu_fence is a counter that
+    // only goes up, which is what a timeline semaphore is and a VkFence
+    // (one bit, reset by hand) is not.
+    VkSemaphore _semaphore_vk;
     VkDevice _device_vk;
 } spudgpu_fence_vulkan;
 
@@ -212,7 +215,9 @@ typedef struct spudgpu_swap_chain_t {
 
     spudgpu_semaphore_vulkan *_image_available_semaphores; // One per frame-in-flight
     spudgpu_semaphore_vulkan *_render_finished_semaphores; // One per frame-in-flight
-    spudgpu_fence_vulkan     *_in_flight_fences;           // One per frame-in-flight
+    // One per frame-in-flight. Plain VkFences, internal to the swap chain:
+    // signaled by a submission made with it, waited on and reset by acquire.
+    VkFence *_in_flight_fences_vk;
     uint32_t _max_frames_in_flight;
     uint32_t _current_frame; // Cycles 0..max_frames_in_flight-1
     uint32_t _current_image_index; // Set by acquire, read by present

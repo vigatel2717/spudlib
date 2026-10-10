@@ -88,19 +88,12 @@ SPUDRESULT spudgpu_submit_command_lists_synced(
 	if (!swap_chain)
 		return SPUDRESULT_GPU_INVALID_SWAP_CHAIN;
 
-	SPUDRESULT result = spudgpu_submit_command_lists(queue, cmd_lists, cmd_list_count);
-	if (SPUDFAIL(result))
-		return result;
-
-	// See spudgpu_swap_chain_d3d12 (spudgpud3d12.hpp) for why this is one
-	// monotonic value per submit rather than Vulkan/Metal's per-back-buffer
-	// bookkeeping, and spudgpu_swap_chain_acquire_next_image
-	// (spudgpud3d12swapchain.cpp) for where it gets waited on.
-	uint64_t value = ++swap_chain->_frame_fence_next_value;
-	if (FAILED(queue->_d3d_cmd_queue->Signal(swap_chain->_frame_fence.Get(), value)))
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
-
-	return SPUD_SUCCESS;
+	// spudgpu_queue_submit with only the command lists and the swap chain set.
+	spudgpu_submit_desc desc = {};
+	desc.cmd_lists           = cmd_lists;
+	desc.cmd_list_count      = cmd_list_count;
+	desc.swap_chain          = swap_chain;
+	return spudgpu_queue_submit(queue, &desc);
 }
 
 SPUDRESULT spudgpu_create_command_allocator(
@@ -463,6 +456,10 @@ static D3D12_RESOURCE_STATES spudgpu_d3d12___resource_state(SPUDGPU_RESOURCE_STA
 		return D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
 	case SPUDGPU_RESOURCE_STATE_PRESENT:
 		return D3D12_RESOURCE_STATE_PRESENT;
+	case SPUDGPU_RESOURCE_STATE_COPY_SOURCE:
+		return D3D12_RESOURCE_STATE_COPY_SOURCE;
+	case SPUDGPU_RESOURCE_STATE_COPY_DEST:
+		return D3D12_RESOURCE_STATE_COPY_DEST;
 	case SPUDGPU_RESOURCE_STATE_COMMON:
 	default:
 		return D3D12_RESOURCE_STATE_COMMON;
@@ -511,16 +508,22 @@ void spudgpu_cmd_pipeline_barrier(
 		cmd->_d3d_cmd_list->ResourceBarrier(
 		    static_cast<UINT>(barriers.size()), barriers.data());
 }
-void spudgpu_queue_submit(
+SPUDRESULT spudgpu_queue_submit(
     spudgpu_command_queue queue, const spudgpu_submit_desc *desc) {
-	if (!queue || !desc || desc->cmd_list_count == 0)
-		return;
+	if (!queue)
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+	if (!desc)
+		return SPUDRESULT_NULL_DESC;
+	if (!desc->cmd_lists)
+		return SPUDRESULT_GPU_INVALID_COMMAND_LIST;
+	if (desc->cmd_list_count == 0)
+		return SPUDRESULT_ZERO_SIZE;
 	// Allocated before the waits are queued, so a failed allocation leaves
 	// the queue untouched.
 	ID3D12CommandList **d3dLists =
 	    (ID3D12CommandList **)malloc(sizeof(ID3D12CommandList *) * desc->cmd_list_count);
 	if (!d3dLists)
-		return;
+		return SPUDRESULT_OUT_OF_MEMORY;
 	for (uint32_t i = 0; i < desc->wait_semaphore_count; ++i) {
 		spudgpu_semaphore sem = desc->wait_semaphores[i];
 		queue->_d3d_cmd_queue->Wait(sem->_d3d_fence.Get(), sem->_signal_value);
@@ -530,14 +533,31 @@ void spudgpu_queue_submit(
 	queue->_d3d_cmd_queue->ExecuteCommandLists(
 	    static_cast<UINT>(desc->cmd_list_count), d3dLists);
 	free(d3dLists);
+
+	// Everything below is queued behind the command lists, so it is
+	// signaled once they have run.
+	SPUDRESULT result = SPUD_SUCCESS;
 	for (uint32_t i = 0; i < desc->signal_semaphore_count; ++i) {
 		spudgpu_semaphore sem = desc->signal_semaphores[i];
-		queue->_d3d_cmd_queue->Signal(sem->_d3d_fence.Get(), ++sem->_signal_value);
+		if (FAILED(queue->_d3d_cmd_queue->Signal(sem->_d3d_fence.Get(), ++sem->_signal_value)))
+			result = SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
-	if (desc->signal_fence)
-		queue->_d3d_cmd_queue->Signal(
-		    desc->signal_fence->_d3d_fence.Get(),
-		    ++desc->signal_fence->_signal_value);
+	if (desc->swap_chain) {
+		// See spudgpu_swap_chain_d3d12 (spudgpud3d12.hpp) for why this is one
+		// monotonic value per submit rather than Vulkan/Metal's
+		// per-back-buffer bookkeeping, and
+		// spudgpu_swap_chain_acquire_next_image (spudgpud3d12swapchain.cpp)
+		// for where it gets waited on.
+		uint64_t value = ++desc->swap_chain->_frame_fence_next_value;
+		if (FAILED(queue->_d3d_cmd_queue->Signal(desc->swap_chain->_frame_fence.Get(), value)))
+			result = SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+	if (desc->signal_fence) {
+		if (FAILED(queue->_d3d_cmd_queue->Signal(
+		        desc->signal_fence->_d3d_fence.Get(), desc->signal_fence_value)))
+			result = SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+	return result;
 }
 void spudgpu_queue_wait_idle(spudgpu_command_queue queue) {
 	if (!queue)
